@@ -1,0 +1,81 @@
+{
+  "name": "Example Test Suite",
+  "tests": [
+    {
+      "description": "Age comparison returns adult for 25",
+      "rule": {
+        "if": [
+          {">=": [{"var": "age"}, 18]},
+          "adult",
+          "minor"
+        ]
+      },
+      "data": {"age": 25},
+      "expected": "adult"
+    },
+    {
+      "description": "Age comparison returns minor for 15",
+      "rule": {
+        "if": [
+          {">=": [{"var": "age"}, 18]},
+          "adult",
+          "minor"
+        ]
+      },
+      "data": {"age": 15},
+      "expected": "minor"
+    },
+    {
+      "description": "Fractional assigns to a bucket",
+      "rule": {
+        "fractional": [
+          "user-123",
+          ["control", 50, "treatment", 50]
+        ]
+      },
+      "data": {},
+      "expected": "treatment"
+    },
+    {
+      "description": "Fractional with variable reference",
+      "rule": {
+        "fractional": [
+          {"var": "userId"},
+          ["a", 33, "b", 33, "c", 34]
+        ]
+      },
+      "data": {"userId": "test-user-42"},
+      "expected": "b"
+    },
+    {
+      "description": "Basic equality check",
+      "rule": {"==": [{"var": "enabled"}, true]},
+      "data": {"enabled": true},
+      "expected": true
+    },
+    {
+      "description": "Nested data access",
+      "rule": {"var": "user.profile.name"},
+      "data": {
+        "user": {
+          "profile": {
+            "name": "Alice"
+          }
+        }
+      },
+      "expected": "Alice"
+    },
+    {
+      "description": "Arithmetic addition",
+      "rule": {"+": [{"var": "a"}, {"var": "b"}]},
+      "data": {"a": 10, "b": 5},
+      "expected": 15
+    },
+    {
+      "description": "Array contains value",
+      "rule": {"in": ["admin", {"var": "roles"}]},
+      "data": {"roles": ["user", "admin", "moderator"]},
+      "expected": true
+    }
+  ]
+}
