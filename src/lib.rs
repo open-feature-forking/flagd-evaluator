@@ -42,7 +42,7 @@ pub use error::{ErrorType, EvaluatorError};
 pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
-pub use operators::fractional;
+pub use operators::{ends_with, fractional, sem_ver, starts_with};
 
 /// The response format for evaluation results.
 ///
@@ -93,6 +93,141 @@ impl EvaluationResponse {
 /// Returns the operator arguments if found, or None if not present.
 fn extract_fractional_op(value: &Value) -> Option<&Value> {
     value.get("fractional")
+}
+
+/// Resolves a variable path from data, or returns the string value directly.
+///
+/// This helper function handles both direct string values and variable references
+/// (like `{"var": "path.to.value"}`) for the custom operators.
+fn resolve_string_value(value: &Value, data: &Value) -> Result<String, String> {
+    match value {
+        Value::String(s) => Ok(s.clone()),
+        Value::Object(obj) if obj.contains_key("var") => {
+            let var_path = match obj.get("var") {
+                Some(Value::String(s)) => s,
+                _ => return Err("var reference must be a string".to_string()),
+            };
+
+            let mut current = data;
+            for part in var_path.split('.') {
+                current = match current.get(part) {
+                    Some(v) => v,
+                    None => return Err(format!("Variable '{}' not found in data", var_path)),
+                };
+            }
+
+            match current {
+                Value::String(s) => Ok(s.clone()),
+                Value::Number(n) => Ok(n.to_string()),
+                Value::Null => Ok(String::new()),
+                _ => Err(format!(
+                    "Variable '{}' must be a string or number",
+                    var_path
+                )),
+            }
+        }
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Null => Ok(String::new()),
+        _ => Err("Value must be a string, number, null, or var reference".to_string()),
+    }
+}
+
+/// Handles the custom starts_with operator if present in the rule.
+///
+/// The starts_with operator checks if a string starts with a given prefix.
+fn handle_starts_with(rule: &Value, data: &Value) -> Option<Result<Value, String>> {
+    let args = rule.get("starts_with")?;
+
+    let args_array = match args {
+        Value::Array(arr) if arr.len() >= 2 => arr,
+        _ => {
+            return Some(Err(
+                "starts_with operator requires an array with at least 2 elements".to_string(),
+            ))
+        }
+    };
+
+    let string_value = match resolve_string_value(&args_array[0], data) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(e)),
+    };
+
+    let prefix = match resolve_string_value(&args_array[1], data) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(e)),
+    };
+
+    Some(Ok(Value::Bool(crate::operators::starts_with(
+        &string_value,
+        &prefix,
+    ))))
+}
+
+/// Handles the custom ends_with operator if present in the rule.
+///
+/// The ends_with operator checks if a string ends with a given suffix.
+fn handle_ends_with(rule: &Value, data: &Value) -> Option<Result<Value, String>> {
+    let args = rule.get("ends_with")?;
+
+    let args_array = match args {
+        Value::Array(arr) if arr.len() >= 2 => arr,
+        _ => {
+            return Some(Err(
+                "ends_with operator requires an array with at least 2 elements".to_string(),
+            ))
+        }
+    };
+
+    let string_value = match resolve_string_value(&args_array[0], data) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(e)),
+    };
+
+    let suffix = match resolve_string_value(&args_array[1], data) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(e)),
+    };
+
+    Some(Ok(Value::Bool(crate::operators::ends_with(
+        &string_value,
+        &suffix,
+    ))))
+}
+
+/// Handles the custom sem_ver operator if present in the rule.
+///
+/// The sem_ver operator performs semantic version comparisons.
+fn handle_sem_ver(rule: &Value, data: &Value) -> Option<Result<Value, String>> {
+    let args = rule.get("sem_ver")?;
+
+    let args_array = match args {
+        Value::Array(arr) if arr.len() >= 3 => arr,
+        _ => {
+            return Some(Err(
+                "sem_ver operator requires an array with at least 3 elements".to_string(),
+            ))
+        }
+    };
+
+    let version = match resolve_string_value(&args_array[0], data) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(e)),
+    };
+
+    let operator = match &args_array[1] {
+        Value::String(s) => s.as_str(),
+        _ => return Some(Err("sem_ver operator must be a string".to_string())),
+    };
+
+    let target = match resolve_string_value(&args_array[2], data) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(e)),
+    };
+
+    match crate::operators::sem_ver(&version, operator, &target) {
+        Ok(result) => Some(Ok(Value::Bool(result))),
+        Err(e) => Some(Err(e)),
+    }
 }
 
 /// Handles the custom fractional operator if present in the rule.
@@ -239,6 +374,30 @@ fn evaluate_logic_internal(
 
     // Check for custom fractional operator first
     if let Some(result) = handle_fractional(&rule, &data) {
+        return match result {
+            Ok(value) => EvaluationResponse::success(value),
+            Err(e) => EvaluationResponse::error(e),
+        };
+    }
+
+    // Check for custom starts_with operator
+    if let Some(result) = handle_starts_with(&rule, &data) {
+        return match result {
+            Ok(value) => EvaluationResponse::success(value),
+            Err(e) => EvaluationResponse::error(e),
+        };
+    }
+
+    // Check for custom ends_with operator
+    if let Some(result) = handle_ends_with(&rule, &data) {
+        return match result {
+            Ok(value) => EvaluationResponse::success(value),
+            Err(e) => EvaluationResponse::error(e),
+        };
+    }
+
+    // Check for custom sem_ver operator
+    if let Some(result) = handle_sem_ver(&rule, &data) {
         return match result {
             Ok(value) => EvaluationResponse::success(value),
             Err(e) => EvaluationResponse::error(e),
@@ -403,5 +562,164 @@ mod tests {
         assert!(!response.success);
         assert_eq!(response.error, Some("test error".to_string()));
         assert_eq!(response.result, None);
+    }
+
+    // ============================================================================
+    // starts_with operator tests
+    // ============================================================================
+
+    #[test]
+    fn test_starts_with_operator_basic() {
+        let rule = r#"{"starts_with": [{"var": "email"}, "admin@"]}"#;
+        let data = r#"{"email": "admin@example.com"}"#;
+        let result = evaluate_json(rule, data);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    #[test]
+    fn test_starts_with_operator_false() {
+        let rule = r#"{"starts_with": [{"var": "email"}, "admin@"]}"#;
+        let data = r#"{"email": "user@example.com"}"#;
+        let result = evaluate_json(rule, data);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(false)));
+    }
+
+    #[test]
+    fn test_starts_with_operator_literal_values() {
+        let rule = r#"{"starts_with": ["/api/users", "/api/"]}"#;
+        let result = evaluate_json(rule, "{}");
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    #[test]
+    fn test_starts_with_operator_empty_prefix() {
+        let rule = r#"{"starts_with": ["hello", ""]}"#;
+        let result = evaluate_json(rule, "{}");
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    // ============================================================================
+    // ends_with operator tests
+    // ============================================================================
+
+    #[test]
+    fn test_ends_with_operator_basic() {
+        let rule = r#"{"ends_with": [{"var": "filename"}, ".pdf"]}"#;
+        let data = r#"{"filename": "document.pdf"}"#;
+        let result = evaluate_json(rule, data);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    #[test]
+    fn test_ends_with_operator_false() {
+        let rule = r#"{"ends_with": [{"var": "filename"}, ".pdf"]}"#;
+        let data = r#"{"filename": "document.docx"}"#;
+        let result = evaluate_json(rule, data);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(false)));
+    }
+
+    #[test]
+    fn test_ends_with_operator_literal_values() {
+        let rule = r#"{"ends_with": ["https://example.com", ".com"]}"#;
+        let result = evaluate_json(rule, "{}");
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    #[test]
+    fn test_ends_with_operator_empty_suffix() {
+        let rule = r#"{"ends_with": ["hello", ""]}"#;
+        let result = evaluate_json(rule, "{}");
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    // ============================================================================
+    // sem_ver operator tests
+    // ============================================================================
+
+    #[test]
+    fn test_sem_ver_operator_equal() {
+        let rule = r#"{"sem_ver": [{"var": "version"}, "=", "1.2.3"]}"#;
+        let data = r#"{"version": "1.2.3"}"#;
+        let result = evaluate_json(rule, data);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    #[test]
+    fn test_sem_ver_operator_greater_than() {
+        let rule = r#"{"sem_ver": [{"var": "version"}, ">", "1.0.0"]}"#;
+        let data = r#"{"version": "2.0.0"}"#;
+        let result = evaluate_json(rule, data);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    #[test]
+    fn test_sem_ver_operator_greater_than_or_equal() {
+        let rule = r#"{"sem_ver": [{"var": "version"}, ">=", "2.0.0"]}"#;
+        let data = r#"{"version": "2.0.0"}"#;
+        let result = evaluate_json(rule, data);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    #[test]
+    fn test_sem_ver_operator_caret_range() {
+        let rule = r#"{"sem_ver": [{"var": "version"}, "^", "1.2.3"]}"#;
+
+        // Should match 1.2.5 (patch update)
+        let result = evaluate_json(rule, r#"{"version": "1.2.5"}"#);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+
+        // Should match 1.9.0 (minor update)
+        let result = evaluate_json(rule, r#"{"version": "1.9.0"}"#);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+
+        // Should not match 2.0.0 (major update)
+        let result = evaluate_json(rule, r#"{"version": "2.0.0"}"#);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(false)));
+    }
+
+    #[test]
+    fn test_sem_ver_operator_tilde_range() {
+        let rule = r#"{"sem_ver": [{"var": "version"}, "~", "1.2.3"]}"#;
+
+        // Should match 1.2.9 (patch update)
+        let result = evaluate_json(rule, r#"{"version": "1.2.9"}"#);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+
+        // Should not match 1.3.0 (minor update)
+        let result = evaluate_json(rule, r#"{"version": "1.3.0"}"#);
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(false)));
+    }
+
+    #[test]
+    fn test_sem_ver_operator_literal_values() {
+        let rule = r#"{"sem_ver": ["2.0.0", ">=", "1.0.0"]}"#;
+        let result = evaluate_json(rule, "{}");
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(true)));
+    }
+
+    #[test]
+    fn test_sem_ver_operator_invalid_version() {
+        let rule = r#"{"sem_ver": [{"var": "version"}, "=", "1.2.3"]}"#;
+        let data = r#"{"version": "not.a.version"}"#;
+        let result = evaluate_json(rule, data);
+        assert!(!result.success);
+        assert!(result.error.is_some());
     }
 }
