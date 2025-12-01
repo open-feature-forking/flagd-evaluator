@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build WASM
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Install wasm-opt
+        run: |
+          curl -L https://github.com/WebAssembly/binaryen/releases/download/version_118/binaryen-version_118-x86_64-linux.tar.gz | tar xz -C /tmp
+          echo "/tmp/binaryen-version_118/bin" >> $GITHUB_PATH
+
+      - name: Optimize WASM
+        run: |
+          wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
+            -o target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
+          mv target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
+          echo "WASM optimized with wasm-opt"
+
+      - name: Generate checksums
+        run: |
+          cd target/wasm32-unknown-unknown/release
+          sha256sum flagd_evaluator.wasm > flagd_evaluator.wasm.sha256
+          echo "SHA256 checksum:"
+          cat flagd_evaluator.wasm.sha256
+
+      - name: Get WASM size
+        run: |
+          SIZE=$(stat -c%s target/wasm32-unknown-unknown/release/flagd_evaluator.wasm)
+          echo "WASM file size: $SIZE bytes ($(echo "scale=2; $SIZE / 1024" | bc) KB)"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
