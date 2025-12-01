@@ -1,0 +1,46 @@
+# Generated files
+/target/
+/dist/
+
+# Cargo lock file (library)
+Cargo.lock
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+*.wasm
+!examples/**/*.wasm
+
+# Backup files
+*.bak
+*.orig
+
+# Test coverage
+*.profraw
+*.profdata
+coverage/
+tarpaulin-report.html
+
+# Local environment
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Documentation build
+/target/doc/
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini

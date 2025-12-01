@@ -1,1 +1,318 @@
 # flagd-evaluator
+
+A WebAssembly-based JSON Logic evaluator with custom operators for feature flag evaluation. Designed to work with [Chicory](https://github.com/nicknisi/chicory) (pure Java WebAssembly runtime) and other WASM runtimes.
+
+[![CI](https://github.com/open-feature-forking/flagd-evaluator/actions/workflows/ci.yml/badge.svg)](https://github.com/open-feature-forking/flagd-evaluator/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+## Features
+
+- **Full JSON Logic Support**: Evaluate complex JSON Logic rules with all standard operators via [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
+- **Custom Operators**: Feature-flag specific operators like `fractional` for A/B testing
+- **Chicory Compatible**: Works seamlessly with pure Java WASM runtimes - no JNI required
+- **Zero Dependencies at Runtime**: Single WASM file, no external dependencies
+- **Optimized Size**: WASM binary optimized for size (~1.5MB, includes full JSON Logic implementation)
+- **Memory Safe**: Clean memory management with explicit alloc/dealloc functions
+
+## Quick Start
+
+### Building from Source
+
+```bash
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Add WASM target
+rustup target add wasm32-unknown-unknown
+
+# Clone and build
+git clone https://github.com/open-feature-forking/flagd-evaluator.git
+cd flagd-evaluator
+cargo build --target wasm32-unknown-unknown --release
+```
+
+The WASM file will be at: `target/wasm32-unknown-unknown/release/flagd_evaluator.wasm`
+
+### Running Tests
+
+```bash
+cargo test
+```
+
+## Installation
+
+### From Release
+
+Download the latest WASM file from the [Releases](https://github.com/open-feature-forking/flagd-evaluator/releases) page.
+
+### From Source
+
+```bash
+cargo build --target wasm32-unknown-unknown --release
+```
+
+## Usage Examples
+
+### Java with Chicory
+
+Add the Chicory dependency to your Maven project:
+
+```xml
+<dependency>
+    <groupId>com.dylibso.chicory</groupId>
+    <artifactId>runtime</artifactId>
+    <version>1.0.0</version>
+</dependency>
+<dependency>
+    <groupId>com.google.code.gson</groupId>
+    <artifactId>gson</artifactId>
+    <version>2.10.1</version>
+</dependency>
+```
+
+Java code example:
+
+```java
+import com.dylibso.chicory.runtime.*;
+import com.dylibso.chicory.wasm.Parser;
+import java.nio.charset.StandardCharsets;
+
+// Load the WASM module
+byte[] wasmBytes = Files.readAllBytes(Path.of("flagd_evaluator.wasm"));
+var module = Parser.parse(wasmBytes);
+Instance instance = Instance.builder(module).build();
+
+// Get exported functions
+Memory memory = instance.memory();
+ExportFunction alloc = instance.export("alloc");
+ExportFunction dealloc = instance.export("dealloc");
+ExportFunction evaluateLogic = instance.export("evaluate_logic");
+
+// Prepare inputs
+String rule = "{\">\": [{\"var\": \"age\"}, 18]}";
+String data = "{\"age\": 25}";
+byte[] ruleBytes = rule.getBytes(StandardCharsets.UTF_8);
+byte[] dataBytes = data.getBytes(StandardCharsets.UTF_8);
+
+// Allocate memory and write inputs
+long rulePtr = alloc.apply(ruleBytes.length)[0];
+long dataPtr = alloc.apply(dataBytes.length)[0];
+memory.write((int) rulePtr, ruleBytes);
+memory.write((int) dataPtr, dataBytes);
+
+// Call evaluate_logic
+long packedResult = evaluateLogic.apply(rulePtr, ruleBytes.length, dataPtr, dataBytes.length)[0];
+
+// Unpack result (ptr in upper 32 bits, length in lower 32 bits)
+int resultPtr = (int) (packedResult >>> 32);
+int resultLen = (int) (packedResult & 0xFFFFFFFFL);
+
+// Read result
+byte[] resultBytes = memory.readBytes(resultPtr, resultLen);
+String result = new String(resultBytes, StandardCharsets.UTF_8);
+System.out.println(result);
+// Output: {"success":true,"result":true,"error":null}
+
+// Free memory
+dealloc.apply(rulePtr, ruleBytes.length);
+dealloc.apply(dataPtr, dataBytes.length);
+dealloc.apply(resultPtr, resultLen);
+```
+
+See [examples/java/FlagdEvaluatorExample.java](examples/java/FlagdEvaluatorExample.java) for a complete example.
+
+### Rust
+
+```rust
+use flagd_evaluator::{evaluate_logic, wasm_alloc, wasm_dealloc, unpack_ptr_len, string_from_memory};
+
+let rule = r#"{"==": [{"var": "enabled"}, true]}"#;
+let data = r#"{"enabled": true}"#;
+
+let rule_bytes = rule.as_bytes();
+let data_bytes = data.as_bytes();
+
+// In a real WASM context, memory would be managed by the host
+let result_packed = evaluate_logic(
+    rule_bytes.as_ptr(),
+    rule_bytes.len() as u32,
+    data_bytes.as_ptr(),
+    data_bytes.len() as u32,
+);
+
+let (result_ptr, result_len) = unpack_ptr_len(result_packed);
+let result_str = unsafe { string_from_memory(result_ptr, result_len).unwrap() };
+println!("{}", result_str);
+// Output: {"success":true,"result":true,"error":null}
+```
+
+## API Reference
+
+### Exported Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `evaluate_logic` | `(rule_ptr, rule_len, data_ptr, data_len) -> u64` | Evaluates JSON Logic rule against data |
+| `alloc` | `(len: u32) -> *mut u8` | Allocates memory in WASM linear memory |
+| `dealloc` | `(ptr: *mut u8, len: u32)` | Frees previously allocated memory |
+
+### evaluate_logic
+
+**Parameters:**
+- `rule_ptr` (u32): Pointer to the rule JSON string in WASM memory
+- `rule_len` (u32): Length of the rule JSON string
+- `data_ptr` (u32): Pointer to the data JSON string in WASM memory
+- `data_len` (u32): Length of the data JSON string
+
+**Returns:**
+- `u64`: Packed pointer where upper 32 bits = result pointer, lower 32 bits = result length
+
+**Response Format (always JSON):**
+```json
+// Success
+{
+  "success": true,
+  "result": <evaluated_value>,
+  "error": null
+}
+
+// Error
+{
+  "success": false,
+  "result": null,
+  "error": "error message"
+}
+```
+
+## Custom Operators
+
+### fractional
+
+The `fractional` operator provides consistent hashing for A/B testing and feature flag rollouts. It uses MurmurHash3 to consistently assign the same key to the same bucket.
+
+**Syntax:**
+```json
+{"fractional": [<bucket_key>, [<name1>, <weight1>, <name2>, <weight2>, ...]]}
+```
+
+**Parameters:**
+- `bucket_key`: A string, number, or `{"var": "path"}` reference used for bucketing
+- `buckets`: Array of alternating bucket names and weights
+
+**Examples:**
+
+```json
+// 50/50 A/B test
+{"fractional": ["user-123", ["control", 50, "treatment", 50]]}
+
+// Using a variable reference
+{"fractional": [{"var": "user.id"}, ["A", 33, "B", 33, "C", 34]]}
+
+// 10% rollout to beta
+{"fractional": [{"var": "userId"}, ["beta", 10, "stable", 90]]}
+```
+
+**Properties:**
+- **Consistent**: Same bucket key always returns the same bucket
+- **Deterministic**: Results are reproducible across different invocations
+- **Uniform Distribution**: Keys are evenly distributed across buckets according to weights
+
+## Memory Model & Safety
+
+### Memory Management
+
+The library uses a simple linear memory allocation model:
+
+1. **Allocation**: Call `alloc(len)` to allocate `len` bytes. Returns a pointer or null on failure.
+2. **Usage**: Write data to the allocated memory region.
+3. **Deallocation**: Call `dealloc(ptr, len)` to free the memory.
+
+**Important:** The caller is responsible for:
+- Freeing input memory after `evaluate_logic` returns
+- Freeing the result memory after reading it
+
+### Pointer Packing
+
+Results are returned as a packed 64-bit integer:
+- **Upper 32 bits**: Memory pointer to result string
+- **Lower 32 bits**: Length of result string in bytes
+
+```java
+// Java example to unpack
+long packedResult = evaluateLogic.apply(...)[0];
+int ptr = (int) (packedResult >>> 32);
+int len = (int) (packedResult & 0xFFFFFFFFL);
+```
+
+### Safety Considerations
+
+- All memory operations go through the exported `alloc`/`dealloc` functions
+- The library never accesses memory outside allocated regions
+- Invalid UTF-8 input is detected and reported as an error
+- All errors are caught and returned as JSON, never as panics
+
+## Performance Considerations
+
+### Targets
+
+| Metric | Target | Notes |
+|--------|--------|-------|
+| WASM Size | ~1.5MB | Full JSON Logic implementation with 50+ operators |
+| Evaluation Time | < 1ms | For simple rules with small data |
+| Memory Overhead | Minimal | Only allocates what's needed for inputs and outputs |
+
+### Optimization Tips
+
+1. **Reuse the WASM instance** - Instantiation is expensive; reuse the instance for multiple evaluations
+2. **Batch evaluations** - If evaluating many rules, consider batching
+3. **Keep data small** - Only include necessary data in the context
+4. **Use wasm-opt** - The release workflow uses wasm-opt for additional optimization
+
+## Building from Source
+
+### Requirements
+
+- Rust 1.70+ (for 2021 edition support)
+- wasm32-unknown-unknown target
+
+### Development Build
+
+```bash
+cargo build
+cargo test
+```
+
+### Release Build
+
+```bash
+cargo build --target wasm32-unknown-unknown --release
+```
+
+### Linting
+
+```bash
+cargo clippy -- -D warnings
+cargo fmt -- --check
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+
+Quick summary:
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes with tests
+4. Ensure `cargo test` and `cargo clippy` pass
+5. Submit a pull request
+
+## License
+
+This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- [datalogic-rs](https://github.com/cozylogic/datalogic-rs) - The JSON Logic implementation this library is built on
+- [Chicory](https://github.com/nicknisi/chicory) - Pure Java WebAssembly runtime
+- [serde](https://serde.rs/) - Serialization framework for Rust
+- [OpenFeature](https://openfeature.dev/) - The open standard for feature flag management
