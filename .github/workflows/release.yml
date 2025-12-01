@@ -140,12 +140,18 @@ jobs:
 
       - name: Optimize WASM
         run: |
-          wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
+          BEFORE_SIZE=$(stat -c%s target/wasm32-unknown-unknown/release/flagd_evaluator.wasm)
+          echo "Before optimization: $BEFORE_SIZE bytes"
+          wasm-opt -Oz --enable-bulk-memory --enable-sign-ext --enable-nontrapping-float-to-int \
             -o target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
             target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
           mv target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
             target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
-          echo "WASM optimized with wasm-opt"
+          AFTER_SIZE=$(stat -c%s target/wasm32-unknown-unknown/release/flagd_evaluator.wasm)
+          echo "After optimization: $AFTER_SIZE bytes"
+          REDUCTION=$((BEFORE_SIZE - AFTER_SIZE))
+          PERCENT=$((REDUCTION * 100 / BEFORE_SIZE))
+          echo "Size reduction: $REDUCTION bytes ($PERCENT%)"
 
       - name: Generate checksums
         run: |

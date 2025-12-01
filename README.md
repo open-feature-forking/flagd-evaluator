@@ -11,7 +11,7 @@ A WebAssembly-based JSON Logic evaluator with custom operators for feature flag 
 - **Custom Operators**: Feature-flag specific operators like `fractional` for A/B testing
 - **Chicory Compatible**: Works seamlessly with pure Java WASM runtimes - no JNI required
 - **Zero Dependencies at Runtime**: Single WASM file, no external dependencies
-- **Optimized Size**: WASM binary optimized for size (~1.5MB, includes full JSON Logic implementation)
+- **Optimized Size**: WASM binary optimized for size (~1.27MB after wasm-opt, includes full JSON Logic implementation)
 - **Memory Safe**: Clean memory management with explicit alloc/dealloc functions
 
 ## Quick Start
@@ -422,16 +422,35 @@ int len = (int) (packedResult & 0xFFFFFFFFL);
 
 | Metric | Target | Notes |
 |--------|--------|-------|
-| WASM Size | ~1.5MB | Full JSON Logic implementation with 50+ operators |
+| WASM Size (unoptimized) | ~1.43MB | Cargo release build with size optimizations |
+| WASM Size (optimized) | ~1.27MB | After wasm-opt post-processing (~12% reduction) |
 | Evaluation Time | < 1ms | For simple rules with small data |
 | Memory Overhead | Minimal | Only allocates what's needed for inputs and outputs |
+
+### Build Optimizations
+
+The project uses several size optimization techniques:
+
+**Cargo.toml release profile:**
+- `opt-level = "z"` - Optimize for size over speed
+- `lto = true` - Link Time Optimization for cross-crate inlining
+- `codegen-units = 1` - Single codegen unit for better optimization
+- `strip = true` - Strip debug symbols
+- `panic = "abort"` - Abort on panic instead of unwinding (smaller code)
+
+**wasm-opt post-processing:**
+The CI and release workflows apply additional optimizations using [wasm-opt](https://github.com/WebAssembly/binaryen):
+```bash
+wasm-opt -Oz --enable-bulk-memory --enable-sign-ext --enable-nontrapping-float-to-int \
+  input.wasm -o output.wasm
+```
 
 ### Optimization Tips
 
 1. **Reuse the WASM instance** - Instantiation is expensive; reuse the instance for multiple evaluations
 2. **Batch evaluations** - If evaluating many rules, consider batching
 3. **Keep data small** - Only include necessary data in the context
-4. **Use wasm-opt** - The release workflow uses wasm-opt for additional optimization
+4. **Use the optimized binary** - Download from releases or run wasm-opt locally
 
 ## Building from Source
 
@@ -439,6 +458,7 @@ int len = (int) (packedResult & 0xFFFFFFFFL);
 
 - Rust 1.70+ (for 2021 edition support)
 - wasm32-unknown-unknown target
+- wasm-opt (optional, for additional size optimization)
 
 ### Development Build
 
@@ -450,7 +470,14 @@ cargo test
 ### Release Build
 
 ```bash
+# Basic release build
 cargo build --target wasm32-unknown-unknown --release
+
+# With wasm-opt optimization (recommended)
+cargo build --target wasm32-unknown-unknown --release
+wasm-opt -Oz --enable-bulk-memory --enable-sign-ext --enable-nontrapping-float-to-int \
+  target/wasm32-unknown-unknown/release/flagd_evaluator.wasm \
+  -o target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm
 ```
 
 ### Linting

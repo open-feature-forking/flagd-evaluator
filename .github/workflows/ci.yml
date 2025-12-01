@@ -161,6 +161,26 @@ jobs:
       - name: Build WASM
         run: cargo build --target wasm32-unknown-unknown --release
 
+      - name: Install wasm-opt
+        run: |
+          curl -L https://github.com/WebAssembly/binaryen/releases/download/version_118/binaryen-version_118-x86_64-linux.tar.gz | tar xz -C /tmp
+          echo "/tmp/binaryen-version_118/bin" >> $GITHUB_PATH
+
+      - name: Optimize WASM with wasm-opt
+        run: |
+          BEFORE_SIZE=$(stat -c%s target/wasm32-unknown-unknown/release/flagd_evaluator.wasm)
+          echo "Before optimization: $BEFORE_SIZE bytes"
+          wasm-opt -Oz --enable-bulk-memory --enable-sign-ext --enable-nontrapping-float-to-int \
+            -o target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
+          mv target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
+          AFTER_SIZE=$(stat -c%s target/wasm32-unknown-unknown/release/flagd_evaluator.wasm)
+          echo "After optimization: $AFTER_SIZE bytes"
+          REDUCTION=$((BEFORE_SIZE - AFTER_SIZE))
+          PERCENT=$((REDUCTION * 100 / BEFORE_SIZE))
+          echo "Size reduction: $REDUCTION bytes ($PERCENT%)"
+
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
         with:
@@ -181,10 +201,13 @@ jobs:
       - name: Check WASM size
         run: |
           SIZE=$(stat -c%s flagd_evaluator.wasm)
-          echo "WASM file size: $SIZE bytes ($(echo "scale=2; $SIZE / 1024" | bc) KB)"
-          MAX_SIZE=$((2000 * 1024))  # 2MB in bytes (includes full JSON Logic implementation)
+          SIZE_KB=$(echo "scale=2; $SIZE / 1024" | bc)
+          SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
+          echo "WASM file size: $SIZE bytes ($SIZE_KB KB / $SIZE_MB MB)"
+          # Maximum size: 1.5MB (optimized binary with full JSON Logic implementation)
+          MAX_SIZE=$((1536 * 1024))
           if [ $SIZE -gt $MAX_SIZE ]; then
-            echo "Error: WASM file size ($SIZE bytes) exceeds maximum allowed size ($MAX_SIZE bytes)"
+            echo "::error::WASM file size ($SIZE bytes) exceeds maximum allowed size ($MAX_SIZE bytes / 1.5MB)"
             exit 1
           fi
-          echo "WASM file size is within limits"
+          echo "✅ WASM file size is within limits (max 1.5MB)"
