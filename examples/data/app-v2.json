@@ -1,0 +1,10 @@
+{
+  "userId": "app-user-12345",
+  "version": {
+    "major": 2,
+    "minor": 1,
+    "patch": 0
+  },
+  "environment": "production",
+  "features": ["analytics", "notifications"]
+}

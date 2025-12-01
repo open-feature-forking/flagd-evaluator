@@ -12,8 +12,80 @@ permissions:
   contents: write
 
 jobs:
-  build-release:
-    name: Build Release
+  build-cli:
+    name: Build CLI (${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: flagd-eval
+            archive: flagd-eval-linux-x64.tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: flagd-eval
+            archive: flagd-eval-macos-x64.tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: flagd-eval
+            archive: flagd-eval-macos-arm64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: flagd-eval.exe
+            archive: flagd-eval-windows-x64.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-release-
+
+      - name: Build CLI
+        run: cargo build --release --target ${{ matrix.target }} --bin flagd-eval
+
+      - name: Create archive (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czvf ../../../${{ matrix.archive }} ${{ matrix.artifact }}
+          cd ../../..
+          sha256sum ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+
+      - name: Create archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd target/${{ matrix.target }}/release
+          Compress-Archive -Path ${{ matrix.artifact }} -DestinationPath ../../../${{ matrix.archive }}
+          cd ../../..
+          $hash = (Get-FileHash ${{ matrix.archive }} -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.archive }}" | Out-File -Encoding ASCII ${{ matrix.archive }}.sha256
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
+
+  build-wasm:
+    name: Build WASM
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,12 +137,39 @@ jobs:
           SIZE=$(stat -c%s target/wasm32-unknown-unknown/release/flagd_evaluator.wasm)
           echo "WASM file size: $SIZE bytes ($(echo "scale=2; $SIZE / 1024" | bc) KB)"
 
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: |
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm.sha256
+
+  create-release:
+    name: Create Release
+    needs: [build-cli, build-wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
-            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm.sha256
+          files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true
         env:
