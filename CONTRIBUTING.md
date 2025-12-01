@@ -9,6 +9,7 @@ Thank you for your interest in contributing to flagd-evaluator! This document pr
 - [Building the Project](#building-the-project)
 - [Testing](#testing)
 - [Code Style Guidelines](#code-style-guidelines)
+- [Commit Message Guidelines](#commit-message-guidelines)
 - [Pull Request Process](#pull-request-process)
 - [Reporting Issues](#reporting-issues)
 
@@ -182,6 +183,61 @@ unsafe {
 - Avoid unwrap() in production code - use proper error handling
 - Add comments for complex logic
 
+## Commit Message Guidelines
+
+We follow [Conventional Commits](https://www.conventionalcommits.org/) for commit messages. This enables automated changelog generation and semantic versioning via [Release Please](https://github.com/googleapis/release-please).
+
+### Commit Message Format
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+### Types
+
+**Types that trigger releases:**
+- `feat:` - New feature (minor version bump)
+- `fix:` - Bug fix (patch version bump)
+- `feat!:` or `BREAKING CHANGE:` - Breaking change (major version bump)
+- `perf:` - Performance improvement (patch version bump)
+
+**Types that don't trigger releases (changelog only):**
+- `docs:` - Documentation changes
+- `chore:` - Maintenance tasks
+- `test:` - Test updates
+- `ci:` - CI/CD changes
+- `refactor:` - Code refactoring
+- `style:` - Code style/formatting
+- `build:` - Build system changes
+
+### Examples
+
+```bash
+# Patch release (0.1.0 -> 0.1.1)
+git commit -m "fix(operators): correct fractional operator bucket distribution"
+
+# Minor release (0.1.0 -> 0.2.0)
+git commit -m "feat(operators): add sem_ver operator for semantic versioning"
+
+# Major release (0.1.0 -> 1.0.0)
+git commit -m "feat(api)!: redesign evaluation API with breaking changes
+
+BREAKING CHANGE: evaluate() now returns Result<Value> instead of Value"
+
+# With scope and body
+git commit -m "feat(wasm): add memory optimization for large rules
+
+Implements chunked memory allocation for evaluating rules that
+exceed the default memory limit."
+
+# Documentation (no release)
+git commit -m "docs: update API examples in README"
+```
+
 ## Pull Request Process
 
 ### Before Submitting
@@ -208,7 +264,7 @@ unsafe {
    cargo build --target wasm32-unknown-unknown --release
    ```
 
-5. **Commit with meaningful messages**
+5. **Commit with meaningful messages** (see [Commit Message Guidelines](#commit-message-guidelines))
    ```
    feat: add support for custom operator X
    
