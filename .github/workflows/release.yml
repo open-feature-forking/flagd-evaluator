@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*.*.*'
 
@@ -10,10 +12,28 @@ env:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
   build-cli:
     name: Build CLI (${{ matrix.target }})
+    needs: release-please
+    if: always() && (needs.release-please.outputs.release_created == 'true' || startsWith(github.ref, 'refs/tags/'))
     strategy:
       matrix:
         include:
@@ -86,6 +106,8 @@ jobs:
 
   build-wasm:
     name: Build WASM
+    needs: release-please
+    if: always() && (needs.release-please.outputs.release_created == 'true' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -147,7 +169,8 @@ jobs:
 
   create-release:
     name: Create Release
-    needs: [build-cli, build-wasm]
+    needs: [release-please, build-cli, build-wasm]
+    if: always() && (needs.release-please.outputs.release_created == 'true' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     steps:
       - name: Download CLI artifacts
@@ -169,6 +192,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.release-please.outputs.tag_name || github.ref_name }}
           files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true
