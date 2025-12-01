@@ -470,11 +470,10 @@ cargo test
 ### Release Build
 
 ```bash
-# Basic release build
+# Build the WASM binary
 cargo build --target wasm32-unknown-unknown --release
 
-# With wasm-opt optimization (recommended)
-cargo build --target wasm32-unknown-unknown --release
+# Apply wasm-opt optimization (recommended, ~12% size reduction)
 wasm-opt -Oz --enable-bulk-memory --enable-sign-ext --enable-nontrapping-float-to-int \
   target/wasm32-unknown-unknown/release/flagd_evaluator.wasm \
   -o target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm
