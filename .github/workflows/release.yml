@@ -39,23 +39,19 @@ jobs:
       - name: Build WASM
         run: cargo build --target wasm32-unknown-unknown --release
 
-      - name: Install wasm-opt (optional optimization)
-        continue-on-error: true
+      - name: Install wasm-opt
         run: |
-          cargo install wasm-opt --locked || true
+          curl -L https://github.com/WebAssembly/binaryen/releases/download/version_118/binaryen-version_118-x86_64-linux.tar.gz | tar xz -C /tmp
+          echo "/tmp/binaryen-version_118/bin" >> $GITHUB_PATH
 
-      - name: Optimize WASM (if wasm-opt available)
-        continue-on-error: true
+      - name: Optimize WASM
         run: |
-          if command -v wasm-opt &> /dev/null; then
-            wasm-opt -Oz -o target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
-              target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
-            mv target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
-              target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
-            echo "WASM optimized with wasm-opt"
-          else
-            echo "wasm-opt not available, skipping optimization"
-          fi
+          wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
+            -o target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
+          mv target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
+            target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
+          echo "WASM optimized with wasm-opt"
 
       - name: Generate checksums
         run: |
