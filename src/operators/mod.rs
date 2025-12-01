@@ -5,4 +5,4 @@
 
 pub mod custom;
 
-pub use custom::fractional;
+pub use custom::{ends_with, fractional, sem_ver, starts_with, SemVer};

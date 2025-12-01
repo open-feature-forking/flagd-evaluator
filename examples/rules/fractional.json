@@ -1,0 +1,6 @@
+{
+  "fractional": [
+    {"var": "userId"},
+    ["control", 50, "treatment", 50]
+  ]
+}

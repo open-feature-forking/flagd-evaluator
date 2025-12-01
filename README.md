@@ -39,6 +39,70 @@ The WASM file will be at: `target/wasm32-unknown-unknown/release/flagd_evaluator
 cargo test
 ```
 
+## CLI Tool
+
+A command-line interface is available for testing and debugging JSON Logic rules without requiring WASM compilation or Java integration.
+
+### Installing the CLI
+
+```bash
+# Build from source
+cargo build --release
+
+# The binary will be at: target/release/flagd-eval
+# Or install directly:
+cargo install --path .
+```
+
+### CLI Commands
+
+#### Evaluate a Rule
+
+```bash
+# Inline JSON
+flagd-eval eval --rule '{"==": [1, 1]}' --data '{}'
+
+# File-based (use @ prefix)
+flagd-eval eval --rule @examples/rules/basic.json --data '{"age": 25}'
+
+# With pretty output
+flagd-eval eval --rule '{"var": "user"}' --data '{"user": {"name": "Alice"}}' --pretty
+```
+
+#### Run Test Suites
+
+```bash
+# Run a test suite
+flagd-eval test examples/rules/test-suite.json
+
+# With verbose output
+flagd-eval test examples/rules/test-suite.json --verbose
+```
+
+#### List Operators
+
+```bash
+flagd-eval operators
+```
+
+### Test Suite Format
+
+Create JSON test suites to validate your rules:
+
+```json
+{
+  "name": "My Test Suite",
+  "tests": [
+    {
+      "description": "Check adult age",
+      "rule": {">=": [{"var": "age"}, 18]},
+      "data": {"age": 25},
+      "expected": true
+    }
+  ]
+}
+```
+
 ## Installation
 
 ### From Release
@@ -186,6 +250,8 @@ println!("{}", result_str);
 
 ## Custom Operators
 
+This library implements all flagd custom operators for feature flag evaluation. See the [flagd Custom Operations Specification](https://flagd.dev/reference/specifications/custom-operations/) for the full specification.
+
 ### fractional
 
 The `fractional` operator provides consistent hashing for A/B testing and feature flag rollouts. It uses MurmurHash3 to consistently assign the same key to the same bucket.
@@ -216,6 +282,105 @@ The `fractional` operator provides consistent hashing for A/B testing and featur
 - **Consistent**: Same bucket key always returns the same bucket
 - **Deterministic**: Results are reproducible across different invocations
 - **Uniform Distribution**: Keys are evenly distributed across buckets according to weights
+
+### starts_with
+
+The `starts_with` operator checks if a string starts with a specific prefix. The comparison is case-sensitive.
+
+**Syntax:**
+```json
+{"starts_with": [<string_value>, <prefix>]}
+```
+
+**Parameters:**
+- `string_value`: A string or `{"var": "path"}` reference to the value to check
+- `prefix`: A string or `{"var": "path"}` reference to the prefix to search for
+
+**Examples:**
+
+```json
+// Check if email starts with "admin@"
+{"starts_with": [{"var": "email"}, "admin@"]}
+
+// Check if path starts with "/api/"
+{"starts_with": [{"var": "path"}, "/api/"]}
+```
+
+**Properties:**
+- **Case-sensitive**: "Hello" does not start with "hello"
+- **Empty prefix**: An empty prefix always returns true
+
+### ends_with
+
+The `ends_with` operator checks if a string ends with a specific suffix. The comparison is case-sensitive.
+
+**Syntax:**
+```json
+{"ends_with": [<string_value>, <suffix>]}
+```
+
+**Parameters:**
+- `string_value`: A string or `{"var": "path"}` reference to the value to check
+- `suffix`: A string or `{"var": "path"}` reference to the suffix to search for
+
+**Examples:**
+
+```json
+// Check if filename ends with ".pdf"
+{"ends_with": [{"var": "filename"}, ".pdf"]}
+
+// Check if URL ends with ".com"
+{"ends_with": [{"var": "url"}, ".com"]}
+```
+
+**Properties:**
+- **Case-sensitive**: "Hello.PDF" does not end with ".pdf"
+- **Empty suffix**: An empty suffix always returns true
+
+### sem_ver
+
+The `sem_ver` operator compares semantic versions according to the [semver.org](https://semver.org/) specification. It supports all standard comparison operators plus caret (^) and tilde (~) ranges.
+
+**Syntax:**
+```json
+{"sem_ver": [<version>, <operator>, <target_version>]}
+```
+
+**Parameters:**
+- `version`: A version string or `{"var": "path"}` reference
+- `operator`: One of `"="`, `"!="`, `"<"`, `"<="`, `">"`, `">="`, `"^"`, `"~"`
+- `target_version`: The version to compare against
+
+**Operators:**
+| Operator | Description |
+|----------|-------------|
+| `"="` | Equal to |
+| `"!="` | Not equal to |
+| `"<"` | Less than |
+| `"<="` | Less than or equal to |
+| `">"` | Greater than |
+| `">="` | Greater than or equal to |
+| `"^"` | Caret range (allows minor and patch updates) |
+| `"~"` | Tilde range (allows patch updates only) |
+
+**Examples:**
+
+```json
+// Check if version is greater than or equal to 2.0.0
+{"sem_ver": [{"var": "app.version"}, ">=", "2.0.0"]}
+
+// Caret range: ^1.2.3 means >=1.2.3 <2.0.0
+{"sem_ver": [{"var": "version"}, "^", "1.2.3"]}
+
+// Tilde range: ~1.2.3 means >=1.2.3 <1.3.0
+{"sem_ver": [{"var": "version"}, "~", "1.2.3"]}
+```
+
+**Version Handling:**
+- Supports versions with prerelease tags (e.g., "1.0.0-alpha.1")
+- Supports versions with build metadata (e.g., "1.0.0+build.123")
+- Missing minor/patch versions are treated as 0 (e.g., "1.2" = "1.2.0")
+- Prerelease versions have lower precedence than release versions
 
 ## Memory Model & Safety
 

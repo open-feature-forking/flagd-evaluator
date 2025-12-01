@@ -1,10 +1,15 @@
 //! Custom operator implementations for feature flag evaluation.
 //!
 //! This module contains the implementation of custom operators that extend
-//! JSON Logic for feature flag use cases. The primary operator is `fractional`,
-//! which provides consistent hashing for A/B testing scenarios.
+//! JSON Logic for feature flag use cases. These operators include:
+//!
+//! - `fractional`: Consistent hashing for A/B testing scenarios
+//! - `starts_with`: String prefix matching
+//! - `ends_with`: String suffix matching
+//! - `sem_ver`: Semantic version comparison
 
 use serde_json::Value;
+use std::cmp::Ordering;
 
 /// MurmurHash3 32-bit implementation for consistent hashing.
 ///
@@ -159,6 +164,266 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
     Err("Failed to select bucket".to_string())
 }
 
+/// Evaluates the starts_with operator for string prefix matching.
+///
+/// The starts_with operator checks if a string starts with a specific prefix.
+/// The comparison is case-sensitive.
+///
+/// # Arguments
+/// * `string_value` - The string to check
+/// * `prefix` - The prefix to search for
+///
+/// # Returns
+/// `true` if the string starts with the prefix, `false` otherwise
+///
+/// # Example
+/// ```json
+/// {"starts_with": [{"var": "email"}, "admin@"]}
+/// ```
+/// Returns `true` if email is "admin@example.com"
+pub fn starts_with(string_value: &str, prefix: &str) -> bool {
+    string_value.starts_with(prefix)
+}
+
+/// Evaluates the ends_with operator for string suffix matching.
+///
+/// The ends_with operator checks if a string ends with a specific suffix.
+/// The comparison is case-sensitive.
+///
+/// # Arguments
+/// * `string_value` - The string to check
+/// * `suffix` - The suffix to search for
+///
+/// # Returns
+/// `true` if the string ends with the suffix, `false` otherwise
+///
+/// # Example
+/// ```json
+/// {"ends_with": [{"var": "filename"}, ".pdf"]}
+/// ```
+/// Returns `true` if filename is "document.pdf"
+pub fn ends_with(string_value: &str, suffix: &str) -> bool {
+    string_value.ends_with(suffix)
+}
+
+/// Represents a parsed semantic version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemVer {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+    pub prerelease: Option<String>,
+    pub build_metadata: Option<String>,
+}
+
+impl SemVer {
+    /// Parses a semantic version string.
+    ///
+    /// Handles versions like:
+    /// - "1.2.3"
+    /// - "1.2" (treated as "1.2.0")
+    /// - "1" (treated as "1.0.0")
+    /// - "1.2.3-alpha.1" (with prerelease)
+    /// - "1.2.3+build.123" (with build metadata)
+    /// - "1.2.3-alpha.1+build.123" (with both)
+    pub fn parse(version: &str) -> Result<Self, String> {
+        let version = version.trim();
+        if version.is_empty() {
+            return Err("Version string cannot be empty".to_string());
+        }
+
+        // Remove leading 'v' or 'V' if present (common in version tags)
+        let version = version
+            .strip_prefix('v')
+            .or_else(|| version.strip_prefix('V'))
+            .unwrap_or(version);
+
+        // Split off build metadata first (after '+')
+        let (version_pre, build_metadata) = match version.split_once('+') {
+            Some((v, b)) => (v, Some(b.to_string())),
+            None => (version, None),
+        };
+
+        // Split off prerelease (after '-')
+        let (version_core, prerelease) = match version_pre.split_once('-') {
+            Some((v, p)) => (v, Some(p.to_string())),
+            None => (version_pre, None),
+        };
+
+        // Parse the version core (major.minor.patch)
+        let parts: Vec<&str> = version_core.split('.').collect();
+        if parts.is_empty() || parts.len() > 3 {
+            return Err(format!("Invalid version format: {}", version));
+        }
+
+        let major = parts[0]
+            .parse::<u64>()
+            .map_err(|_| format!("Invalid major version: {}", parts[0]))?;
+
+        let minor = if parts.len() > 1 {
+            parts[1]
+                .parse::<u64>()
+                .map_err(|_| format!("Invalid minor version: {}", parts[1]))?
+        } else {
+            0
+        };
+
+        let patch = if parts.len() > 2 {
+            parts[2]
+                .parse::<u64>()
+                .map_err(|_| format!("Invalid patch version: {}", parts[2]))?
+        } else {
+            0
+        };
+
+        Ok(SemVer {
+            major,
+            minor,
+            patch,
+            prerelease,
+            build_metadata,
+        })
+    }
+
+    /// Compares two prerelease strings according to semver spec.
+    /// Returns Ordering based on prerelease precedence.
+    fn compare_prerelease(a: &Option<String>, b: &Option<String>) -> Ordering {
+        match (a, b) {
+            // No prerelease has higher precedence than any prerelease
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(a_pre), Some(b_pre)) => {
+                let a_parts: Vec<&str> = a_pre.split('.').collect();
+                let b_parts: Vec<&str> = b_pre.split('.').collect();
+
+                for (a_part, b_part) in a_parts.iter().zip(b_parts.iter()) {
+                    let a_num = a_part.parse::<u64>();
+                    let b_num = b_part.parse::<u64>();
+
+                    let cmp = match (a_num, b_num) {
+                        // Both numeric: compare numerically
+                        (Ok(a_n), Ok(b_n)) => a_n.cmp(&b_n),
+                        // Numeric has lower precedence than alphanumeric
+                        (Ok(_), Err(_)) => Ordering::Less,
+                        (Err(_), Ok(_)) => Ordering::Greater,
+                        // Both alphanumeric: compare lexically
+                        (Err(_), Err(_)) => a_part.cmp(b_part),
+                    };
+
+                    if cmp != Ordering::Equal {
+                        return cmp;
+                    }
+                }
+
+                // If all compared parts are equal, the one with more parts is greater
+                a_parts.len().cmp(&b_parts.len())
+            }
+        }
+    }
+}
+
+impl Ord for SemVer {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Compare major, minor, patch first
+        match self.major.cmp(&other.major) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+        match self.minor.cmp(&other.minor) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+        match self.patch.cmp(&other.patch) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+
+        // Compare prerelease (build metadata is ignored for precedence)
+        SemVer::compare_prerelease(&self.prerelease, &other.prerelease)
+    }
+}
+
+impl PartialOrd for SemVer {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Evaluates the sem_ver operator for semantic version comparison.
+///
+/// The sem_ver operator compares semantic versions according to the
+/// [semver.org](https://semver.org/) specification.
+///
+/// # Arguments
+/// * `version` - The version string to compare
+/// * `operator` - The comparison operator ("=", "!=", "<", "<=", ">", ">=", "^", "~")
+/// * `target` - The target version to compare against
+///
+/// # Returns
+/// `true` if the comparison is satisfied, `false` otherwise
+///
+/// # Supported Operators
+/// - `"="` - Equal to
+/// - `"!="` - Not equal to
+/// - `"<"` - Less than
+/// - `"<="` - Less than or equal to
+/// - `">"` - Greater than
+/// - `">="` - Greater than or equal to
+/// - `"^"` - Caret range (compatible with - allows patch and minor updates)
+/// - `"~"` - Tilde range (allows patch updates only)
+///
+/// # Example
+/// ```json
+/// {"sem_ver": [{"var": "version"}, ">=", "2.0.0"]}
+/// ```
+/// Returns `true` if version is "2.0.0" or higher
+pub fn sem_ver(version: &str, operator: &str, target: &str) -> Result<bool, String> {
+    let version = SemVer::parse(version)?;
+    let target = SemVer::parse(target)?;
+
+    let result = match operator {
+        "=" => version.cmp(&target) == Ordering::Equal,
+        "!=" => version.cmp(&target) != Ordering::Equal,
+        "<" => version.cmp(&target) == Ordering::Less,
+        "<=" => version.cmp(&target) != Ordering::Greater,
+        ">" => version.cmp(&target) == Ordering::Greater,
+        ">=" => version.cmp(&target) != Ordering::Less,
+        "^" => {
+            // Caret range: >=target <next-major (or <next-minor if major is 0)
+            // ^1.2.3 means >=1.2.3 <2.0.0
+            // ^0.2.3 means >=0.2.3 <0.3.0
+            // ^0.0.3 means >=0.0.3 <0.0.4
+            if version.cmp(&target) == Ordering::Less {
+                false
+            } else if target.major == 0 {
+                if target.minor == 0 {
+                    // ^0.0.x allows only patch changes to same patch
+                    version.major == 0 && version.minor == 0 && version.patch == target.patch
+                } else {
+                    // ^0.x.y allows patch changes, same minor
+                    version.major == 0 && version.minor == target.minor
+                }
+            } else {
+                // ^x.y.z allows minor and patch changes, same major
+                version.major == target.major
+            }
+        }
+        "~" => {
+            // Tilde range: allows patch updates only
+            // ~1.2.3 means >=1.2.3 <1.3.0
+            if version.cmp(&target) == Ordering::Less {
+                false
+            } else {
+                version.major == target.major && version.minor == target.minor
+            }
+        }
+        _ => return Err(format!("Unknown operator: {}", operator)),
+    };
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +522,309 @@ mod tests {
         let buckets = vec![json!("bucket"), json!("not-a-number")];
         let result = fractional("user-123", &buckets);
         assert!(result.is_err());
+    }
+
+    // ============================================================================
+    // starts_with tests
+    // ============================================================================
+
+    #[test]
+    fn test_starts_with_basic() {
+        assert!(starts_with("hello world", "hello"));
+        assert!(starts_with("admin@example.com", "admin@"));
+        assert!(!starts_with("hello world", "world"));
+    }
+
+    #[test]
+    fn test_starts_with_empty_prefix() {
+        // Empty prefix should always return true
+        assert!(starts_with("hello", ""));
+        assert!(starts_with("", ""));
+    }
+
+    #[test]
+    fn test_starts_with_empty_string() {
+        // Non-empty prefix with empty string should return false
+        assert!(!starts_with("", "hello"));
+    }
+
+    #[test]
+    fn test_starts_with_case_sensitive() {
+        assert!(starts_with("/api/users", "/api/"));
+        assert!(!starts_with("/API/users", "/api/"));
+    }
+
+    #[test]
+    fn test_starts_with_exact_match() {
+        assert!(starts_with("hello", "hello"));
+    }
+
+    #[test]
+    fn test_starts_with_prefix_longer_than_string() {
+        assert!(!starts_with("hi", "hello"));
+    }
+
+    // ============================================================================
+    // ends_with tests
+    // ============================================================================
+
+    #[test]
+    fn test_ends_with_basic() {
+        assert!(ends_with("hello world", "world"));
+        assert!(ends_with("document.pdf", ".pdf"));
+        assert!(!ends_with("hello world", "hello"));
+    }
+
+    #[test]
+    fn test_ends_with_empty_suffix() {
+        // Empty suffix should always return true
+        assert!(ends_with("hello", ""));
+        assert!(ends_with("", ""));
+    }
+
+    #[test]
+    fn test_ends_with_empty_string() {
+        // Non-empty suffix with empty string should return false
+        assert!(!ends_with("", "hello"));
+    }
+
+    #[test]
+    fn test_ends_with_case_sensitive() {
+        assert!(ends_with("https://example.com", ".com"));
+        assert!(!ends_with("https://example.COM", ".com"));
+    }
+
+    #[test]
+    fn test_ends_with_exact_match() {
+        assert!(ends_with("hello", "hello"));
+    }
+
+    #[test]
+    fn test_ends_with_suffix_longer_than_string() {
+        assert!(!ends_with("hi", "hello"));
+    }
+
+    // ============================================================================
+    // SemVer parsing tests
+    // ============================================================================
+
+    #[test]
+    fn test_semver_parse_basic() {
+        let v = SemVer::parse("1.2.3").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+        assert_eq!(v.prerelease, None);
+        assert_eq!(v.build_metadata, None);
+    }
+
+    #[test]
+    fn test_semver_parse_missing_parts() {
+        // Missing patch
+        let v = SemVer::parse("1.2").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 0);
+
+        // Missing minor and patch
+        let v = SemVer::parse("1").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 0);
+    }
+
+    #[test]
+    fn test_semver_parse_with_prerelease() {
+        let v = SemVer::parse("1.2.3-alpha.1").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+        assert_eq!(v.prerelease, Some("alpha.1".to_string()));
+        assert_eq!(v.build_metadata, None);
+    }
+
+    #[test]
+    fn test_semver_parse_with_build_metadata() {
+        let v = SemVer::parse("1.2.3+build.123").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+        assert_eq!(v.prerelease, None);
+        assert_eq!(v.build_metadata, Some("build.123".to_string()));
+    }
+
+    #[test]
+    fn test_semver_parse_with_prerelease_and_build() {
+        let v = SemVer::parse("1.2.3-alpha.1+build.123").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+        assert_eq!(v.prerelease, Some("alpha.1".to_string()));
+        assert_eq!(v.build_metadata, Some("build.123".to_string()));
+    }
+
+    #[test]
+    fn test_semver_parse_with_v_prefix() {
+        let v = SemVer::parse("v1.2.3").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+    }
+
+    #[test]
+    fn test_semver_parse_empty() {
+        assert!(SemVer::parse("").is_err());
+    }
+
+    #[test]
+    fn test_semver_parse_invalid() {
+        assert!(SemVer::parse("not.a.version").is_err());
+        assert!(SemVer::parse("1.2.3.4").is_err());
+    }
+
+    // ============================================================================
+    // SemVer comparison tests
+    // ============================================================================
+
+    #[test]
+    fn test_semver_comparison_basic() {
+        let v1 = SemVer::parse("1.0.0").unwrap();
+        let v2 = SemVer::parse("2.0.0").unwrap();
+        assert!(v1 < v2);
+
+        let v1 = SemVer::parse("1.1.0").unwrap();
+        let v2 = SemVer::parse("1.2.0").unwrap();
+        assert!(v1 < v2);
+
+        let v1 = SemVer::parse("1.0.1").unwrap();
+        let v2 = SemVer::parse("1.0.2").unwrap();
+        assert!(v1 < v2);
+    }
+
+    #[test]
+    fn test_semver_comparison_prerelease() {
+        // Prerelease has lower precedence than release
+        let v1 = SemVer::parse("1.0.0-alpha").unwrap();
+        let v2 = SemVer::parse("1.0.0").unwrap();
+        assert!(v1 < v2);
+
+        // Compare prereleases
+        let v1 = SemVer::parse("1.0.0-alpha").unwrap();
+        let v2 = SemVer::parse("1.0.0-alpha.1").unwrap();
+        assert!(v1 < v2);
+
+        let v1 = SemVer::parse("1.0.0-alpha.1").unwrap();
+        let v2 = SemVer::parse("1.0.0-alpha.2").unwrap();
+        assert!(v1 < v2);
+
+        let v1 = SemVer::parse("1.0.0-alpha").unwrap();
+        let v2 = SemVer::parse("1.0.0-beta").unwrap();
+        assert!(v1 < v2);
+    }
+
+    // ============================================================================
+    // sem_ver operator tests
+    // ============================================================================
+
+    #[test]
+    fn test_sem_ver_equal() {
+        assert!(sem_ver("1.2.3", "=", "1.2.3").unwrap());
+        assert!(!sem_ver("1.2.3", "=", "1.2.4").unwrap());
+        assert!(!sem_ver("1.2.3", "=", "2.2.3").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_not_equal() {
+        assert!(sem_ver("1.2.3", "!=", "1.2.4").unwrap());
+        assert!(!sem_ver("1.2.3", "!=", "1.2.3").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_less_than() {
+        assert!(sem_ver("1.2.3", "<", "1.2.4").unwrap());
+        assert!(sem_ver("1.2.3", "<", "1.3.0").unwrap());
+        assert!(sem_ver("1.2.3", "<", "2.0.0").unwrap());
+        assert!(!sem_ver("1.2.3", "<", "1.2.3").unwrap());
+        assert!(!sem_ver("1.2.4", "<", "1.2.3").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_less_than_or_equal() {
+        assert!(sem_ver("1.2.3", "<=", "1.2.3").unwrap());
+        assert!(sem_ver("1.2.3", "<=", "1.2.4").unwrap());
+        assert!(!sem_ver("1.2.4", "<=", "1.2.3").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_greater_than() {
+        assert!(sem_ver("1.2.4", ">", "1.2.3").unwrap());
+        assert!(sem_ver("1.3.0", ">", "1.2.3").unwrap());
+        assert!(sem_ver("2.0.0", ">", "1.2.3").unwrap());
+        assert!(!sem_ver("1.2.3", ">", "1.2.3").unwrap());
+        assert!(!sem_ver("1.2.3", ">", "1.2.4").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_greater_than_or_equal() {
+        assert!(sem_ver("1.2.3", ">=", "1.2.3").unwrap());
+        assert!(sem_ver("1.2.4", ">=", "1.2.3").unwrap());
+        assert!(!sem_ver("1.2.3", ">=", "1.2.4").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_caret_range() {
+        // ^1.2.3 means >=1.2.3 <2.0.0
+        assert!(sem_ver("1.2.3", "^", "1.2.3").unwrap());
+        assert!(sem_ver("1.2.4", "^", "1.2.3").unwrap());
+        assert!(sem_ver("1.9.0", "^", "1.2.3").unwrap());
+        assert!(!sem_ver("2.0.0", "^", "1.2.3").unwrap());
+        assert!(!sem_ver("1.2.2", "^", "1.2.3").unwrap());
+
+        // ^0.2.3 means >=0.2.3 <0.3.0
+        assert!(sem_ver("0.2.3", "^", "0.2.3").unwrap());
+        assert!(sem_ver("0.2.9", "^", "0.2.3").unwrap());
+        assert!(!sem_ver("0.3.0", "^", "0.2.3").unwrap());
+        assert!(!sem_ver("1.0.0", "^", "0.2.3").unwrap());
+
+        // ^0.0.3 means >=0.0.3 <0.0.4 (very strict)
+        assert!(sem_ver("0.0.3", "^", "0.0.3").unwrap());
+        assert!(!sem_ver("0.0.4", "^", "0.0.3").unwrap());
+        assert!(!sem_ver("0.1.0", "^", "0.0.3").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_tilde_range() {
+        // ~1.2.3 means >=1.2.3 <1.3.0
+        assert!(sem_ver("1.2.3", "~", "1.2.3").unwrap());
+        assert!(sem_ver("1.2.9", "~", "1.2.3").unwrap());
+        assert!(!sem_ver("1.3.0", "~", "1.2.3").unwrap());
+        assert!(!sem_ver("1.2.2", "~", "1.2.3").unwrap());
+        assert!(!sem_ver("2.0.0", "~", "1.2.3").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_with_prerelease() {
+        // Prerelease versions
+        assert!(sem_ver("1.0.0-alpha", "<", "1.0.0").unwrap());
+        assert!(sem_ver("1.0.0-alpha", "<", "1.0.0-beta").unwrap());
+        assert!(sem_ver("1.0.0", ">", "1.0.0-alpha").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_with_missing_parts() {
+        // Missing parts should be treated as 0
+        assert!(sem_ver("1.2", "=", "1.2.0").unwrap());
+        assert!(sem_ver("1", "=", "1.0.0").unwrap());
+    }
+
+    #[test]
+    fn test_sem_ver_unknown_operator() {
+        assert!(sem_ver("1.2.3", "??", "1.2.3").is_err());
+    }
+
+    #[test]
+    fn test_sem_ver_invalid_version() {
+        assert!(sem_ver("not.a.version", "=", "1.2.3").is_err());
+        assert!(sem_ver("1.2.3", "=", "not.a.version").is_err());
     }
 }

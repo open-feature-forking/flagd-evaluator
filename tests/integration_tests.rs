@@ -10,6 +10,44 @@
 use flagd_evaluator::{alloc, dealloc, pack_ptr_len, unpack_ptr_len, EvaluationResponse};
 use serde_json::json;
 
+/// Helper function to resolve a string value from a JSON value.
+/// Handles both direct string values and variable references.
+fn resolve_string_value(
+    value: &serde_json::Value,
+    data: &serde_json::Value,
+) -> Result<String, String> {
+    match value {
+        serde_json::Value::String(s) => Ok(s.clone()),
+        serde_json::Value::Object(obj) if obj.contains_key("var") => {
+            let var_path = match obj.get("var").and_then(|v| v.as_str()) {
+                Some(s) => s,
+                None => return Err("var reference must be a string".to_string()),
+            };
+
+            let mut current = data;
+            for part in var_path.split('.') {
+                current = match current.get(part) {
+                    Some(v) => v,
+                    None => return Err(format!("Variable '{}' not found", var_path)),
+                };
+            }
+
+            match current {
+                serde_json::Value::String(s) => Ok(s.clone()),
+                serde_json::Value::Number(n) => Ok(n.to_string()),
+                serde_json::Value::Null => Ok(String::new()),
+                _ => Err(format!(
+                    "Variable '{}' must be a string or number",
+                    var_path
+                )),
+            }
+        }
+        serde_json::Value::Number(n) => Ok(n.to_string()),
+        serde_json::Value::Null => Ok(String::new()),
+        _ => Err("Value must be a string, number, null, or var reference".to_string()),
+    }
+}
+
 /// Helper function to evaluate JSON Logic and get the response.
 /// This tests the internal logic without going through the WASM pointer packing
 /// which doesn't work correctly on 64-bit native systems.
@@ -31,45 +69,9 @@ fn evaluate(rule: &str, data: &str) -> EvaluationResponse {
         if let Some(args_array) = fractional_args.as_array() {
             if args_array.len() >= 2 {
                 // Extract bucket key
-                let bucket_key = match &args_array[0] {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Object(obj) if obj.contains_key("var") => {
-                        let var_path = match obj.get("var").and_then(|v| v.as_str()) {
-                            Some(s) => s,
-                            None => {
-                                return EvaluationResponse::error("var reference must be a string")
-                            }
-                        };
-
-                        let mut current = &data_value;
-                        for part in var_path.split('.') {
-                            current = match current.get(part) {
-                                Some(v) => v,
-                                None => {
-                                    return EvaluationResponse::error(format!(
-                                        "Variable '{}' not found",
-                                        var_path
-                                    ))
-                                }
-                            };
-                        }
-
-                        match current {
-                            serde_json::Value::String(s) => s.clone(),
-                            serde_json::Value::Number(n) => n.to_string(),
-                            _ => {
-                                return EvaluationResponse::error(
-                                    "Variable must be a string or number",
-                                )
-                            }
-                        }
-                    }
-                    serde_json::Value::Number(n) => n.to_string(),
-                    _ => {
-                        return EvaluationResponse::error(
-                            "First argument must be a string, number, or var reference",
-                        )
-                    }
+                let bucket_key = match resolve_string_value(&args_array[0], &data_value) {
+                    Ok(s) => s,
+                    Err(e) => return EvaluationResponse::error(e),
                 };
 
                 // Extract buckets
@@ -87,6 +89,79 @@ fn evaluate(rule: &str, data: &str) -> EvaluationResponse {
         }
         return EvaluationResponse::error(
             "fractional operator requires an array with at least 2 elements",
+        );
+    }
+
+    // Check for custom starts_with operator
+    if let Some(args) = rule_value.get("starts_with") {
+        if let Some(args_array) = args.as_array() {
+            if args_array.len() >= 2 {
+                let string_value = match resolve_string_value(&args_array[0], &data_value) {
+                    Ok(s) => s,
+                    Err(e) => return EvaluationResponse::error(e),
+                };
+                let prefix = match resolve_string_value(&args_array[1], &data_value) {
+                    Ok(s) => s,
+                    Err(e) => return EvaluationResponse::error(e),
+                };
+                return EvaluationResponse::success(serde_json::Value::Bool(
+                    flagd_evaluator::starts_with(&string_value, &prefix),
+                ));
+            }
+        }
+        return EvaluationResponse::error(
+            "starts_with operator requires an array with at least 2 elements",
+        );
+    }
+
+    // Check for custom ends_with operator
+    if let Some(args) = rule_value.get("ends_with") {
+        if let Some(args_array) = args.as_array() {
+            if args_array.len() >= 2 {
+                let string_value = match resolve_string_value(&args_array[0], &data_value) {
+                    Ok(s) => s,
+                    Err(e) => return EvaluationResponse::error(e),
+                };
+                let suffix = match resolve_string_value(&args_array[1], &data_value) {
+                    Ok(s) => s,
+                    Err(e) => return EvaluationResponse::error(e),
+                };
+                return EvaluationResponse::success(serde_json::Value::Bool(
+                    flagd_evaluator::ends_with(&string_value, &suffix),
+                ));
+            }
+        }
+        return EvaluationResponse::error(
+            "ends_with operator requires an array with at least 2 elements",
+        );
+    }
+
+    // Check for custom sem_ver operator
+    if let Some(args) = rule_value.get("sem_ver") {
+        if let Some(args_array) = args.as_array() {
+            if args_array.len() >= 3 {
+                let version = match resolve_string_value(&args_array[0], &data_value) {
+                    Ok(s) => s,
+                    Err(e) => return EvaluationResponse::error(e),
+                };
+                let operator = match args_array[1].as_str() {
+                    Some(s) => s,
+                    None => return EvaluationResponse::error("sem_ver operator must be a string"),
+                };
+                let target = match resolve_string_value(&args_array[2], &data_value) {
+                    Ok(s) => s,
+                    Err(e) => return EvaluationResponse::error(e),
+                };
+                match flagd_evaluator::sem_ver(&version, operator, &target) {
+                    Ok(result) => {
+                        return EvaluationResponse::success(serde_json::Value::Bool(result))
+                    }
+                    Err(e) => return EvaluationResponse::error(e),
+                }
+            }
+        }
+        return EvaluationResponse::error(
+            "sem_ver operator requires an array with at least 3 elements",
         );
     }
 
@@ -555,4 +630,266 @@ fn test_response_serialization() {
     let json_str = error.to_json_string();
     assert!(json_str.contains(r#""success":false"#));
     assert!(json_str.contains(r#""error":"test error""#));
+}
+
+// ============================================================================
+// Custom starts_with Operator
+// ============================================================================
+
+#[test]
+fn test_starts_with_operator_basic() {
+    let response = evaluate(
+        r#"{"starts_with": [{"var": "email"}, "admin@"]}"#,
+        r#"{"email": "admin@example.com"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_starts_with_operator_false() {
+    let response = evaluate(
+        r#"{"starts_with": [{"var": "email"}, "admin@"]}"#,
+        r#"{"email": "user@example.com"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(false)));
+}
+
+#[test]
+fn test_starts_with_operator_literal() {
+    let response = evaluate(r#"{"starts_with": ["/api/users", "/api/"]}"#, "{}");
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_starts_with_operator_empty_prefix() {
+    let response = evaluate(r#"{"starts_with": ["hello", ""]}"#, "{}");
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_starts_with_operator_case_sensitive() {
+    let response = evaluate(r#"{"starts_with": ["/API/users", "/api/"]}"#, "{}");
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(false)));
+}
+
+// ============================================================================
+// Custom ends_with Operator
+// ============================================================================
+
+#[test]
+fn test_ends_with_operator_basic() {
+    let response = evaluate(
+        r#"{"ends_with": [{"var": "filename"}, ".pdf"]}"#,
+        r#"{"filename": "document.pdf"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_ends_with_operator_false() {
+    let response = evaluate(
+        r#"{"ends_with": [{"var": "filename"}, ".pdf"]}"#,
+        r#"{"filename": "document.docx"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(false)));
+}
+
+#[test]
+fn test_ends_with_operator_literal() {
+    let response = evaluate(r#"{"ends_with": ["https://example.com", ".com"]}"#, "{}");
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_ends_with_operator_empty_suffix() {
+    let response = evaluate(r#"{"ends_with": ["hello", ""]}"#, "{}");
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_ends_with_operator_case_sensitive() {
+    let response = evaluate(r#"{"ends_with": ["example.COM", ".com"]}"#, "{}");
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(false)));
+}
+
+// ============================================================================
+// Custom sem_ver Operator
+// ============================================================================
+
+#[test]
+fn test_sem_ver_operator_equal() {
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, "=", "1.2.3"]}"#,
+        r#"{"version": "1.2.3"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_sem_ver_operator_not_equal() {
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, "!=", "1.2.3"]}"#,
+        r#"{"version": "1.2.4"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_sem_ver_operator_less_than() {
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, "<", "2.0.0"]}"#,
+        r#"{"version": "1.5.0"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_sem_ver_operator_less_than_or_equal() {
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, "<=", "2.0.0"]}"#,
+        r#"{"version": "2.0.0"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_sem_ver_operator_greater_than() {
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, ">", "1.0.0"]}"#,
+        r#"{"version": "2.0.0"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_sem_ver_operator_greater_than_or_equal() {
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, ">=", "2.0.0"]}"#,
+        r#"{"version": "2.0.0"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_sem_ver_operator_caret_range() {
+    // ^1.2.3 means >=1.2.3 <2.0.0
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, "^", "1.2.3"]}"#,
+        r#"{"version": "1.9.0"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+
+    // Should not match 2.0.0
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, "^", "1.2.3"]}"#,
+        r#"{"version": "2.0.0"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(false)));
+}
+
+#[test]
+fn test_sem_ver_operator_tilde_range() {
+    // ~1.2.3 means >=1.2.3 <1.3.0
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, "~", "1.2.3"]}"#,
+        r#"{"version": "1.2.9"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+
+    // Should not match 1.3.0
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, "~", "1.2.3"]}"#,
+        r#"{"version": "1.3.0"}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(false)));
+}
+
+#[test]
+fn test_sem_ver_operator_with_prerelease() {
+    // Pre-release versions are less than release versions
+    let response = evaluate(r#"{"sem_ver": ["1.0.0-alpha", "<", "1.0.0"]}"#, "{}");
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_sem_ver_operator_literal() {
+    let response = evaluate(r#"{"sem_ver": ["2.0.0", ">=", "1.0.0"]}"#, "{}");
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_sem_ver_operator_invalid_version() {
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "version"}, "=", "1.2.3"]}"#,
+        r#"{"version": "not.a.version"}"#,
+    );
+    assert!(!response.success);
+    assert!(response.error.is_some());
+}
+
+#[test]
+fn test_sem_ver_operator_missing_parts() {
+    // Missing patch should be treated as 0
+    let response = evaluate(r#"{"sem_ver": ["1.2", "=", "1.2.0"]}"#, "{}");
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+// ============================================================================
+// Complex Targeting Rules (combining operators)
+// ============================================================================
+
+#[test]
+fn test_sem_ver_targeting_rule() {
+    // A rule that uses sem_ver for version-based targeting
+    let response = evaluate(
+        r#"{"sem_ver": [{"var": "app.version"}, ">=", "2.0.0"]}"#,
+        r#"{"app": {"version": "2.1.0"}}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_starts_with_targeting_rule() {
+    // A rule that uses starts_with for email-based targeting
+    let response = evaluate(
+        r#"{"starts_with": [{"var": "user.email"}, "beta@"]}"#,
+        r#"{"user": {"email": "beta@example.com"}}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
+}
+
+#[test]
+fn test_ends_with_targeting_rule() {
+    // A rule that uses ends_with for domain-based targeting
+    let response = evaluate(
+        r#"{"ends_with": [{"var": "user.email"}, "@company.com"]}"#,
+        r#"{"user": {"email": "john@company.com"}}"#,
+    );
+    assert!(response.success);
+    assert_eq!(response.result, Some(json!(true)));
 }

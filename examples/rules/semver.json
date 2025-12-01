@@ -1,0 +1,6 @@
+{
+  "and": [
+    {">=": [{"var": "version.major"}, 2]},
+    {"==": [{"var": "version.minor"}, 0]}
+  ]
+}
