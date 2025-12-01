@@ -11,7 +11,8 @@
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use serde::{Deserialize, Serialize};
+use flagd_evaluator::EvaluationResponse;
+use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -73,14 +74,6 @@ struct TestSuite {
     tests: Vec<TestCase>,
 }
 
-/// Response format from evaluation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EvaluationResponse {
-    success: bool,
-    result: Option<Value>,
-    error: Option<String>,
-}
-
 /// Load content from a file or parse as inline JSON.
 /// File references use the `@` prefix (e.g., `@examples/rules/basic.json`).
 fn load_json(input: &str) -> Result<Value, String> {
@@ -106,32 +99,16 @@ fn evaluate_rule(rule: &Value, data: &Value) -> EvaluationResponse {
     // Check for custom fractional operator first
     if let Some(result) = handle_fractional(rule, data) {
         return match result {
-            Ok(value) => EvaluationResponse {
-                success: true,
-                result: Some(value),
-                error: None,
-            },
-            Err(e) => EvaluationResponse {
-                success: false,
-                result: None,
-                error: Some(e),
-            },
+            Ok(value) => EvaluationResponse::success(value),
+            Err(e) => EvaluationResponse::error(e),
         };
     }
 
     // Use datalogic-rs for standard JSON Logic evaluation
     let logic = datalogic_rs::DataLogic::new();
     match logic.evaluate_json(&rule_str, &data_str) {
-        Ok(result) => EvaluationResponse {
-            success: true,
-            result: Some(result),
-            error: None,
-        },
-        Err(e) => EvaluationResponse {
-            success: false,
-            result: None,
-            error: Some(format!("Evaluation error: {}", e)),
-        },
+        Ok(result) => EvaluationResponse::success(result),
+        Err(e) => EvaluationResponse::error(format!("Evaluation error: {}", e)),
     }
 }
 
