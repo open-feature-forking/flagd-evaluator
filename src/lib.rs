@@ -35,6 +35,9 @@ pub mod error;
 pub mod memory;
 pub mod operators;
 
+#[cfg(feature = "js")]
+pub mod js;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

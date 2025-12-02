@@ -210,6 +210,39 @@ println!("{}", result_str);
 // Output: {"success":true,"result":true,"error":null}
 ```
 
+### JavaScript/WASM Usage
+
+The evaluator can also be compiled to WebAssembly for use in JavaScript environments (browsers, Node.js, etc.) using wasm-bindgen.
+
+#### Building for JavaScript
+
+```bash
+# Install wasm-pack
+cargo install wasm-pack
+
+# Build for web browsers
+wasm-pack build --target web --features js --no-default-features
+
+# Or for Node.js
+wasm-pack build --target nodejs --features js --no-default-features
+```
+
+#### Usage Example
+
+```javascript
+import init, { evaluate } from './pkg/flagd_evaluator.js';
+
+await init();
+
+// Returns a JavaScript object directly - no JSON.parse needed!
+const result = evaluate('{"==": [1, 1]}', '{}');
+
+console.log(result.success); // true
+console.log(result.result);  // true
+```
+
+See [docs/javascript-usage.md](docs/javascript-usage.md) for detailed documentation.
+
 ## API Reference
 
 ### Exported Functions
