@@ -73,7 +73,7 @@ console.log(result2.result); // "123"
 
 ### TypeScript
 
-The functions return typed objects directly:
+The functions return JavaScript objects that can be typed in TypeScript:
 
 ```typescript
 import init, { evaluate, FlagdEvaluator } from './pkg/flagd_evaluator';
