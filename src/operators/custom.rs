@@ -7,9 +7,197 @@
 //! - `starts_with`: String prefix matching
 //! - `ends_with`: String suffix matching
 //! - `sem_ver`: Semantic version comparison
+//!
+//! Each operator implements the `datalogic_rs::Operator` trait for seamless
+//! integration with the DataLogic evaluation engine.
 
+use datalogic_rs::{ContextStack, Error as DataLogicError, Evaluator, Operator};
 use serde_json::Value;
 use std::cmp::Ordering;
+
+/// Type alias for operator results using datalogic_rs Error type.
+type OperatorResult<T> = std::result::Result<T, DataLogicError>;
+
+// ============================================================================
+// Helper functions for variable resolution from context
+// ============================================================================
+
+/// Resolves a variable path from the context data, or returns the string value directly.
+///
+/// This helper function handles both direct string values and variable references
+/// (like `{"var": "path.to.value"}`) for the custom operators.
+fn resolve_string_from_context(
+    value: &Value,
+    context: &ContextStack,
+) -> OperatorResult<String> {
+    match value {
+        Value::String(s) => Ok(s.clone()),
+        Value::Object(obj) if obj.contains_key("var") => {
+            let var_path = obj
+                .get("var")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    DataLogicError::InvalidArguments("var reference must be a string".into())
+                })?;
+
+            // Get root data and navigate the path
+            let root_ref = context.root();
+            let data = root_ref.data();
+            let mut current = data;
+            for part in var_path.split('.') {
+                current = current.get(part).ok_or_else(|| {
+                    DataLogicError::VariableNotFound(format!(
+                        "Variable '{}' not found in data",
+                        var_path
+                    ))
+                })?;
+            }
+
+            match current {
+                Value::String(s) => Ok(s.clone()),
+                Value::Number(n) => Ok(n.to_string()),
+                Value::Null => Ok(String::new()),
+                _ => Err(DataLogicError::TypeError(format!(
+                    "Variable '{}' must be a string or number",
+                    var_path
+                ))),
+            }
+        }
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Null => Ok(String::new()),
+        _ => Err(DataLogicError::InvalidArguments(
+            "Value must be a string, number, null, or var reference".into(),
+        )),
+    }
+}
+
+// ============================================================================
+// Operator trait implementations
+// ============================================================================
+
+/// Custom operator for fractional/percentage-based bucket assignment.
+///
+/// The fractional operator uses consistent hashing to assign users to buckets
+/// for A/B testing scenarios.
+pub struct FractionalOperator;
+
+impl Operator for FractionalOperator {
+    fn evaluate(
+        &self,
+        args: &[Value],
+        context: &mut ContextStack,
+        _evaluator: &dyn Evaluator,
+    ) -> OperatorResult<Value> {
+        if args.len() < 2 {
+            return Err(DataLogicError::InvalidArguments(
+                "fractional operator requires an array with at least 2 elements".into(),
+            ));
+        }
+
+        // First argument is the bucket key (can be a value or a var reference)
+        let bucket_key = resolve_string_from_context(&args[0], context)?;
+
+        // Second argument is the buckets array
+        let buckets = args[1]
+            .as_array()
+            .ok_or_else(|| {
+                DataLogicError::InvalidArguments(
+                    "Second argument must be an array of bucket definitions".into(),
+                )
+            })?
+            .as_slice();
+
+        match fractional(&bucket_key, buckets) {
+            Ok(bucket_name) => Ok(Value::String(bucket_name)),
+            Err(e) => Err(DataLogicError::Custom(e)),
+        }
+    }
+}
+
+/// Custom operator for string prefix matching.
+///
+/// Checks if a string starts with a given prefix. The comparison is case-sensitive.
+pub struct StartsWithOperator;
+
+impl Operator for StartsWithOperator {
+    fn evaluate(
+        &self,
+        args: &[Value],
+        context: &mut ContextStack,
+        _evaluator: &dyn Evaluator,
+    ) -> OperatorResult<Value> {
+        if args.len() < 2 {
+            return Err(DataLogicError::InvalidArguments(
+                "starts_with operator requires an array with at least 2 elements".into(),
+            ));
+        }
+
+        let string_value = resolve_string_from_context(&args[0], context)?;
+        let prefix = resolve_string_from_context(&args[1], context)?;
+
+        Ok(Value::Bool(starts_with(&string_value, &prefix)))
+    }
+}
+
+/// Custom operator for string suffix matching.
+///
+/// Checks if a string ends with a given suffix. The comparison is case-sensitive.
+pub struct EndsWithOperator;
+
+impl Operator for EndsWithOperator {
+    fn evaluate(
+        &self,
+        args: &[Value],
+        context: &mut ContextStack,
+        _evaluator: &dyn Evaluator,
+    ) -> OperatorResult<Value> {
+        if args.len() < 2 {
+            return Err(DataLogicError::InvalidArguments(
+                "ends_with operator requires an array with at least 2 elements".into(),
+            ));
+        }
+
+        let string_value = resolve_string_from_context(&args[0], context)?;
+        let suffix = resolve_string_from_context(&args[1], context)?;
+
+        Ok(Value::Bool(ends_with(&string_value, &suffix)))
+    }
+}
+
+/// Custom operator for semantic version comparison.
+///
+/// Compares semantic versions according to the semver.org specification.
+pub struct SemVerOperator;
+
+impl Operator for SemVerOperator {
+    fn evaluate(
+        &self,
+        args: &[Value],
+        context: &mut ContextStack,
+        _evaluator: &dyn Evaluator,
+    ) -> OperatorResult<Value> {
+        if args.len() < 3 {
+            return Err(DataLogicError::InvalidArguments(
+                "sem_ver operator requires an array with at least 3 elements".into(),
+            ));
+        }
+
+        let version = resolve_string_from_context(&args[0], context)?;
+        let operator = args[1].as_str().ok_or_else(|| {
+            DataLogicError::InvalidArguments("sem_ver operator must be a string".into())
+        })?;
+        let target = resolve_string_from_context(&args[2], context)?;
+
+        match sem_ver(&version, operator, &target) {
+            Ok(result) => Ok(Value::Bool(result)),
+            Err(e) => Err(DataLogicError::Custom(e)),
+        }
+    }
+}
+
+// ============================================================================
+// Core implementation functions
+// ============================================================================
 
 /// MurmurHash3 32-bit implementation for consistent hashing.
 ///
@@ -828,3 +1016,8 @@ mod tests {
         assert!(sem_ver("1.2.3", "=", "not.a.version").is_err());
     }
 }
+
+// TODO: Evaluate using an existing MurmurHash3 crate (e.g., `murmur3`, `fasthash`, or `twox-hash`)
+// instead of the custom implementation. This would reduce maintenance burden and potentially
+// provide better performance or additional features. Consider compatibility with WASM targets
+// when selecting a crate.
