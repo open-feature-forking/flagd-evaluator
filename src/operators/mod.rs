@@ -14,13 +14,26 @@
 //! - `StartsWithOperator`: String prefix matching
 //! - `EndsWithOperator`: String suffix matching
 //! - `SemVerOperator`: Semantic version comparison
+//!
+//! ## Module Organization
+//!
+//! Each operator is implemented in its own file for easier maintenance:
+//! - `common.rs`: Shared utilities and helper functions
+//! - `fractional.rs`: Fractional/percentage-based bucket assignment
+//! - `starts_with.rs`: String prefix matching
+//! - `ends_with.rs`: String suffix matching
+//! - `sem_ver.rs`: Semantic version comparison
 
-pub mod custom;
+mod common;
+mod ends_with;
+mod fractional;
+mod sem_ver;
+mod starts_with;
 
-pub use custom::{
-    ends_with, fractional, sem_ver, starts_with, EndsWithOperator, FractionalOperator, SemVer,
-    SemVerOperator, StartsWithOperator,
-};
+pub use ends_with::{ends_with, EndsWithOperator};
+pub use fractional::{fractional, FractionalOperator};
+pub use sem_ver::{sem_ver, SemVer, SemVerOperator};
+pub use starts_with::{starts_with, StartsWithOperator};
 
 use datalogic_rs::DataLogic;
 
