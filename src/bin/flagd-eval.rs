@@ -11,7 +11,7 @@
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use flagd_evaluator::EvaluationResponse;
+use flagd_evaluator::{create_evaluator, EvaluationResponse};
 use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
@@ -91,89 +91,16 @@ fn load_json(input: &str) -> Result<Value, String> {
     }
 }
 
-/// Evaluate a JSON Logic rule against data using the library's internal logic.
+/// Evaluate a JSON Logic rule against data using the library with custom operators.
 fn evaluate_rule(rule: &Value, data: &Value) -> EvaluationResponse {
     let rule_str = rule.to_string();
     let data_str = data.to_string();
 
-    // Check for custom fractional operator first
-    if let Some(result) = handle_fractional(rule, data) {
-        return match result {
-            Ok(value) => EvaluationResponse::success(value),
-            Err(e) => EvaluationResponse::error(e),
-        };
-    }
-
-    // Use datalogic-rs for standard JSON Logic evaluation
-    let logic = datalogic_rs::DataLogic::new();
+    // Use datalogic-rs with custom operators registered
+    let logic = create_evaluator();
     match logic.evaluate_json(&rule_str, &data_str) {
         Ok(result) => EvaluationResponse::success(result),
-        Err(e) => EvaluationResponse::error(format!("Evaluation error: {}", e)),
-    }
-}
-
-/// Handle the custom fractional operator if present in the rule.
-fn handle_fractional(rule: &Value, data: &Value) -> Option<Result<Value, String>> {
-    let args = rule.get("fractional")?;
-
-    let args_array = match args {
-        Value::Array(arr) if arr.len() >= 2 => arr,
-        _ => {
-            return Some(Err(
-                "fractional operator requires an array with at least 2 elements".to_string(),
-            ))
-        }
-    };
-
-    // First argument is the bucket key (can be a value or a var reference)
-    let bucket_key = match &args_array[0] {
-        Value::String(s) => s.clone(),
-        Value::Object(obj) if obj.contains_key("var") => {
-            let var_path = match obj.get("var") {
-                Some(Value::String(s)) => s,
-                _ => return Some(Err("var reference must be a string".to_string())),
-            };
-
-            let mut current = data;
-            for part in var_path.split('.') {
-                current = match current.get(part) {
-                    Some(v) => v,
-                    None => return Some(Err(format!("Variable '{}' not found in data", var_path))),
-                };
-            }
-
-            match current {
-                Value::String(s) => s.clone(),
-                Value::Number(n) => n.to_string(),
-                _ => {
-                    return Some(Err(format!(
-                        "Variable '{}' must be a string or number",
-                        var_path
-                    )))
-                }
-            }
-        }
-        Value::Number(n) => n.to_string(),
-        _ => {
-            return Some(Err(
-                "First argument must be a string, number, or var reference".to_string(),
-            ))
-        }
-    };
-
-    // Second argument is the buckets array
-    let buckets = match &args_array[1] {
-        Value::Array(arr) => arr.as_slice(),
-        _ => {
-            return Some(Err(
-                "Second argument must be an array of bucket definitions".to_string(),
-            ))
-        }
-    };
-
-    match flagd_evaluator::fractional(&bucket_key, buckets) {
-        Ok(bucket_name) => Some(Ok(Value::String(bucket_name))),
-        Err(e) => Some(Err(e)),
+        Err(e) => EvaluationResponse::error(format!("{}", e)),
     }
 }
 
@@ -319,6 +246,31 @@ fn run_operators() {
     println!("  - Consistent: Same bucket key always returns the same bucket");
     println!("  - Deterministic: Results are reproducible across invocations");
     println!("  - Uses MurmurHash3 for uniform distribution");
+    println!();
+
+    println!("• {}", "starts_with".cyan());
+    println!("  Check if a string starts with a given prefix");
+    println!(
+        "  {}",
+        r#"{"starts_with": [{"var": "email"}, "admin@"]}"#.dimmed()
+    );
+    println!();
+
+    println!("• {}", "ends_with".cyan());
+    println!("  Check if a string ends with a given suffix");
+    println!(
+        "  {}",
+        r#"{"ends_with": [{"var": "filename"}, ".pdf"]}"#.dimmed()
+    );
+    println!();
+
+    println!("• {}", "sem_ver".cyan());
+    println!("  Semantic version comparison");
+    println!(
+        "  {}",
+        r#"{"sem_ver": [{"var": "version"}, ">=", "2.0.0"]}"#.dimmed()
+    );
+    println!("  Operators: =, !=, <, <=, >, >=, ^, ~");
     println!();
 
     println!("{}", "Standard JSON Logic Operators:".bold());

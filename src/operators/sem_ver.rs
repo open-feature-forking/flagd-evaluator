@@ -1,209 +1,42 @@
-//! Custom operator implementations for feature flag evaluation.
+//! Semantic version comparison operator.
 //!
-//! This module contains the implementation of custom operators that extend
-//! JSON Logic for feature flag use cases. These operators include:
-//!
-//! - `fractional`: Consistent hashing for A/B testing scenarios
-//! - `starts_with`: String prefix matching
-//! - `ends_with`: String suffix matching
-//! - `sem_ver`: Semantic version comparison
+//! The sem_ver operator compares semantic versions according to the semver.org specification.
 
+use datalogic_rs::{ContextStack, Error as DataLogicError, Evaluator, Operator};
 use serde_json::Value;
 use std::cmp::Ordering;
 
-/// MurmurHash3 32-bit implementation for consistent hashing.
+use super::common::{resolve_string_from_context, OperatorResult};
+
+/// Custom operator for semantic version comparison.
 ///
-/// This is a simplified implementation of MurmurHash3 that provides
-/// good distribution for our use case. It's used by the fractional
-/// operator to consistently assign users to buckets.
-///
-/// # Arguments
-/// * `key` - The byte slice to hash
-/// * `seed` - Seed value for the hash
-///
-/// # Returns
-/// A 32-bit hash value
-fn murmurhash3_32(key: &[u8], seed: u32) -> u32 {
-    const C1: u32 = 0xcc9e2d51;
-    const C2: u32 = 0x1b873593;
-    const R1: u32 = 15;
-    const R2: u32 = 13;
-    const M: u32 = 5;
-    const N: u32 = 0xe6546b64;
+/// Compares semantic versions according to the semver.org specification.
+pub struct SemVerOperator;
 
-    let mut hash = seed;
-    let len = key.len();
-    let n_blocks = len / 4;
-
-    // Process 4-byte chunks
-    for i in 0..n_blocks {
-        let mut k =
-            u32::from_le_bytes([key[i * 4], key[i * 4 + 1], key[i * 4 + 2], key[i * 4 + 3]]);
-
-        k = k.wrapping_mul(C1);
-        k = k.rotate_left(R1);
-        k = k.wrapping_mul(C2);
-
-        hash ^= k;
-        hash = hash.rotate_left(R2);
-        hash = hash.wrapping_mul(M).wrapping_add(N);
-    }
-
-    // Process remaining bytes
-    let tail = &key[n_blocks * 4..];
-    let mut k1: u32 = 0;
-
-    if tail.len() >= 3 {
-        k1 ^= (tail[2] as u32) << 16;
-    }
-    if tail.len() >= 2 {
-        k1 ^= (tail[1] as u32) << 8;
-    }
-    if !tail.is_empty() {
-        k1 ^= tail[0] as u32;
-        k1 = k1.wrapping_mul(C1);
-        k1 = k1.rotate_left(R1);
-        k1 = k1.wrapping_mul(C2);
-        hash ^= k1;
-    }
-
-    // Finalization
-    hash ^= len as u32;
-    hash ^= hash >> 16;
-    hash = hash.wrapping_mul(0x85ebca6b);
-    hash ^= hash >> 13;
-    hash = hash.wrapping_mul(0xc2b2ae35);
-    hash ^= hash >> 16;
-
-    hash
-}
-
-/// Evaluates the fractional operator for consistent bucket assignment.
-///
-/// The fractional operator takes a bucket key (typically a user ID) and
-/// a list of bucket definitions with percentages. It uses consistent hashing
-/// to always assign the same bucket key to the same bucket.
-///
-/// # Arguments
-/// * `bucket_key` - The key to use for bucket assignment (e.g., user ID)
-/// * `buckets` - Array of [name, percentage, name, percentage, ...] values
-///
-/// # Returns
-/// The name of the selected bucket, or an error if the input is invalid
-///
-/// # Example
-/// ```json
-/// {"fractional": ["user123", ["control", 50, "treatment", 50]]}
-/// ```
-/// This will consistently assign "user123" to either "control" or "treatment"
-/// based on its hash value.
-pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String> {
-    if buckets.is_empty() {
-        return Err("Fractional operator requires at least one bucket".to_string());
-    }
-
-    // Parse bucket definitions: [name1, weight1, name2, weight2, ...]
-    let mut bucket_defs: Vec<(String, u32)> = Vec::new();
-    let mut total_weight: u32 = 0;
-
-    let mut i = 0;
-    while i < buckets.len() {
-        // Get bucket name
-        let name = match &buckets[i] {
-            Value::String(s) => s.clone(),
-            _ => return Err(format!("Bucket name at index {} must be a string", i)),
-        };
-
-        i += 1;
-
-        // Get bucket weight
-        if i >= buckets.len() {
-            return Err(format!("Missing weight for bucket '{}'", name));
+impl Operator for SemVerOperator {
+    fn evaluate(
+        &self,
+        args: &[Value],
+        context: &mut ContextStack,
+        _evaluator: &dyn Evaluator,
+    ) -> OperatorResult<Value> {
+        if args.len() < 3 {
+            return Err(DataLogicError::InvalidArguments(
+                "sem_ver operator requires an array with at least 3 elements".into(),
+            ));
         }
 
-        let weight = match &buckets[i] {
-            Value::Number(n) => n
-                .as_u64()
-                .ok_or_else(|| format!("Weight for bucket '{}' must be a positive integer", name))?
-                as u32,
-            _ => return Err(format!("Weight for bucket '{}' must be a number", name)),
-        };
+        let version = resolve_string_from_context(&args[0], context)?;
+        let operator = args[1].as_str().ok_or_else(|| {
+            DataLogicError::InvalidArguments("sem_ver operator must be a string".into())
+        })?;
+        let target = resolve_string_from_context(&args[2], context)?;
 
-        total_weight = total_weight
-            .checked_add(weight)
-            .ok_or_else(|| "Total weight overflow".to_string())?;
-
-        bucket_defs.push((name, weight));
-        i += 1;
-    }
-
-    if bucket_defs.is_empty() {
-        return Err("No valid bucket definitions found".to_string());
-    }
-
-    if total_weight == 0 {
-        return Err("Total weight must be greater than zero".to_string());
-    }
-
-    // Hash the bucket key to get a consistent value
-    let hash = murmurhash3_32(bucket_key.as_bytes(), 0);
-
-    // Map hash to range [0, total_weight)
-    let bucket_value = (hash as u64 * total_weight as u64 / u32::MAX as u64) as u32;
-
-    // Find which bucket this value falls into
-    let mut cumulative_weight: u32 = 0;
-    for (name, weight) in bucket_defs {
-        cumulative_weight += weight;
-        if bucket_value < cumulative_weight {
-            return Ok(name);
+        match sem_ver(&version, operator, &target) {
+            Ok(result) => Ok(Value::Bool(result)),
+            Err(e) => Err(DataLogicError::Custom(e)),
         }
     }
-
-    // Should never reach here, but return last bucket as fallback
-    Err("Failed to select bucket".to_string())
-}
-
-/// Evaluates the starts_with operator for string prefix matching.
-///
-/// The starts_with operator checks if a string starts with a specific prefix.
-/// The comparison is case-sensitive.
-///
-/// # Arguments
-/// * `string_value` - The string to check
-/// * `prefix` - The prefix to search for
-///
-/// # Returns
-/// `true` if the string starts with the prefix, `false` otherwise
-///
-/// # Example
-/// ```json
-/// {"starts_with": [{"var": "email"}, "admin@"]}
-/// ```
-/// Returns `true` if email is "admin@example.com"
-pub fn starts_with(string_value: &str, prefix: &str) -> bool {
-    string_value.starts_with(prefix)
-}
-
-/// Evaluates the ends_with operator for string suffix matching.
-///
-/// The ends_with operator checks if a string ends with a specific suffix.
-/// The comparison is case-sensitive.
-///
-/// # Arguments
-/// * `string_value` - The string to check
-/// * `suffix` - The suffix to search for
-///
-/// # Returns
-/// `true` if the string ends with the suffix, `false` otherwise
-///
-/// # Example
-/// ```json
-/// {"ends_with": [{"var": "filename"}, ".pdf"]}
-/// ```
-/// Returns `true` if filename is "document.pdf"
-pub fn ends_with(string_value: &str, suffix: &str) -> bool {
-    string_value.ends_with(suffix)
 }
 
 /// Represents a parsed semantic version.
@@ -427,182 +260,6 @@ pub fn sem_ver(version: &str, operator: &str, target: &str) -> Result<bool, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn test_murmurhash3_consistency() {
-        // Same input should always produce same output
-        let hash1 = murmurhash3_32(b"test-key", 0);
-        let hash2 = murmurhash3_32(b"test-key", 0);
-        assert_eq!(hash1, hash2);
-    }
-
-    #[test]
-    fn test_murmurhash3_different_inputs() {
-        let hash1 = murmurhash3_32(b"key1", 0);
-        let hash2 = murmurhash3_32(b"key2", 0);
-        assert_ne!(hash1, hash2);
-    }
-
-    #[test]
-    fn test_fractional_50_50() {
-        let buckets = vec![json!("control"), json!(50), json!("treatment"), json!(50)];
-
-        // Test consistency - same key should always return same bucket
-        let result1 = fractional("user-123", &buckets).unwrap();
-        let result2 = fractional("user-123", &buckets).unwrap();
-        assert_eq!(result1, result2);
-
-        // Test that both buckets are reachable with different keys
-        let mut seen_control = false;
-        let mut seen_treatment = false;
-
-        for i in 0..100 {
-            let key = format!("test-user-{}", i);
-            let result = fractional(&key, &buckets).unwrap();
-            match result.as_str() {
-                "control" => seen_control = true,
-                "treatment" => seen_treatment = true,
-                _ => panic!("Unexpected bucket: {}", result),
-            }
-        }
-
-        assert!(seen_control, "control bucket should be reachable");
-        assert!(seen_treatment, "treatment bucket should be reachable");
-    }
-
-    #[test]
-    fn test_fractional_unequal_weights() {
-        let buckets = vec![json!("small"), json!(10), json!("large"), json!(90)];
-
-        let mut small_count = 0;
-        let mut large_count = 0;
-
-        // Run many iterations to check distribution
-        for i in 0..1000 {
-            let key = format!("user-{}", i);
-            let result = fractional(&key, &buckets).unwrap();
-            match result.as_str() {
-                "small" => small_count += 1,
-                "large" => large_count += 1,
-                _ => panic!("Unexpected bucket"),
-            }
-        }
-
-        // Large bucket should have significantly more assignments
-        assert!(
-            large_count > small_count * 3,
-            "Large bucket should dominate"
-        );
-    }
-
-    #[test]
-    fn test_fractional_empty_buckets() {
-        let buckets: Vec<Value> = vec![];
-        let result = fractional("user-123", &buckets);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_fractional_missing_weight() {
-        let buckets = vec![json!("only-name")];
-        let result = fractional("user-123", &buckets);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_fractional_invalid_name_type() {
-        let buckets = vec![json!(123), json!(50)];
-        let result = fractional("user-123", &buckets);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_fractional_invalid_weight_type() {
-        let buckets = vec![json!("bucket"), json!("not-a-number")];
-        let result = fractional("user-123", &buckets);
-        assert!(result.is_err());
-    }
-
-    // ============================================================================
-    // starts_with tests
-    // ============================================================================
-
-    #[test]
-    fn test_starts_with_basic() {
-        assert!(starts_with("hello world", "hello"));
-        assert!(starts_with("admin@example.com", "admin@"));
-        assert!(!starts_with("hello world", "world"));
-    }
-
-    #[test]
-    fn test_starts_with_empty_prefix() {
-        // Empty prefix should always return true
-        assert!(starts_with("hello", ""));
-        assert!(starts_with("", ""));
-    }
-
-    #[test]
-    fn test_starts_with_empty_string() {
-        // Non-empty prefix with empty string should return false
-        assert!(!starts_with("", "hello"));
-    }
-
-    #[test]
-    fn test_starts_with_case_sensitive() {
-        assert!(starts_with("/api/users", "/api/"));
-        assert!(!starts_with("/API/users", "/api/"));
-    }
-
-    #[test]
-    fn test_starts_with_exact_match() {
-        assert!(starts_with("hello", "hello"));
-    }
-
-    #[test]
-    fn test_starts_with_prefix_longer_than_string() {
-        assert!(!starts_with("hi", "hello"));
-    }
-
-    // ============================================================================
-    // ends_with tests
-    // ============================================================================
-
-    #[test]
-    fn test_ends_with_basic() {
-        assert!(ends_with("hello world", "world"));
-        assert!(ends_with("document.pdf", ".pdf"));
-        assert!(!ends_with("hello world", "hello"));
-    }
-
-    #[test]
-    fn test_ends_with_empty_suffix() {
-        // Empty suffix should always return true
-        assert!(ends_with("hello", ""));
-        assert!(ends_with("", ""));
-    }
-
-    #[test]
-    fn test_ends_with_empty_string() {
-        // Non-empty suffix with empty string should return false
-        assert!(!ends_with("", "hello"));
-    }
-
-    #[test]
-    fn test_ends_with_case_sensitive() {
-        assert!(ends_with("https://example.com", ".com"));
-        assert!(!ends_with("https://example.COM", ".com"));
-    }
-
-    #[test]
-    fn test_ends_with_exact_match() {
-        assert!(ends_with("hello", "hello"));
-    }
-
-    #[test]
-    fn test_ends_with_suffix_longer_than_string() {
-        assert!(!ends_with("hi", "hello"));
-    }
 
     // ============================================================================
     // SemVer parsing tests

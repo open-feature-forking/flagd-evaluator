@@ -9,7 +9,8 @@
 //! ## Features
 //!
 //! - **JSON Logic Evaluation**: Full support for standard JSON Logic operations via `datalogic-rs`
-//! - **Custom Operators**: Support for feature-flag specific operators like `fractional`
+//! - **Custom Operators**: Support for feature-flag specific operators like `fractional`, `starts_with`,
+//!   `ends_with`, and `sem_ver` - all registered via the `datalogic_rs::Operator` trait
 //! - **Memory Safe**: Clean memory management with explicit alloc/dealloc functions
 //! - **Zero JNI**: Works with pure Java WASM runtimes like Chicory
 //!
@@ -34,7 +35,6 @@ pub mod error;
 pub mod memory;
 pub mod operators;
 
-use datalogic_rs::DataLogic;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -42,7 +42,7 @@ pub use error::{ErrorType, EvaluatorError};
 pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
-pub use operators::{ends_with, fractional, sem_ver, starts_with};
+pub use operators::{create_evaluator, ends_with, fractional, sem_ver, starts_with};
 
 /// The response format for evaluation results.
 ///
@@ -88,219 +88,6 @@ impl EvaluationResponse {
     }
 }
 
-/// Checks if a JSON value contains the custom "fractional" operator.
-///
-/// Returns the operator arguments if found, or None if not present.
-fn extract_fractional_op(value: &Value) -> Option<&Value> {
-    value.get("fractional")
-}
-
-/// Resolves a variable path from data, or returns the string value directly.
-///
-/// This helper function handles both direct string values and variable references
-/// (like `{"var": "path.to.value"}`) for the custom operators.
-fn resolve_string_value(value: &Value, data: &Value) -> Result<String, String> {
-    match value {
-        Value::String(s) => Ok(s.clone()),
-        Value::Object(obj) if obj.contains_key("var") => {
-            let var_path = match obj.get("var") {
-                Some(Value::String(s)) => s,
-                _ => return Err("var reference must be a string".to_string()),
-            };
-
-            let mut current = data;
-            for part in var_path.split('.') {
-                current = match current.get(part) {
-                    Some(v) => v,
-                    None => return Err(format!("Variable '{}' not found in data", var_path)),
-                };
-            }
-
-            match current {
-                Value::String(s) => Ok(s.clone()),
-                Value::Number(n) => Ok(n.to_string()),
-                Value::Null => Ok(String::new()),
-                _ => Err(format!(
-                    "Variable '{}' must be a string or number",
-                    var_path
-                )),
-            }
-        }
-        Value::Number(n) => Ok(n.to_string()),
-        Value::Null => Ok(String::new()),
-        _ => Err("Value must be a string, number, null, or var reference".to_string()),
-    }
-}
-
-/// Handles the custom starts_with operator if present in the rule.
-///
-/// The starts_with operator checks if a string starts with a given prefix.
-fn handle_starts_with(rule: &Value, data: &Value) -> Option<Result<Value, String>> {
-    let args = rule.get("starts_with")?;
-
-    let args_array = match args {
-        Value::Array(arr) if arr.len() >= 2 => arr,
-        _ => {
-            return Some(Err(
-                "starts_with operator requires an array with at least 2 elements".to_string(),
-            ))
-        }
-    };
-
-    let string_value = match resolve_string_value(&args_array[0], data) {
-        Ok(s) => s,
-        Err(e) => return Some(Err(e)),
-    };
-
-    let prefix = match resolve_string_value(&args_array[1], data) {
-        Ok(s) => s,
-        Err(e) => return Some(Err(e)),
-    };
-
-    Some(Ok(Value::Bool(crate::operators::starts_with(
-        &string_value,
-        &prefix,
-    ))))
-}
-
-/// Handles the custom ends_with operator if present in the rule.
-///
-/// The ends_with operator checks if a string ends with a given suffix.
-fn handle_ends_with(rule: &Value, data: &Value) -> Option<Result<Value, String>> {
-    let args = rule.get("ends_with")?;
-
-    let args_array = match args {
-        Value::Array(arr) if arr.len() >= 2 => arr,
-        _ => {
-            return Some(Err(
-                "ends_with operator requires an array with at least 2 elements".to_string(),
-            ))
-        }
-    };
-
-    let string_value = match resolve_string_value(&args_array[0], data) {
-        Ok(s) => s,
-        Err(e) => return Some(Err(e)),
-    };
-
-    let suffix = match resolve_string_value(&args_array[1], data) {
-        Ok(s) => s,
-        Err(e) => return Some(Err(e)),
-    };
-
-    Some(Ok(Value::Bool(crate::operators::ends_with(
-        &string_value,
-        &suffix,
-    ))))
-}
-
-/// Handles the custom sem_ver operator if present in the rule.
-///
-/// The sem_ver operator performs semantic version comparisons.
-fn handle_sem_ver(rule: &Value, data: &Value) -> Option<Result<Value, String>> {
-    let args = rule.get("sem_ver")?;
-
-    let args_array = match args {
-        Value::Array(arr) if arr.len() >= 3 => arr,
-        _ => {
-            return Some(Err(
-                "sem_ver operator requires an array with at least 3 elements".to_string(),
-            ))
-        }
-    };
-
-    let version = match resolve_string_value(&args_array[0], data) {
-        Ok(s) => s,
-        Err(e) => return Some(Err(e)),
-    };
-
-    let operator = match &args_array[1] {
-        Value::String(s) => s.as_str(),
-        _ => return Some(Err("sem_ver operator must be a string".to_string())),
-    };
-
-    let target = match resolve_string_value(&args_array[2], data) {
-        Ok(s) => s,
-        Err(e) => return Some(Err(e)),
-    };
-
-    match crate::operators::sem_ver(&version, operator, &target) {
-        Ok(result) => Some(Ok(Value::Bool(result))),
-        Err(e) => Some(Err(e)),
-    }
-}
-
-/// Handles the custom fractional operator if present in the rule.
-///
-/// This function processes rules that use the "fractional" operator for A/B testing.
-/// If the rule is a fractional operation, it evaluates it; otherwise, it returns None
-/// to indicate standard JSON Logic evaluation should be used.
-fn handle_fractional(rule: &Value, data: &Value) -> Option<Result<Value, String>> {
-    let args = extract_fractional_op(rule)?;
-
-    let args_array = match args {
-        Value::Array(arr) if arr.len() >= 2 => arr,
-        _ => {
-            return Some(Err(
-                "fractional operator requires an array with at least 2 elements".to_string(),
-            ))
-        }
-    };
-
-    // First argument is the bucket key (can be a value or a var reference)
-    let bucket_key = match &args_array[0] {
-        Value::String(s) => s.clone(),
-        Value::Object(obj) if obj.contains_key("var") => {
-            // Resolve variable reference from data
-            let var_path = match obj.get("var") {
-                Some(Value::String(s)) => s,
-                _ => return Some(Err("var reference must be a string".to_string())),
-            };
-
-            // Navigate the data object using the variable path
-            let mut current = data;
-            for part in var_path.split('.') {
-                current = match current.get(part) {
-                    Some(v) => v,
-                    None => return Some(Err(format!("Variable '{}' not found in data", var_path))),
-                };
-            }
-
-            match current {
-                Value::String(s) => s.clone(),
-                Value::Number(n) => n.to_string(),
-                _ => {
-                    return Some(Err(format!(
-                        "Variable '{}' must be a string or number",
-                        var_path
-                    )))
-                }
-            }
-        }
-        Value::Number(n) => n.to_string(),
-        _ => {
-            return Some(Err(
-                "First argument must be a string, number, or var reference".to_string(),
-            ))
-        }
-    };
-
-    // Second argument is the buckets array
-    let buckets = match &args_array[1] {
-        Value::Array(arr) => arr.as_slice(),
-        _ => {
-            return Some(Err(
-                "Second argument must be an array of bucket definitions".to_string(),
-            ))
-        }
-    };
-
-    match crate::operators::fractional(&bucket_key, buckets) {
-        Ok(bucket_name) => Some(Ok(Value::String(bucket_name))),
-        Err(e) => Some(Err(e)),
-    }
-}
-
 /// Evaluates a JSON Logic rule against the provided data.
 ///
 /// This is the main entry point for the library. It accepts JSON strings for both
@@ -343,6 +130,9 @@ pub extern "C" fn evaluate_logic(
 }
 
 /// Internal evaluation function that handles all the logic.
+///
+/// Uses the DataLogic engine with all custom operators registered via
+/// the `Operator` trait for unified evaluation.
 fn evaluate_logic_internal(
     rule_ptr: *const u8,
     rule_len: u32,
@@ -360,55 +150,11 @@ fn evaluate_logic_internal(
         Err(e) => return EvaluationResponse::error(format!("Failed to read data: {}", e)),
     };
 
-    // Parse the rule JSON
-    let rule: Value = match serde_json::from_str(&rule_str) {
-        Ok(v) => v,
-        Err(e) => return EvaluationResponse::error(format!("Failed to parse rule JSON: {}", e)),
-    };
-
-    // Parse the data JSON
-    let data: Value = match serde_json::from_str(&data_str) {
-        Ok(v) => v,
-        Err(e) => return EvaluationResponse::error(format!("Failed to parse data JSON: {}", e)),
-    };
-
-    // Check for custom fractional operator first
-    if let Some(result) = handle_fractional(&rule, &data) {
-        return match result {
-            Ok(value) => EvaluationResponse::success(value),
-            Err(e) => EvaluationResponse::error(e),
-        };
-    }
-
-    // Check for custom starts_with operator
-    if let Some(result) = handle_starts_with(&rule, &data) {
-        return match result {
-            Ok(value) => EvaluationResponse::success(value),
-            Err(e) => EvaluationResponse::error(e),
-        };
-    }
-
-    // Check for custom ends_with operator
-    if let Some(result) = handle_ends_with(&rule, &data) {
-        return match result {
-            Ok(value) => EvaluationResponse::success(value),
-            Err(e) => EvaluationResponse::error(e),
-        };
-    }
-
-    // Check for custom sem_ver operator
-    if let Some(result) = handle_sem_ver(&rule, &data) {
-        return match result {
-            Ok(value) => EvaluationResponse::success(value),
-            Err(e) => EvaluationResponse::error(e),
-        };
-    }
-
-    // Use datalogic-rs for standard JSON Logic evaluation
-    let logic = DataLogic::new();
+    // Use datalogic-rs with custom operators registered
+    let logic = create_evaluator();
     match logic.evaluate_json(&rule_str, &data_str) {
         Ok(result) => EvaluationResponse::success(result),
-        Err(e) => EvaluationResponse::error(format!("Evaluation error: {}", e)),
+        Err(e) => EvaluationResponse::error(format!("{}", e)),
     }
 }
 
@@ -477,7 +223,13 @@ mod tests {
         let result = evaluate_json("not valid json", "{}");
         assert!(!result.success);
         assert!(result.error.is_some());
-        assert!(result.error.unwrap().contains("parse"));
+        let error_msg = result.error.unwrap();
+        // Error message from datalogic_rs uses "Parse error"
+        assert!(
+            error_msg.to_lowercase().contains("parse"),
+            "Expected error to contain 'parse', got: {}",
+            error_msg
+        );
     }
 
     #[test]
