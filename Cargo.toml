@@ -18,7 +18,7 @@ name = "flagd-eval"
 path = "src/bin/flagd-eval.rs"
 
 [dependencies]
-datalogic-rs = "4.0"
+datalogic-rs = "3.0"
 serde = { version = "1.0", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1.0", features = ["alloc"], default-features = false }
 

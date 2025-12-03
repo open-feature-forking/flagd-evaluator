@@ -161,6 +161,9 @@ fn test_eval_missing_file() {
 
 #[test]
 fn test_eval_fractional_missing_var() {
+    // In datalogic-rs v3, missing variables return null (per JSON Logic spec),
+    // which is converted to an empty string and successfully hashed.
+    // This is correct behavior - no error should be thrown.
     cmd()
         .args([
             "eval",
@@ -170,8 +173,8 @@ fn test_eval_fractional_missing_var() {
             "{}",
         ])
         .assert()
-        .failure()
-        .stdout(predicate::str::contains("Evaluation failed"));
+        .success()
+        .stdout(predicate::str::contains("Evaluation succeeded"));
 }
 
 // ============================================================================

@@ -2,39 +2,51 @@
 //!
 //! The sem_ver operator compares semantic versions according to the semver.org specification.
 
-use datalogic_rs::{ContextStack, Error as DataLogicError, Evaluator, Operator};
-use serde_json::Value;
+use datalogic_rs::{CustomOperator, DataArena, DataValue, EvalContext, LogicError};
+use datalogic_rs::logic::Result as DataLogicResult;
 use std::cmp::Ordering;
 
-use super::common::{resolve_string_from_context, OperatorResult};
+use super::common::resolve_string_from_datavalue;
 
 /// Custom operator for semantic version comparison.
 ///
 /// Compares semantic versions according to the semver.org specification.
+#[derive(Debug)]
 pub struct SemVerOperator;
 
-impl Operator for SemVerOperator {
-    fn evaluate(
+impl CustomOperator for SemVerOperator {
+    fn evaluate<'a>(
         &self,
-        args: &[Value],
-        context: &mut ContextStack,
-        _evaluator: &dyn Evaluator,
-    ) -> OperatorResult<Value> {
+        args: &'a [DataValue<'a>],
+        _context: &EvalContext<'a>,
+        arena: &'a DataArena,
+    ) -> DataLogicResult<&'a DataValue<'a>> {
         if args.len() < 3 {
-            return Err(DataLogicError::InvalidArguments(
-                "sem_ver operator requires an array with at least 3 elements".into(),
+            return Err(LogicError::Custom(
+                "sem_ver operator requires an array with at least 3 elements".to_string(),
             ));
         }
 
-        let version = resolve_string_from_context(&args[0], context)?;
-        let operator = args[1].as_str().ok_or_else(|| {
-            DataLogicError::InvalidArguments("sem_ver operator must be a string".into())
-        })?;
-        let target = resolve_string_from_context(&args[2], context)?;
+        let version = resolve_string_from_datavalue(&args[0])
+            .map_err(|e| LogicError::Custom(format!("Failed to resolve version: {}", e)))?;
+        
+        let operator = match &args[1] {
+            DataValue::String(s) => s.to_string(),
+            _ => return Err(LogicError::Custom("sem_ver operator must be a string".to_string())),
+        };
+        
+        let target = resolve_string_from_datavalue(&args[2])
+            .map_err(|e| LogicError::Custom(format!("Failed to resolve target version: {}", e)))?;
 
-        match sem_ver(&version, operator, &target) {
-            Ok(result) => Ok(Value::Bool(result)),
-            Err(e) => Err(DataLogicError::Custom(e)),
+        match sem_ver(&version, &operator, &target) {
+            Ok(result) => {
+                if result {
+                    Ok(arena.true_value())
+                } else {
+                    Ok(arena.false_value())
+                }
+            }
+            Err(e) => Err(LogicError::Custom(e)),
         }
     }
 }
@@ -59,7 +71,7 @@ impl SemVer {
     /// - "1.2.3-alpha.1" (with prerelease)
     /// - "1.2.3+build.123" (with build metadata)
     /// - "1.2.3-alpha.1+build.123" (with both)
-    pub fn parse(version: &str) -> Result<Self, String> {
+    pub fn parse(version: &str) -> std::result::Result<Self, String> {
         let version = version.trim();
         if version.is_empty() {
             return Err("Version string cannot be empty".to_string());
@@ -211,7 +223,7 @@ impl PartialOrd for SemVer {
 /// {"sem_ver": [{"var": "version"}, ">=", "2.0.0"]}
 /// ```
 /// Returns `true` if version is "2.0.0" or higher
-pub fn sem_ver(version: &str, operator: &str, target: &str) -> Result<bool, String> {
+pub fn sem_ver(version: &str, operator: &str, target: &str) -> std::result::Result<bool, String> {
     let version = SemVer::parse(version)?;
     let target = SemVer::parse(target)?;
 

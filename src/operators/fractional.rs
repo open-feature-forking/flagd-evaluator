@@ -3,46 +3,50 @@
 //! The fractional operator uses consistent hashing to assign users to buckets
 //! for A/B testing scenarios.
 
-use datalogic_rs::{ContextStack, Error as DataLogicError, Evaluator, Operator};
-use serde_json::Value;
+use datalogic_rs::{CustomOperator, DataArena, DataValue, EvalContext, LogicError};
+use datalogic_rs::logic::Result as DataLogicResult;
 
-use super::common::{resolve_string_from_context, OperatorResult};
+use super::common::resolve_string_from_datavalue;
 
 /// Custom operator for fractional/percentage-based bucket assignment.
 ///
 /// The fractional operator uses consistent hashing to assign users to buckets
 /// for A/B testing scenarios.
+#[derive(Debug)]
 pub struct FractionalOperator;
 
-impl Operator for FractionalOperator {
-    fn evaluate(
+impl CustomOperator for FractionalOperator {
+    fn evaluate<'a>(
         &self,
-        args: &[Value],
-        context: &mut ContextStack,
-        _evaluator: &dyn Evaluator,
-    ) -> OperatorResult<Value> {
+        args: &'a [DataValue<'a>],
+        _context: &EvalContext<'a>,
+        arena: &'a DataArena,
+    ) -> DataLogicResult<&'a DataValue<'a>> {
         if args.len() < 2 {
-            return Err(DataLogicError::InvalidArguments(
-                "fractional operator requires an array with at least 2 elements".into(),
+            return Err(LogicError::Custom(
+                "fractional operator requires an array with at least 2 elements".to_string(),
             ));
         }
 
-        // First argument is the bucket key (can be a value or a var reference)
-        let bucket_key = resolve_string_from_context(&args[0], context)?;
+        // First argument is the bucket key
+        let bucket_key = resolve_string_from_datavalue(&args[0])
+            .map_err(|e| LogicError::Custom(format!("Failed to resolve bucket key: {}", e)))?;
 
         // Second argument is the buckets array
         let buckets = args[1]
             .as_array()
             .ok_or_else(|| {
-                DataLogicError::InvalidArguments(
-                    "Second argument must be an array of bucket definitions".into(),
+                LogicError::Custom(
+                    "Second argument must be an array of bucket definitions".to_string(),
                 )
-            })?
-            .as_slice();
+            })?;
 
-        match fractional(&bucket_key, buckets) {
-            Ok(bucket_name) => Ok(Value::String(bucket_name)),
-            Err(e) => Err(DataLogicError::Custom(e)),
+        match fractional_with_datavalue(&bucket_key, buckets) {
+            Ok(bucket_name) => {
+                let s_arena = arena.alloc_str(&bucket_name);
+                Ok(arena.alloc(DataValue::String(s_arena)))
+            }
+            Err(e) => Err(LogicError::Custom(e)),
         }
     }
 }
@@ -114,11 +118,85 @@ fn murmurhash3_32(key: &[u8], seed: u32) -> u32 {
     hash
 }
 
-/// Evaluates the fractional operator for consistent bucket assignment.
+/// Evaluates the fractional operator for consistent bucket assignment with DataValue types.
 ///
 /// The fractional operator takes a bucket key (typically a user ID) and
 /// a list of bucket definitions with percentages. It uses consistent hashing
 /// to always assign the same bucket key to the same bucket.
+///
+/// # Arguments
+/// * `bucket_key` - The key to use for bucket assignment (e.g., user ID)
+/// * `buckets` - Array of [name, percentage, name, percentage, ...] values as DataValue
+///
+/// # Returns
+/// The name of the selected bucket, or an error if the input is invalid
+fn fractional_with_datavalue<'a>(bucket_key: &str, buckets: &[DataValue<'a>]) -> std::result::Result<String, String> {
+    if buckets.is_empty() {
+        return Err("Fractional operator requires at least one bucket".to_string());
+    }
+
+    // Parse bucket definitions: [name1, weight1, name2, weight2, ...]
+    let mut bucket_defs: Vec<(String, u32)> = Vec::new();
+    let mut total_weight: u32 = 0;
+
+    let mut i = 0;
+    while i < buckets.len() {
+        // Get bucket name
+        let name = match buckets[i] {
+            DataValue::String(s) => s.to_string(),
+            _ => return Err(format!("Bucket name at index {} must be a string", i)),
+        };
+
+        i += 1;
+
+        // Get bucket weight
+        if i >= buckets.len() {
+            return Err(format!("Missing weight for bucket '{}'", name));
+        }
+
+        let weight = match buckets[i].as_f64() {
+            Some(n) if n >= 0.0 => n as u32,
+            _ => return Err(format!("Weight for bucket '{}' must be a positive number", name)),
+        };
+
+        total_weight = total_weight
+            .checked_add(weight)
+            .ok_or_else(|| "Total weight overflow".to_string())?;
+
+        bucket_defs.push((name, weight));
+        i += 1;
+    }
+
+    if bucket_defs.is_empty() {
+        return Err("No valid bucket definitions found".to_string());
+    }
+
+    if total_weight == 0 {
+        return Err("Total weight must be greater than zero".to_string());
+    }
+
+    // Hash the bucket key to get a consistent value
+    let hash = murmurhash3_32(bucket_key.as_bytes(), 0);
+
+    // Map hash to range [0, total_weight)
+    let bucket_value = (hash as u64 * total_weight as u64 / u32::MAX as u64) as u32;
+
+    // Find which bucket this value falls into
+    let mut cumulative_weight: u32 = 0;
+    for (name, weight) in bucket_defs {
+        cumulative_weight += weight;
+        if bucket_value < cumulative_weight {
+            return Ok(name);
+        }
+    }
+
+    // Should never reach here, but return last bucket as fallback
+    Err("Failed to select bucket".to_string())
+}
+
+/// Evaluates the fractional operator for consistent bucket assignment.
+///
+/// This version works with serde_json::Value for backward compatibility with tests.
 ///
 /// # Arguments
 /// * `bucket_key` - The key to use for bucket assignment (e.g., user ID)
@@ -133,7 +211,7 @@ fn murmurhash3_32(key: &[u8], seed: u32) -> u32 {
 /// ```
 /// This will consistently assign "user123" to either "control" or "treatment"
 /// based on its hash value.
-pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String> {
+pub fn fractional(bucket_key: &str, buckets: &[serde_json::Value]) -> std::result::Result<String, String> {
     if buckets.is_empty() {
         return Err("Fractional operator requires at least one bucket".to_string());
     }
@@ -146,7 +224,7 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
     while i < buckets.len() {
         // Get bucket name
         let name = match &buckets[i] {
-            Value::String(s) => s.clone(),
+            serde_json::Value::String(s) => s.clone(),
             _ => return Err(format!("Bucket name at index {} must be a string", i)),
         };
 
@@ -158,7 +236,7 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
         }
 
         let weight = match &buckets[i] {
-            Value::Number(n) => n
+            serde_json::Value::Number(n) => n
                 .as_u64()
                 .ok_or_else(|| format!("Weight for bucket '{}' must be a positive integer", name))?
                 as u32,
@@ -279,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_fractional_empty_buckets() {
-        let buckets: Vec<Value> = vec![];
+        let buckets: Vec<serde_json::Value> = vec![];
         let result = fractional("user-123", &buckets);
         assert!(result.is_err());
     }

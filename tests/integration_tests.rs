@@ -167,7 +167,7 @@ fn evaluate(rule: &str, data: &str) -> EvaluationResponse {
 
     // Use datalogic-rs for standard JSON Logic
     let engine = datalogic_rs::DataLogic::new();
-    match engine.evaluate_json(rule, data) {
+    match engine.evaluate_str(rule, data) {
         Ok(result) => EvaluationResponse::success(result),
         Err(e) => EvaluationResponse::error(format!("Evaluation error: {}", e)),
     }
