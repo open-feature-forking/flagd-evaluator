@@ -59,13 +59,13 @@ use datalogic_rs::DataLogic;
 /// let engine = create_evaluator();
 /// // Now you can use custom operators in your rules
 /// ```
-pub fn create_evaluator() -> DataLogic {
+pub fn create_evaluator() -> DataLogic<'static> {
     let mut logic = DataLogic::new();
 
-    logic.add_operator("fractional".to_string(), Box::new(FractionalOperator));
-    logic.add_operator("starts_with".to_string(), Box::new(StartsWithOperator));
-    logic.add_operator("ends_with".to_string(), Box::new(EndsWithOperator));
-    logic.add_operator("sem_ver".to_string(), Box::new(SemVerOperator));
+    logic.register_custom_operator("fractional", Box::new(FractionalOperator));
+    logic.register_custom_operator("starts_with", Box::new(StartsWithOperator));
+    logic.register_custom_operator("ends_with", Box::new(EndsWithOperator));
+    logic.register_custom_operator("sem_ver", Box::new(SemVerOperator));
 
     logic
 }

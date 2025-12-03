@@ -2,33 +2,41 @@
 //!
 //! The ends_with operator checks if a string ends with a given suffix.
 
-use datalogic_rs::{ContextStack, Error as DataLogicError, Evaluator, Operator};
-use serde_json::Value;
+use datalogic_rs::{CustomOperator, DataArena, DataValue, EvalContext, LogicError};
+use datalogic_rs::logic::Result as DataLogicResult;
 
-use super::common::{resolve_string_from_context, OperatorResult};
+use super::common::resolve_string_from_datavalue;
 
 /// Custom operator for string suffix matching.
 ///
 /// Checks if a string ends with a given suffix. The comparison is case-sensitive.
+#[derive(Debug)]
 pub struct EndsWithOperator;
 
-impl Operator for EndsWithOperator {
-    fn evaluate(
+impl CustomOperator for EndsWithOperator {
+    fn evaluate<'a>(
         &self,
-        args: &[Value],
-        context: &mut ContextStack,
-        _evaluator: &dyn Evaluator,
-    ) -> OperatorResult<Value> {
+        args: &'a [DataValue<'a>],
+        _context: &EvalContext<'a>,
+        arena: &'a DataArena,
+    ) -> DataLogicResult<&'a DataValue<'a>> {
         if args.len() < 2 {
-            return Err(DataLogicError::InvalidArguments(
-                "ends_with operator requires an array with at least 2 elements".into(),
+            return Err(LogicError::Custom(
+                "ends_with operator requires an array with at least 2 elements".to_string(),
             ));
         }
 
-        let string_value = resolve_string_from_context(&args[0], context)?;
-        let suffix = resolve_string_from_context(&args[1], context)?;
+        let string_value = resolve_string_from_datavalue(&args[0])
+            .map_err(|e| LogicError::Custom(format!("Failed to resolve string value: {}", e)))?;
+        let suffix = resolve_string_from_datavalue(&args[1])
+            .map_err(|e| LogicError::Custom(format!("Failed to resolve suffix: {}", e)))?;
 
-        Ok(Value::Bool(ends_with(&string_value, &suffix)))
+        let result = ends_with(&string_value, &suffix);
+        if result {
+            Ok(arena.true_value())
+        } else {
+            Ok(arena.false_value())
+        }
     }
 }
 

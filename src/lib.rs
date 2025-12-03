@@ -152,7 +152,7 @@ fn evaluate_logic_internal(
 
     // Use datalogic-rs with custom operators registered
     let logic = create_evaluator();
-    match logic.evaluate_json(&rule_str, &data_str) {
+    match logic.evaluate_str(&rule_str, &data_str) {
         Ok(result) => EvaluationResponse::success(result),
         Err(e) => EvaluationResponse::error(format!("{}", e)),
     }
