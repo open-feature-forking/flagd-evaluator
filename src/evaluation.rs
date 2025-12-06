@@ -6,7 +6,7 @@
 use crate::model::FeatureFlag;
 use crate::operators::create_evaluator;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// The reason for the evaluation result.
 ///
@@ -134,15 +134,59 @@ impl EvaluationResult {
     }
 }
 
-/// Evaluates a feature flag against a context.
+/// Enriches the evaluation context with standard flagd fields.
+///
+/// According to the flagd specification, the evaluation context should include:
+/// - `flagKey`: The key of the flag being evaluated
+/// - `targetingKey`: A key used for consistent hashing (extracted from context or empty)
+/// - All custom fields from the original context
+///
+/// Note: `timestamp` is not included in this WASM implementation as it requires
+/// system time which may not be available in all WASM runtimes.
 ///
 /// # Arguments
-/// * `flag` - The feature flag to evaluate
+/// * `flag_key` - The key of the flag being evaluated
+/// * `context` - The original evaluation context
+///
+/// # Returns
+/// An enriched context with flagKey and targetingKey added
+fn enrich_context(flag_key: &str, context: &Value) -> Value {
+    let mut enriched = if let Some(obj) = context.as_object() {
+        obj.clone()
+    } else {
+        Map::new()
+    };
+
+    // Add flagKey
+    enriched.insert("flagKey".to_string(), Value::String(flag_key.to_string()));
+
+    // Ensure targetingKey exists (use existing or empty string)
+    if !enriched.contains_key("targetingKey") {
+        enriched.insert("targetingKey".to_string(), Value::String(String::new()));
+    }
+
+    Value::Object(enriched)
+}
+
+/// Evaluates a feature flag against a context.
+///
+/// The flag's key should be set in the flag object (from storage).
+/// If the key is not set, an error is returned.
+///
+/// # Arguments
+/// * `flag` - The feature flag to evaluate (must have key set)
 /// * `context` - The evaluation context (JSON object)
 ///
 /// # Returns
 /// An EvaluationResult containing the resolved value, variant, and reason
 pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
+    // Get the flag key from the flag object
+    let flag_key = match &flag.key {
+        Some(key) => key.as_str(),
+        None => {
+            return EvaluationResult::error(ErrorCode::General, "Flag key not set in flag object")
+        }
+    };
     // Check if flag is disabled
     if flag.state == "DISABLED" {
         // Return the default variant value
@@ -174,13 +218,16 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
         }
     }
 
+    // Enrich the context with flagKey and targetingKey
+    let enriched_context = enrich_context(flag_key, context);
+
     // Evaluate targeting rule
     let targeting = flag.targeting.as_ref().unwrap();
     let logic = create_evaluator();
 
-    // Convert targeting rule and context to JSON strings for evaluation
+    // Convert targeting rule and enriched context to JSON strings for evaluation
     let rule_str = targeting.to_string();
-    let context_str = context.to_string();
+    let context_str = enriched_context.to_string();
 
     match logic.evaluate_json(&rule_str, &context_str) {
         Ok(result) => {
@@ -229,6 +276,7 @@ mod tests {
         variants.insert("off".to_string(), json!(false));
 
         FeatureFlag {
+            key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
             default_variant: "off".to_string(),
             variants,
@@ -328,6 +376,7 @@ mod tests {
         });
 
         let flag = FeatureFlag {
+            key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
             default_variant: "string_variant".to_string(),
             variants,
@@ -354,5 +403,66 @@ mod tests {
         // Test object variant
         let result = evaluate_flag(&flag, &json!({"variant_name": "object_variant"}));
         assert_eq!(result.value, json!({"key": "value"}));
+    }
+
+    #[test]
+    fn test_context_enrichment_with_flag_key() {
+        let targeting = json!({
+            "var": "flagKey"
+        });
+        let flag = create_test_flag(Some(targeting));
+        let context = json!({});
+
+        let result = evaluate_flag(&flag, &context);
+        // The targeting rule returns the flagKey variant name, which should be looked up
+        // Since "test_flag" is not a valid variant, it should fall back to default
+        assert_eq!(result.variant, Some("off".to_string()));
+    }
+
+    #[test]
+    fn test_context_enrichment_with_targeting_key() {
+        let targeting = json!({
+            "if": [
+                {"==": [{"var": "targetingKey"}, "user-123"]},
+                "on",
+                "off"
+            ]
+        });
+        let flag = create_test_flag(Some(targeting));
+        let context = json!({"targetingKey": "user-123"});
+
+        let result = evaluate_flag(&flag, &context);
+        assert_eq!(result.value, json!(true));
+        assert_eq!(result.variant, Some("on".to_string()));
+    }
+
+    #[test]
+    fn test_context_enrichment_default_targeting_key() {
+        // When no targetingKey is provided, it should be set to empty string
+        let targeting = json!({
+            "if": [
+                {"==": [{"var": "targetingKey"}, ""]},
+                "on",
+                "off"
+            ]
+        });
+        let flag = create_test_flag(Some(targeting));
+        let context = json!({});
+
+        let result = evaluate_flag(&flag, &context);
+        assert_eq!(result.value, json!(true));
+        assert_eq!(result.variant, Some("on".to_string()));
+    }
+
+    #[test]
+    fn test_flag_without_key_returns_error() {
+        let mut flag = create_test_flag(None);
+        flag.key = None; // Remove the key
+        let context = json!({});
+
+        let result = evaluate_flag(&flag, &context);
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::General));
+        assert!(result.error_message.is_some());
     }
 }
