@@ -111,7 +111,7 @@ impl FeatureFlag {
 /// assert_eq!(result.flags.len(), 1);
 /// assert!(result.flags.contains_key("myFlag"));
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParsingResult {
     /// Map of flag names to their FeatureFlag definitions
     pub flags: HashMap<String, FeatureFlag>,

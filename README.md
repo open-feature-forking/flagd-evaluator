@@ -9,6 +9,7 @@ A WebAssembly-based JSON Logic evaluator with custom operators for feature flag 
 
 - **Full JSON Logic Support**: Evaluate complex JSON Logic rules with all standard operators via [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
 - **Custom Operators**: Feature-flag specific operators like `fractional` for A/B testing
+- **Flag State Management**: Internal storage for flag configurations with `update_state` API
 - **Chicory Compatible**: Works seamlessly with pure Java WASM runtimes - no JNI required
 - **Zero Dependencies at Runtime**: Single WASM file, no external dependencies
 - **Optimized Size**: WASM binary optimized for size (~1.5MB, includes full JSON Logic implementation)

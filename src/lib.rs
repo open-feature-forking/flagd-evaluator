@@ -41,6 +41,7 @@ pub mod memory;
 pub mod model;
 pub mod operators;
 pub mod state;
+pub mod storage;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
