@@ -40,7 +40,6 @@ pub mod evaluation;
 pub mod memory;
 pub mod model;
 pub mod operators;
-pub mod state;
 pub mod storage;
 
 use serde::{Deserialize, Serialize};
@@ -53,7 +52,7 @@ pub use memory::{
 };
 pub use model::{FeatureFlag, ParsingResult};
 pub use operators::{create_evaluator, ends_with, fractional, sem_ver, starts_with};
-pub use state::{clear_flag_state, get_flag, update_flag_state};
+pub use storage::{clear_flag_state, get_flag_state, update_flag_state};
 
 /// The response format for evaluation results.
 ///
@@ -229,16 +228,13 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
         }
     };
 
-    // Parse the configuration
-    match ParsingResult::parse(&config_str) {
-        Ok(parsing_result) => {
-            update_flag_state(parsing_result);
-            serde_json::json!({
-                "success": true,
-                "error": null
-            })
-            .to_string()
-        }
+    // Parse and store the configuration using the storage module
+    match update_flag_state(&config_str) {
+        Ok(()) => serde_json::json!({
+            "success": true,
+            "error": null
+        })
+        .to_string(),
         Err(e) => serde_json::json!({
             "success": false,
             "error": e
@@ -330,8 +326,18 @@ fn evaluate_internal(
     };
 
     // Retrieve the flag from state
-    let flag = match get_flag(&flag_key) {
-        Some(f) => f,
+    let flag_state = match get_flag_state() {
+        Some(state) => state,
+        None => {
+            return EvaluationResult::error(
+                ErrorCode::General,
+                "Flag state not initialized. Call update_state first.",
+            )
+        }
+    };
+
+    let flag = match flag_state.flags.get(&flag_key) {
+        Some(f) => f.clone(),
         None => return EvaluationResult::flag_not_found(&flag_key),
     };
 
