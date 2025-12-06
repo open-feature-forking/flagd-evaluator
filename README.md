@@ -9,6 +9,7 @@ A WebAssembly-based JSON Logic evaluator with custom operators for feature flag 
 
 - **Full JSON Logic Support**: Evaluate complex JSON Logic rules with all standard operators via [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
 - **Custom Operators**: Feature-flag specific operators like `fractional` for A/B testing
+- **Flag State Management**: Internal storage for flag configurations with `update_state` API
 - **Chicory Compatible**: Works seamlessly with pure Java WASM runtimes - no JNI required
 - **Zero Dependencies at Runtime**: Single WASM file, no external dependencies
 - **Optimized Size**: WASM binary optimized for size (~1.5MB, includes full JSON Logic implementation)
@@ -217,6 +218,7 @@ println!("{}", result_str);
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `evaluate_logic` | `(rule_ptr, rule_len, data_ptr, data_len) -> u64` | Evaluates JSON Logic rule against data |
+| `update_state` | `(config_ptr, config_len) -> u64` | Updates internal flag configuration state |
 | `alloc` | `(len: u32) -> *mut u8` | Allocates memory in WASM linear memory |
 | `dealloc` | `(ptr: *mut u8, len: u32)` | Frees previously allocated memory |
 
@@ -246,6 +248,114 @@ println!("{}", result_str);
   "result": null,
   "error": "error message"
 }
+```
+
+### update_state
+
+Updates the internal flag configuration state with a new set of feature flags. Each call completely replaces the previous state.
+
+**Parameters:**
+- `config_ptr` (u32): Pointer to the flag configuration JSON string in WASM memory
+- `config_len` (u32): Length of the configuration JSON string
+
+**Returns:**
+- `u64`: Packed pointer where upper 32 bits = result pointer, lower 32 bits = result length
+
+**Response Format (always JSON):**
+```json
+// Success
+{
+  "success": true,
+  "error": null
+}
+
+// Error
+{
+  "success": false,
+  "error": "error message"
+}
+```
+
+**Configuration Format:**
+
+The configuration must be in the standard flagd format:
+
+```json
+{
+  "$schema": "https://flagd.dev/schema/v0/flags.json",
+  "flags": {
+    "myBoolFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on",
+      "targeting": {
+        "if": [
+          {">=": [{"var": "age"}, 18]},
+          "on",
+          "off"
+        ]
+      }
+    },
+    "myStringFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "red": "red",
+        "blue": "blue",
+        "green": "green"
+      },
+      "defaultVariant": "red"
+    }
+  }
+}
+```
+
+**Key Properties:**
+- **Full Replacement**: Each call replaces all previously stored flags
+- **No Caching**: Module always uses the most recently provided state
+- **Schema Validation**: Invalid configurations are rejected with descriptive errors
+- **Thread-Safe**: Uses RefCell for interior mutability in single-threaded WASM environment
+
+**Example Usage (Java with Chicory):**
+
+```java
+// Prepare flag configuration
+String config = """
+{
+  "flags": {
+    "myFlag": {
+      "state": "ENABLED",
+      "defaultVariant": "on",
+      "variants": {
+        "on": true,
+        "off": false
+      }
+    }
+  }
+}
+""";
+
+// Allocate memory and write configuration
+byte[] configBytes = config.getBytes(StandardCharsets.UTF_8);
+long configPtr = alloc.apply(configBytes.length)[0];
+memory.write((int) configPtr, configBytes);
+
+// Update state
+long packedResult = updateState.apply(configPtr, configBytes.length)[0];
+
+// Read result
+int resultPtr = (int) (packedResult >>> 32);
+int resultLen = (int) (packedResult & 0xFFFFFFFFL);
+byte[] resultBytes = memory.readBytes(resultPtr, resultLen);
+String result = new String(resultBytes, StandardCharsets.UTF_8);
+System.out.println(result);
+// Output: {"success":true,"error":null}
+
+// Free memory
+dealloc.apply(configPtr, configBytes.length);
+dealloc.apply(resultPtr, resultLen);
 ```
 
 ## Custom Operators
