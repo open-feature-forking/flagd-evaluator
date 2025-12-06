@@ -176,9 +176,11 @@ impl ParsingResult {
         let mut flag_set_metadata = HashMap::new();
 
         // Check for $schema, $evaluators, or other top-level metadata
-        for (key, value) in config.as_object().unwrap() {
-            if key != "flags" {
-                flag_set_metadata.insert(key.clone(), value.clone());
+        if let Some(obj) = config.as_object() {
+            for (key, value) in obj {
+                if key != "flags" {
+                    flag_set_metadata.insert(key.clone(), value.clone());
+                }
             }
         }
 
