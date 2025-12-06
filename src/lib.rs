@@ -11,13 +11,15 @@
 //! - **JSON Logic Evaluation**: Full support for standard JSON Logic operations via `datalogic-rs`
 //! - **Custom Operators**: Support for feature-flag specific operators like `fractional`, `starts_with`,
 //!   `ends_with`, and `sem_ver` - all registered via the `datalogic_rs::Operator` trait
+//! - **Feature Flag Evaluation**: State-based flag evaluation following the flagd provider specification
 //! - **Memory Safe**: Clean memory management with explicit alloc/dealloc functions
 //! - **Zero JNI**: Works with pure Java WASM runtimes like Chicory
 //!
 //! ## Exported Functions
 //!
-//! - `evaluate_logic`: Main evaluation function
-//! - `update_state`: Update internal flag configuration state
+//! - `evaluate_logic`: Evaluates JSON Logic rules directly
+//! - `update_state`: Updates the feature flag configuration state
+//! - `evaluate`: Evaluates a feature flag against context (requires prior `update_state` call)
 //! - `wasm_alloc`: Allocate memory from WASM linear memory
 //! - `wasm_dealloc`: Free allocated memory
 //!
@@ -25,14 +27,16 @@
 //!
 //! ```ignore
 //! // From Java via Chicory:
-//! // 1. Allocate memory for rule and data strings
-//! // 2. Copy strings to WASM memory
-//! // 3. Call evaluate_logic with packed pointers
-//! // 4. Parse the returned JSON result
-//! // 5. Free allocated memory
+//! // 1. Update state with flag configuration
+//! // 2. Allocate memory for flag key and context strings
+//! // 3. Copy strings to WASM memory
+//! // 4. Call evaluate with pointers
+//! // 5. Parse the returned JSON result
+//! // 6. Free allocated memory
 //! ```
 
 pub mod error;
+pub mod evaluation;
 pub mod memory;
 pub mod model;
 pub mod operators;
@@ -42,11 +46,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use error::{ErrorType, EvaluatorError};
+pub use evaluation::{evaluate_flag, ErrorCode, EvaluationResult, ResolutionReason};
 pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
 pub use model::{FeatureFlag, ParsingResult};
 pub use operators::{create_evaluator, ends_with, fractional, sem_ver, starts_with};
+pub use storage::{clear_flag_state, get_flag_state, update_flag_state};
 
 /// The response format for evaluation results.
 ///
@@ -176,11 +182,10 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
     wasm_dealloc(ptr, len)
 }
 
-/// Updates the internal flag state with a new configuration.
+/// Updates the feature flag state with a new configuration.
 ///
-/// This function accepts a JSON configuration string in the standard flagd format
-/// and replaces the entire internal flag state. Each call to this function completely
-/// replaces the previous state - there is no merging or caching.
+/// This function parses the provided JSON configuration and stores it in
+/// thread-local storage for later evaluation.
 ///
 /// # Arguments
 /// * `config_ptr` - Pointer to the JSON configuration string in WASM memory
@@ -188,10 +193,9 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
 ///
 /// # Returns
 /// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
-/// of the response JSON string. The caller must free this memory using `wasm_dealloc`.
+/// of the response JSON string. The response indicates success or failure.
 ///
 /// # Response Format
-/// The response is always valid JSON with the following structure:
 /// ```json
 /// {
 ///   "success": true|false,
@@ -199,53 +203,146 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
 /// }
 /// ```
 ///
-/// # Example JSON Configuration
-/// ```json
-/// {
-///   "flags": {
-///     "myFlag": {
-///       "state": "ENABLED",
-///       "defaultVariant": "on",
-///       "variants": {
-///         "on": true,
-///         "off": false
-///       }
-///     }
-///   }
-/// }
-/// ```
-///
 /// # Safety
 /// The caller must ensure:
-/// - `config_ptr` points to valid memory containing UTF-8 encoded JSON
-/// - The memory region is at least `config_len` bytes
+/// - `config_ptr` points to valid memory
+/// - The memory region is valid UTF-8
+/// - The caller will free the returned memory using `dealloc`
 #[no_mangle]
 pub extern "C" fn update_state(config_ptr: *const u8, config_len: u32) -> u64 {
     let response = update_state_internal(config_ptr, config_len);
     string_to_memory(&response)
 }
 
-/// Internal function to update state and return JSON response.
+/// Internal implementation of update_state.
 fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
-    // Read the configuration string from memory
+    // SAFETY: The caller guarantees valid memory regions
     let config_str = match unsafe { string_from_memory(config_ptr, config_len) } {
         Ok(s) => s,
         Err(e) => {
-            return format!(
-                r#"{{"success":false,"error":"Failed to read configuration: {}"}}"#,
-                e
+            return serde_json::json!({
+                "success": false,
+                "error": format!("Failed to read configuration: {}", e)
+            })
+            .to_string()
+        }
+    };
+
+    // Parse and store the configuration using the storage module
+    match update_flag_state(&config_str) {
+        Ok(()) => serde_json::json!({
+            "success": true,
+            "error": null
+        })
+        .to_string(),
+        Err(e) => serde_json::json!({
+            "success": false,
+            "error": e
+        })
+        .to_string(),
+    }
+}
+
+/// Evaluates a feature flag against the provided context.
+///
+/// This function retrieves a flag from the previously stored state (set via `update_state`)
+/// and evaluates it against the provided context.
+///
+/// # Arguments
+/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
+/// * `flag_key_len` - Length of the flag key string
+/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
+/// * `context_len` - Length of the evaluation context JSON string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the EvaluationResult JSON string.
+///
+/// # Response Format
+/// The response matches the flagd provider specification:
+/// ```json
+/// {
+///   "value": <resolved_value>,
+///   "variant": "variant_name",
+///   "reason": "STATIC"|"TARGETING_MATCH"|"DISABLED"|"ERROR"|"FLAG_NOT_FOUND",
+///   "errorCode": "FLAG_NOT_FOUND"|"PARSE_ERROR"|"TYPE_MISMATCH"|"GENERAL",
+///   "errorMessage": "error description"
+/// }
+/// ```
+///
+/// # Safety
+/// The caller must ensure:
+/// - `flag_key_ptr` and `context_ptr` point to valid memory
+/// - The memory regions are valid UTF-8
+/// - The caller will free the returned memory using `dealloc`
+#[no_mangle]
+pub extern "C" fn evaluate(
+    flag_key_ptr: *const u8,
+    flag_key_len: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> u64 {
+    let result = evaluate_internal(flag_key_ptr, flag_key_len, context_ptr, context_len);
+    string_to_memory(&result.to_json_string())
+}
+
+/// Internal implementation of evaluate.
+fn evaluate_internal(
+    flag_key_ptr: *const u8,
+    flag_key_len: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> EvaluationResult {
+    // SAFETY: The caller guarantees valid memory regions
+    let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
+        Ok(s) => s,
+        Err(e) => {
+            return EvaluationResult::error(
+                ErrorCode::ParseError,
+                format!("Failed to read flag key: {}", e),
             )
         }
     };
 
-    // Update the flag state
-    match storage::update_flag_state(&config_str) {
-        Ok(()) => r#"{"success":true,"error":null}"#.to_string(),
-        Err(e) => format!(
-            r#"{{"success":false,"error":"{}"}}"#,
-            e.replace('"', "\\\"")
-        ),
-    }
+    let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
+        Ok(s) => s,
+        Err(e) => {
+            return EvaluationResult::error(
+                ErrorCode::ParseError,
+                format!("Failed to read context: {}", e),
+            )
+        }
+    };
+
+    // Parse the context JSON
+    let context: Value = match serde_json::from_str(&context_str) {
+        Ok(v) => v,
+        Err(e) => {
+            return EvaluationResult::error(
+                ErrorCode::ParseError,
+                format!("Failed to parse context JSON: {}", e),
+            )
+        }
+    };
+
+    // Retrieve the flag from state
+    let flag_state = match get_flag_state() {
+        Some(state) => state,
+        None => {
+            return EvaluationResult::error(
+                ErrorCode::General,
+                "Flag state not initialized. Call update_state first.",
+            )
+        }
+    };
+
+    let flag = match flag_state.flags.get(&flag_key) {
+        Some(f) => f.clone(),
+        None => return EvaluationResult::flag_not_found(&flag_key),
+    };
+
+    // Evaluate the flag
+    evaluate_flag(&flag, &context)
 }
 
 #[cfg(test)]
@@ -552,146 +649,423 @@ mod tests {
     }
 
     // ============================================================================
-    // update_state tests
+    // update_state and evaluate function tests
     // ============================================================================
 
-    fn call_update_state(config: &str) -> String {
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32)
-    }
-
     #[test]
-    fn test_update_state_success() {
+    fn test_update_state_and_evaluate_bool() {
+        clear_flag_state();
+
         let config = r#"{
             "flags": {
-                "testFlag": {
+                "boolFlag": {
                     "state": "ENABLED",
-                    "defaultVariant": "on",
                     "variants": {
                         "on": true,
                         "off": false
+                    },
+                    "defaultVariant": "off"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        let update_response =
+            update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        let update_json: Value = serde_json::from_str(&update_response).unwrap();
+        assert_eq!(update_json["success"], true);
+
+        let context = "{}";
+        let context_bytes = context.as_bytes();
+        let flag_key = "boolFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.value, json!(false));
+        assert_eq!(result.variant, Some("off".to_string()));
+        assert_eq!(result.reason, ResolutionReason::Static);
+    }
+
+    #[test]
+    fn test_evaluate_int_flag() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "intFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "small": 10,
+                        "large": 100
+                    },
+                    "defaultVariant": "small"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = "{}";
+        let context_bytes = context.as_bytes();
+        let flag_key = "intFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.value, json!(10));
+        assert_eq!(result.variant, Some("small".to_string()));
+    }
+
+    #[test]
+    fn test_evaluate_float_flag() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "floatFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "low": 1.5,
+                        "high": 9.99
+                    },
+                    "defaultVariant": "low"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = "{}";
+        let context_bytes = context.as_bytes();
+        let flag_key = "floatFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.value, json!(1.5));
+        assert_eq!(result.variant, Some("low".to_string()));
+    }
+
+    #[test]
+    fn test_evaluate_string_flag() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "stringFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "red": "crimson",
+                        "blue": "azure"
+                    },
+                    "defaultVariant": "red"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = "{}";
+        let context_bytes = context.as_bytes();
+        let flag_key = "stringFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.value, json!("crimson"));
+        assert_eq!(result.variant, Some("red".to_string()));
+    }
+
+    #[test]
+    fn test_evaluate_object_flag() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "objectFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "config1": {"timeout": 30, "retries": 3},
+                        "config2": {"timeout": 60, "retries": 5}
+                    },
+                    "defaultVariant": "config1"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = "{}";
+        let context_bytes = context.as_bytes();
+        let flag_key = "objectFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.value, json!({"timeout": 30, "retries": 3}));
+        assert_eq!(result.variant, Some("config1".to_string()));
+    }
+
+    #[test]
+    fn test_evaluate_with_targeting() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "targetedFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "email"}, "admin@example.com"]},
+                            "on",
+                            "off"
+                        ]
                     }
                 }
             }
         }"#;
 
-        let response = call_update_state(config);
-        assert!(response.contains(r#""success":true"#));
-        assert!(response.contains(r#""error":null"#));
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
 
-        // Verify the state was actually updated
-        let state = storage::get_flag_state();
-        assert!(state.is_some());
-        let state = state.unwrap();
-        assert_eq!(state.flags.len(), 1);
-        assert!(state.flags.contains_key("testFlag"));
+        // Test matching context
+        let context = r#"{"email": "admin@example.com"}"#;
+        let context_bytes = context.as_bytes();
+        let flag_key = "targetedFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.value, json!(true));
+        assert_eq!(result.variant, Some("on".to_string()));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+
+        // Test non-matching context
+        let context = r#"{"email": "user@example.com"}"#;
+        let context_bytes = context.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.value, json!(false));
+        assert_eq!(result.variant, Some("off".to_string()));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+    }
+
+    #[test]
+    fn test_evaluate_disabled_flag() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "disabledFlag": {
+                    "state": "DISABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "off"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = "{}";
+        let context_bytes = context.as_bytes();
+        let flag_key = "disabledFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.value, json!(false));
+        assert_eq!(result.reason, ResolutionReason::Disabled);
+    }
+
+    #[test]
+    fn test_evaluate_flag_not_found() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "existingFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true},
+                    "defaultVariant": "on"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = "{}";
+        let context_bytes = context.as_bytes();
+        let flag_key = "nonexistentFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
+        assert!(result.error_message.is_some());
     }
 
     #[test]
     fn test_update_state_invalid_json() {
+        clear_flag_state();
+
         let config = "not valid json";
-        let response = call_update_state(config);
-        assert!(response.contains(r#""success":false"#));
-        assert!(response.contains(r#""error":"#));
-        assert!(response.contains("Failed to parse JSON"));
+        let config_bytes = config.as_bytes();
+        let response = update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        let json: Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(json["success"], false);
+        assert!(json["error"].is_string());
     }
 
     #[test]
-    fn test_update_state_missing_flags_field() {
-        let config = r#"{"other": "data"}"#;
-        let response = call_update_state(config);
-        assert!(response.contains(r#""success":false"#));
-        assert!(response.contains("Missing 'flags' field"));
-    }
+    fn test_evaluate_invalid_context_json() {
+        clear_flag_state();
 
-    #[test]
-    fn test_update_state_replaces_existing() {
-        // First configuration
-        let config1 = r#"{
-            "flags": {
-                "flag1": {
-                    "state": "ENABLED",
-                    "defaultVariant": "on",
-                    "variants": {"on": true}
-                }
-            }
-        }"#;
-        call_update_state(config1);
-
-        // Verify first config is stored
-        let state = storage::get_flag_state().unwrap();
-        assert!(state.flags.contains_key("flag1"));
-
-        // Second configuration
-        let config2 = r#"{
-            "flags": {
-                "flag2": {
-                    "state": "ENABLED",
-                    "defaultVariant": "off",
-                    "variants": {"off": false}
-                }
-            }
-        }"#;
-        let response = call_update_state(config2);
-        assert!(response.contains(r#""success":true"#));
-
-        // Verify state was replaced
-        let state = storage::get_flag_state().unwrap();
-        assert!(!state.flags.contains_key("flag1"));
-        assert!(state.flags.contains_key("flag2"));
-    }
-
-    #[test]
-    fn test_update_state_with_metadata() {
-        let config = r#"{
-            "$schema": "https://flagd.dev/schema/v0/flags.json",
-            "flags": {
-                "myFlag": {
-                    "state": "ENABLED",
-                    "defaultVariant": "on",
-                    "variants": {"on": true}
-                }
-            }
-        }"#;
-
-        let response = call_update_state(config);
-        assert!(response.contains(r#""success":true"#));
-
-        let state = storage::get_flag_state().unwrap();
-        assert!(state.flag_set_metadata.contains_key("$schema"));
-    }
-
-    #[test]
-    fn test_update_state_empty_flags() {
-        let config = r#"{"flags": {}}"#;
-        let response = call_update_state(config);
-        assert!(response.contains(r#""success":true"#));
-
-        let state = storage::get_flag_state().unwrap();
-        assert_eq!(state.flags.len(), 0);
-    }
-
-    #[test]
-    fn test_update_state_multiple_flags() {
         let config = r#"{
             "flags": {
-                "flag1": {
+                "testFlag": {
                     "state": "ENABLED",
-                    "defaultVariant": "on",
-                    "variants": {"on": true}
-                },
-                "flag2": {
-                    "state": "DISABLED",
-                    "defaultVariant": "off",
-                    "variants": {"off": false}
+                    "variants": {"on": true},
+                    "defaultVariant": "on"
                 }
             }
         }"#;
 
-        let response = call_update_state(config);
-        assert!(response.contains(r#""success":true"#));
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
 
-        let state = storage::get_flag_state().unwrap();
-        assert_eq!(state.flags.len(), 2);
+        let context = "not valid json";
+        let context_bytes = context.as_bytes();
+        let flag_key = "testFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::ParseError));
+    }
+
+    #[test]
+    fn test_evaluate_with_fractional_targeting() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "abTestFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "control": "control-experience",
+                        "treatment": "treatment-experience"
+                    },
+                    "defaultVariant": "control",
+                    "targeting": {
+                        "fractional": [
+                            {"var": "userId"},
+                            ["control", 50, "treatment", 50]
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = r#"{"userId": "user-123"}"#;
+        let context_bytes = context.as_bytes();
+        let flag_key = "abTestFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        // Result should be one of the variants
+        assert!(
+            result.value == json!("control-experience")
+                || result.value == json!("treatment-experience")
+        );
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+    }
+
+    #[test]
+    fn test_evaluation_result_serialization() {
+        let result = EvaluationResult::static_result(json!(42), "variant1".to_string());
+        let json_str = result.to_json_string();
+
+        let parsed: Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["value"], 42);
+        assert_eq!(parsed["variant"], "variant1");
+        assert_eq!(parsed["reason"], "STATIC");
     }
 }

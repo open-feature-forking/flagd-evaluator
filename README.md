@@ -218,7 +218,8 @@ println!("{}", result_str);
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `evaluate_logic` | `(rule_ptr, rule_len, data_ptr, data_len) -> u64` | Evaluates JSON Logic rule against data |
-| `update_state` | `(config_ptr, config_len) -> u64` | Updates internal flag configuration state |
+| `update_state` | `(config_ptr, config_len) -> u64` | Updates the feature flag configuration state |
+| `evaluate` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a feature flag against context |
 | `alloc` | `(len: u32) -> *mut u8` | Allocates memory in WASM linear memory |
 | `dealloc` | `(ptr: *mut u8, len: u32)` | Frees previously allocated memory |
 
@@ -252,16 +253,40 @@ println!("{}", result_str);
 
 ### update_state
 
-Updates the internal flag configuration state with a new set of feature flags. Each call completely replaces the previous state.
+Updates the internal feature flag configuration state. This function should be called before evaluating flags using the `evaluate` function.
 
 **Parameters:**
-- `config_ptr` (u32): Pointer to the flag configuration JSON string in WASM memory
+- `config_ptr` (u32): Pointer to the flagd configuration JSON string in WASM memory
 - `config_len` (u32): Length of the configuration JSON string
 
 **Returns:**
 - `u64`: Packed pointer where upper 32 bits = result pointer, lower 32 bits = result length
 
-**Response Format (always JSON):**
+**Configuration Format:**
+The configuration should follow the [flagd flag definition schema](https://flagd.dev/reference/flag-definitions/):
+```json
+{
+  "flags": {
+    "myFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off",
+      "targeting": {
+        "if": [
+          {"==": [{"var": "email"}, "admin@example.com"]},
+          "on",
+          "off"
+        ]
+      }
+    }
+  }
+}
+```
+
+**Response Format:**
 ```json
 // Success
 {
@@ -276,85 +301,76 @@ Updates the internal flag configuration state with a new set of feature flags. E
 }
 ```
 
-**Configuration Format:**
+### evaluate
 
-The configuration must be in the standard flagd format:
+Evaluates a feature flag from the previously stored configuration (set via `update_state`) against the provided context.
 
+**Parameters:**
+- `flag_key_ptr` (u32): Pointer to the flag key string in WASM memory
+- `flag_key_len` (u32): Length of the flag key string
+- `context_ptr` (u32): Pointer to the evaluation context JSON string in WASM memory
+- `context_len` (u32): Length of the context JSON string
+
+**Returns:**
+- `u64`: Packed pointer where upper 32 bits = result pointer, lower 32 bits = result length
+
+**Response Format:**
+The response follows the [flagd provider specification](https://flagd.dev/reference/specifications/providers/#evaluation-results):
 ```json
 {
-  "$schema": "https://flagd.dev/schema/v0/flags.json",
-  "flags": {
-    "myBoolFlag": {
-      "state": "ENABLED",
-      "variants": {
-        "on": true,
-        "off": false
-      },
-      "defaultVariant": "on",
-      "targeting": {
-        "if": [
-          {">=": [{"var": "age"}, 18]},
-          "on",
-          "off"
-        ]
-      }
-    },
-    "myStringFlag": {
-      "state": "ENABLED",
-      "variants": {
-        "red": "red",
-        "blue": "blue",
-        "green": "green"
-      },
-      "defaultVariant": "red"
-    }
-  }
+  "value": <resolved_value>,
+  "variant": "variant_name",
+  "reason": "STATIC" | "TARGETING_MATCH" | "DISABLED" | "ERROR",
+  "errorCode": "FLAG_NOT_FOUND" | "PARSE_ERROR" | "TYPE_MISMATCH" | "GENERAL",
+  "errorMessage": "error description"
 }
 ```
 
-**Key Properties:**
-- **Full Replacement**: Each call replaces all previously stored flags
-- **No Caching**: Module always uses the most recently provided state
-- **Schema Validation**: Invalid configurations are rejected with descriptive errors
-- **Thread-Safe**: Uses RefCell for interior mutability in single-threaded WASM environment
+**Reasons:**
+- `STATIC`: The resolved value is statically configured (no targeting rules)
+- `TARGETING_MATCH`: The resolved value is the result of targeting rule evaluation
+- `DISABLED`: The flag is disabled, returning the default variant
+- `ERROR`: An error occurred during evaluation
 
-**Example Usage (Java with Chicory):**
+**Error Codes:**
+- `FLAG_NOT_FOUND`: The flag key was not found in the configuration
+- `PARSE_ERROR`: Error parsing or evaluating the targeting rule
+- `TYPE_MISMATCH`: The evaluated type does not match the expected type
+- `GENERAL`: Generic evaluation error
 
+**Example Usage:**
 ```java
-// Prepare flag configuration
-String config = """
-{
-  "flags": {
-    "myFlag": {
-      "state": "ENABLED",
-      "defaultVariant": "on",
-      "variants": {
-        "on": true,
-        "off": false
-      }
-    }
-  }
-}
-""";
-
-// Allocate memory and write configuration
+// 1. Update state with flag configuration
+String config = "{\"flags\": {...}}";
 byte[] configBytes = config.getBytes(StandardCharsets.UTF_8);
 long configPtr = alloc.apply(configBytes.length)[0];
 memory.write((int) configPtr, configBytes);
+long updateResult = updateState.apply(configPtr, configBytes.length)[0];
+// ... read and parse update result ...
+dealloc.apply(configPtr, configBytes.length);
 
-// Update state
-long packedResult = updateState.apply(configPtr, configBytes.length)[0];
+// 2. Evaluate a flag
+String flagKey = "myFlag";
+String context = "{\"email\": \"admin@example.com\"}";
+byte[] keyBytes = flagKey.getBytes(StandardCharsets.UTF_8);
+byte[] contextBytes = context.getBytes(StandardCharsets.UTF_8);
 
-// Read result
+long keyPtr = alloc.apply(keyBytes.length)[0];
+long contextPtr = alloc.apply(contextBytes.length)[0];
+memory.write((int) keyPtr, keyBytes);
+memory.write((int) contextPtr, contextBytes);
+
+long packedResult = evaluate.apply(keyPtr, keyBytes.length, contextPtr, contextBytes.length)[0];
 int resultPtr = (int) (packedResult >>> 32);
 int resultLen = (int) (packedResult & 0xFFFFFFFFL);
+
 byte[] resultBytes = memory.readBytes(resultPtr, resultLen);
 String result = new String(resultBytes, StandardCharsets.UTF_8);
-System.out.println(result);
-// Output: {"success":true,"error":null}
+// Parse JSON result...
 
-// Free memory
-dealloc.apply(configPtr, configBytes.length);
+// Cleanup
+dealloc.apply(keyPtr, keyBytes.length);
+dealloc.apply(contextPtr, contextBytes.length);
 dealloc.apply(resultPtr, resultLen);
 ```
 
