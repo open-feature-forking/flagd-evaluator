@@ -320,14 +320,14 @@ The response follows the [flagd provider specification](https://flagd.dev/refere
 {
   "value": <resolved_value>,
   "variant": "variant_name",
-  "reason": "STATIC" | "TARGETING_MATCH" | "DISABLED" | "ERROR",
+  "reason": "DEFAULT" | "TARGETING_MATCH" | "DISABLED" | "ERROR",
   "errorCode": "FLAG_NOT_FOUND" | "PARSE_ERROR" | "TYPE_MISMATCH" | "GENERAL",
   "errorMessage": "error description"
 }
 ```
 
 **Reasons:**
-- `STATIC`: The resolved value is statically configured (no targeting rules)
+- `DEFAULT`: The resolved value is statically configured (no targeting rules)
 - `TARGETING_MATCH`: The resolved value is the result of targeting rule evaluation
 - `DISABLED`: The flag is disabled, returning the default variant
 - `ERROR`: An error occurred during evaluation

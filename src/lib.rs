@@ -264,7 +264,7 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
 /// {
 ///   "value": <resolved_value>,
 ///   "variant": "variant_name",
-///   "reason": "STATIC"|"TARGETING_MATCH"|"DISABLED"|"ERROR"|"FLAG_NOT_FOUND",
+///   "reason": "DEFAULT"|"TARGETING_MATCH"|"DISABLED"|"ERROR",
 ///   "errorCode": "FLAG_NOT_FOUND"|"PARSE_ERROR"|"TYPE_MISMATCH"|"GENERAL",
 ///   "errorMessage": "error description"
 /// }
@@ -689,7 +689,7 @@ mod tests {
 
         assert_eq!(result.value, json!(false));
         assert_eq!(result.variant, Some("off".to_string()));
-        assert_eq!(result.reason, ResolutionReason::Static);
+        assert_eq!(result.reason, ResolutionReason::Default);
     }
 
     #[test]
@@ -1066,7 +1066,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(parsed["value"], 42);
         assert_eq!(parsed["variant"], "variant1");
-        assert_eq!(parsed["reason"], "STATIC");
+        assert_eq!(parsed["reason"], "DEFAULT");
     }
 
     // ============================================================================
