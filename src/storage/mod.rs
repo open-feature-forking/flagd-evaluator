@@ -68,12 +68,7 @@ pub fn update_flag_state(json_config: &str) -> Result<(), String> {
 /// * `Some(ParsingResult)` - If the flag store has been initialized
 /// * `None` - If no configuration has been loaded yet
 pub fn get_flag_state() -> Option<ParsingResult> {
-    FLAG_STORE.with(|store| {
-        store.borrow().as_ref().map(|result| ParsingResult {
-            flags: result.flags.clone(),
-            flag_set_metadata: result.flag_set_metadata.clone(),
-        })
-    })
+    FLAG_STORE.with(|store| store.borrow().as_ref().cloned())
 }
 
 /// Clears the internal flag state.
