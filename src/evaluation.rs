@@ -703,4 +703,44 @@ mod tests {
             Some(&json!("deprecated"))
         );
     }
+
+    #[test]
+    fn test_json_serialization_format() {
+        // Test that the JSON output matches the expected format
+        let mut metadata = HashMap::new();
+        metadata.insert("test".to_string(), json!("value"));
+
+        let result = EvaluationResult::static_result(json!(42), "variant1".to_string())
+            .with_metadata(metadata);
+
+        let json_str = result.to_json_string();
+        let parsed: Value = serde_json::from_str(&json_str).unwrap();
+
+        // Verify all fields are present and correctly formatted
+        assert_eq!(parsed["value"], 42);
+        assert_eq!(parsed["variant"], "variant1");
+        assert_eq!(parsed["reason"], "DEFAULT");
+        assert!(parsed["flagMetadata"].is_object());
+        assert_eq!(parsed["flagMetadata"]["test"], "value");
+        // errorCode and errorMessage should not be present for success
+        assert!(parsed.get("errorCode").is_none() || parsed["errorCode"].is_null());
+        assert!(parsed.get("errorMessage").is_none() || parsed["errorMessage"].is_null());
+    }
+
+    #[test]
+    fn test_error_json_serialization_format() {
+        let result = EvaluationResult::error(ErrorCode::FlagNotFound, "Flag not found");
+
+        let json_str = result.to_json_string();
+        let parsed: Value = serde_json::from_str(&json_str).unwrap();
+
+        // Verify error fields
+        assert_eq!(parsed["reason"], "ERROR");
+        assert_eq!(parsed["errorCode"], "FLAG_NOT_FOUND");
+        assert_eq!(parsed["errorMessage"], "Flag not found");
+        assert!(parsed["value"].is_null());
+        // variant should not be present for errors
+        assert!(parsed.get("variant").is_none() || parsed["variant"].is_null());
+        assert!(parsed.get("flagMetadata").is_none() || parsed["flagMetadata"].is_null());
+    }
 }
