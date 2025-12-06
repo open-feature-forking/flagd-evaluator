@@ -893,3 +893,200 @@ fn test_ends_with_targeting_rule() {
     assert!(response.success);
     assert_eq!(response.result, Some(json!(true)));
 }
+
+// ============================================================================
+// update_state integration tests
+// ============================================================================
+
+#[test]
+fn test_update_state_success() {
+    let config = r#"{
+        "flags": {
+            "testFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {
+                    "on": true,
+                    "off": false
+                }
+            }
+        }
+    }"#;
+
+    let result = flagd_evaluator::storage::update_flag_state(config);
+    assert!(result.is_ok());
+
+    // Verify the state was actually stored
+    let state = flagd_evaluator::storage::get_flag_state();
+    assert!(state.is_some());
+    let state = state.unwrap();
+    assert_eq!(state.flags.len(), 1);
+    assert!(state.flags.contains_key("testFlag"));
+}
+
+#[test]
+fn test_update_state_invalid_json() {
+    let config = "not valid json";
+    let result = flagd_evaluator::storage::update_flag_state(config);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("parse"));
+}
+
+#[test]
+fn test_update_state_missing_flags_field() {
+    let config = r#"{"other": "data"}"#;
+    let result = flagd_evaluator::storage::update_flag_state(config);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Missing 'flags' field"));
+}
+
+#[test]
+fn test_update_state_replaces_existing_state() {
+    // First configuration
+    let config1 = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true}
+            }
+        }
+    }"#;
+    let result = flagd_evaluator::storage::update_flag_state(config1);
+    assert!(result.is_ok());
+
+    // Verify first state
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    assert!(state.flags.contains_key("flag1"));
+
+    // Second configuration should replace the first
+    let config2 = r#"{
+        "flags": {
+            "flag2": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"off": false}
+            }
+        }
+    }"#;
+    let result = flagd_evaluator::storage::update_flag_state(config2);
+    assert!(result.is_ok());
+
+    // Verify state was replaced
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    assert!(!state.flags.contains_key("flag1"));
+    assert!(state.flags.contains_key("flag2"));
+    assert_eq!(state.flags.len(), 1);
+}
+
+#[test]
+fn test_update_state_with_targeting() {
+    let config = r#"{
+        "flags": {
+            "complexFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {
+                    "on": true,
+                    "off": false
+                },
+                "targeting": {
+                    "if": [
+                        {">=": [{"var": "age"}, 18]},
+                        "on",
+                        "off"
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    let result = flagd_evaluator::storage::update_flag_state(config);
+    assert!(result.is_ok());
+
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let flag = state.flags.get("complexFlag").unwrap();
+    assert!(flag.targeting.is_some());
+}
+
+#[test]
+fn test_update_state_with_metadata() {
+    let config = r#"{
+        "$schema": "https://flagd.dev/schema/v0/flags.json",
+        "$evaluators": {
+            "emailWithFaas": {
+                "in": ["@faas.com", {"var": ["email"]}]
+            }
+        },
+        "flags": {
+            "myFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true}
+            }
+        }
+    }"#;
+
+    let result = flagd_evaluator::storage::update_flag_state(config);
+    assert!(result.is_ok());
+
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    assert!(state.flag_set_metadata.contains_key("$schema"));
+    assert!(state.flag_set_metadata.contains_key("$evaluators"));
+}
+
+#[test]
+fn test_update_state_empty_flags() {
+    let config = r#"{"flags": {}}"#;
+    let result = flagd_evaluator::storage::update_flag_state(config);
+    assert!(result.is_ok());
+
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    assert_eq!(state.flags.len(), 0);
+}
+
+#[test]
+fn test_update_state_multiple_flags() {
+    let config = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true, "off": false}
+            },
+            "flag2": {
+                "state": "DISABLED",
+                "defaultVariant": "red",
+                "variants": {"red": "red", "blue": "blue"}
+            },
+            "flag3": {
+                "state": "ENABLED",
+                "defaultVariant": "default",
+                "variants": {"default": {"key": "value"}}
+            }
+        }
+    }"#;
+
+    let result = flagd_evaluator::storage::update_flag_state(config);
+    assert!(result.is_ok());
+
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    assert_eq!(state.flags.len(), 3);
+    assert!(state.flags.contains_key("flag1"));
+    assert!(state.flags.contains_key("flag2"));
+    assert!(state.flags.contains_key("flag3"));
+}
+
+#[test]
+fn test_update_state_invalid_flag_structure() {
+    let config = r#"{
+        "flags": {
+            "badFlag": {
+                "state": "ENABLED"
+            }
+        }
+    }"#;
+    let result = flagd_evaluator::storage::update_flag_state(config);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Failed to parse flag"));
+}
