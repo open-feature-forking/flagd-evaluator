@@ -33,6 +33,7 @@
 
 pub mod error;
 pub mod memory;
+pub mod model;
 pub mod operators;
 
 use serde::{Deserialize, Serialize};
