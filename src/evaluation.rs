@@ -138,6 +138,18 @@ impl EvaluationResult {
         self
     }
 
+    /// Attaches metadata to the result if the metadata is not empty.
+    fn with_metadata_if_present(
+        self,
+        metadata: &std::collections::HashMap<String, Value>,
+    ) -> Self {
+        if metadata.is_empty() {
+            self
+        } else {
+            self.with_metadata(metadata.clone())
+        }
+    }
+
     /// Serializes the result to a JSON string.
     pub fn to_json_string(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|e| {
@@ -206,11 +218,8 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
     if flag.state == "DISABLED" {
         // Return the default variant value
         if let Some(value) = flag.variants.get(&flag.default_variant) {
-            let result = EvaluationResult::disabled(value.clone(), flag.default_variant.clone());
-            if !flag.metadata.is_empty() {
-                return result.with_metadata(flag.metadata.clone());
-            }
-            return result;
+            return EvaluationResult::disabled(value.clone(), flag.default_variant.clone())
+                .with_metadata_if_present(&flag.metadata);
         } else {
             return EvaluationResult::error(
                 ErrorCode::General,
@@ -225,11 +234,8 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
     // If there's no targeting rule, return the default variant
     if flag.targeting.is_none() {
         if let Some(value) = flag.variants.get(&flag.default_variant) {
-            let result = EvaluationResult::static_result(value.clone(), flag.default_variant.clone());
-            if !flag.metadata.is_empty() {
-                return result.with_metadata(flag.metadata.clone());
-            }
-            return result;
+            return EvaluationResult::static_result(value.clone(), flag.default_variant.clone())
+                .with_metadata_if_present(&flag.metadata);
         } else {
             return EvaluationResult::error(
                 ErrorCode::General,
@@ -268,19 +274,13 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
 
             // Look up the variant value
             if let Some(value) = flag.variants.get(&variant_name) {
-                let result = EvaluationResult::targeting_match(value.clone(), variant_name);
-                if !flag.metadata.is_empty() {
-                    return result.with_metadata(flag.metadata.clone());
-                }
-                result
+                EvaluationResult::targeting_match(value.clone(), variant_name)
+                    .with_metadata_if_present(&flag.metadata)
             } else {
                 // Variant not found, use default
                 if let Some(value) = flag.variants.get(&flag.default_variant) {
-                    let result = EvaluationResult::targeting_match(value.clone(), flag.default_variant.clone());
-                    if !flag.metadata.is_empty() {
-                        return result.with_metadata(flag.metadata.clone());
-                    }
-                    result
+                    EvaluationResult::targeting_match(value.clone(), flag.default_variant.clone())
+                        .with_metadata_if_present(&flag.metadata)
                 } else {
                     EvaluationResult::error(
                         ErrorCode::General,
