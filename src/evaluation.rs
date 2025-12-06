@@ -185,11 +185,14 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
     match logic.evaluate_json(&rule_str, &context_str) {
         Ok(result) => {
             // The result should be a variant name (string)
-            let variant_name = match result {
-                Value::String(s) => s,
+            let variant_name = match &result {
+                Value::String(s) => s.clone(),
                 _ => {
                     // If the result is not a string, try to convert it to string
-                    result.to_string().trim_matches('"').to_string()
+                    match result.as_str() {
+                        Some(s) => s.to_string(),
+                        None => result.to_string().trim_matches('"').to_string(),
+                    }
                 }
             };
 
