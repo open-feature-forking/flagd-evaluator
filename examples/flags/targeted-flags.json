@@ -1,0 +1,59 @@
+{
+  "flags": {
+    "emailTargetedFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off",
+      "targeting": {
+        "if": [
+          {
+            "starts_with": [
+              {"var": "email"},
+              "admin@"
+            ]
+          },
+          "on",
+          "off"
+        ]
+      }
+    },
+    "versionGate": {
+      "state": "ENABLED",
+      "variants": {
+        "v2": "new-experience",
+        "v1": "legacy-experience"
+      },
+      "defaultVariant": "v1",
+      "targeting": {
+        "if": [
+          {
+            "sem_ver": [
+              {"var": "appVersion"},
+              ">=",
+              "2.0.0"
+            ]
+          },
+          "v2",
+          "v1"
+        ]
+      }
+    },
+    "abTestFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "control": "control-group",
+        "treatment": "treatment-group"
+      },
+      "defaultVariant": "control",
+      "targeting": {
+        "fractional": [
+          {"var": "userId"},
+          ["control", 50, "treatment", 50]
+        ]
+      }
+    }
+  }
+}

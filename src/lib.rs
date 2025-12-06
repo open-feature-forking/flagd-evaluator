@@ -11,12 +11,15 @@
 //! - **JSON Logic Evaluation**: Full support for standard JSON Logic operations via `datalogic-rs`
 //! - **Custom Operators**: Support for feature-flag specific operators like `fractional`, `starts_with`,
 //!   `ends_with`, and `sem_ver` - all registered via the `datalogic_rs::Operator` trait
+//! - **Feature Flag Evaluation**: State-based flag evaluation following the flagd provider specification
 //! - **Memory Safe**: Clean memory management with explicit alloc/dealloc functions
 //! - **Zero JNI**: Works with pure Java WASM runtimes like Chicory
 //!
 //! ## Exported Functions
 //!
-//! - `evaluate_logic`: Main evaluation function
+//! - `evaluate_logic`: Evaluates JSON Logic rules directly
+//! - `update_state`: Updates the feature flag configuration state
+//! - `evaluate`: Evaluates a feature flag against context (requires prior `update_state` call)
 //! - `wasm_alloc`: Allocate memory from WASM linear memory
 //! - `wasm_dealloc`: Free allocated memory
 //!
@@ -24,11 +27,12 @@
 //!
 //! ```ignore
 //! // From Java via Chicory:
-//! // 1. Allocate memory for rule and data strings
-//! // 2. Copy strings to WASM memory
-//! // 3. Call evaluate_logic with packed pointers
-//! // 4. Parse the returned JSON result
-//! // 5. Free allocated memory
+//! // 1. Update state with flag configuration
+//! // 2. Allocate memory for flag key and context strings
+//! // 3. Copy strings to WASM memory
+//! // 4. Call evaluate with pointers
+//! // 5. Parse the returned JSON result
+//! // 6. Free allocated memory
 //! ```
 
 pub mod error;

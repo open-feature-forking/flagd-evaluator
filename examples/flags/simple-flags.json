@@ -1,0 +1,55 @@
+{
+  "flags": {
+    "boolFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "stringFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "red": "crimson",
+        "blue": "azure",
+        "green": "emerald"
+      },
+      "defaultVariant": "green"
+    },
+    "intFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "small": 10,
+        "medium": 50,
+        "large": 100
+      },
+      "defaultVariant": "medium"
+    },
+    "floatFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "low": 0.25,
+        "mid": 0.5,
+        "high": 0.75
+      },
+      "defaultVariant": "mid"
+    },
+    "objectFlag": {
+      "state": "ENABLED",
+      "variants": {
+        "basic": {
+          "timeout": 30,
+          "retries": 3,
+          "level": "basic"
+        },
+        "premium": {
+          "timeout": 60,
+          "retries": 5,
+          "level": "premium"
+        }
+      },
+      "defaultVariant": "basic"
+    }
+  }
+}
