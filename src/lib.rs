@@ -1068,4 +1068,324 @@ mod tests {
         assert_eq!(parsed["variant"], "variant1");
         assert_eq!(parsed["reason"], "STATIC");
     }
+
+    // ============================================================================
+    // Edge case tests: missing targeting key, unknown variant, malformed expressions
+    // ============================================================================
+
+    #[test]
+    fn test_edge_case_missing_targeting_key() {
+        clear_flag_state();
+
+        // Flag that uses targetingKey for fractional bucketing
+        let config = r#"{
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "a": "variant-a",
+                        "b": "variant-b"
+                    },
+                    "defaultVariant": "a",
+                    "targeting": {
+                        "fractional": [
+                            {"var": "targetingKey"},
+                            ["a", 50, "b", 50]
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        // Context without targetingKey - should use empty string as default
+        let context = r#"{}"#;
+        let context_bytes = context.as_bytes();
+        let flag_key = "testFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        // Should succeed with one of the variants (using empty string as key)
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+        assert!(
+            result.value == json!("variant-a") || result.value == json!("variant-b"),
+            "Expected variant-a or variant-b, got: {:?}",
+            result.value
+        );
+    }
+
+    #[test]
+    fn test_edge_case_unknown_variant_from_targeting() {
+        clear_flag_state();
+
+        // Targeting rule returns a variant name that doesn't exist
+        let config = r#"{
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "user"}, "admin"]},
+                            "unknown_variant",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = r#"{"user": "admin"}"#;
+        let context_bytes = context.as_bytes();
+        let flag_key = "testFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        // Should fall back to default variant when unknown variant is returned
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+        assert_eq!(result.value, json!(false));
+        assert_eq!(result.variant, Some("off".to_string()));
+    }
+
+    #[test]
+    fn test_edge_case_malformed_targeting_expression() {
+        clear_flag_state();
+
+        // Invalid JSON Logic expression (missing closing bracket)
+        let config = r#"{
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "invalid_operator": [1, 2, 3]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = r#"{}"#;
+        let context_bytes = context.as_bytes();
+        let flag_key = "testFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        // Should return error for malformed/unknown operator
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::ParseError));
+        assert!(result.error_message.is_some());
+    }
+
+    #[test]
+    fn test_edge_case_fractional_with_targetingkey_context() {
+        clear_flag_state();
+
+        // Use targetingKey for consistent bucketing
+        let config = r#"{
+            "flags": {
+                "featureRollout": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "enabled": true,
+                        "disabled": false
+                    },
+                    "defaultVariant": "disabled",
+                    "targeting": {
+                        "fractional": [
+                            {"var": "targetingKey"},
+                            ["enabled", 10, "disabled", 90]
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        // Test with explicit targetingKey
+        let context1 = r#"{"targetingKey": "user-001"}"#;
+        let context_bytes1 = context1.as_bytes();
+        let flag_key = "featureRollout";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result1 = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes1.as_ptr(),
+            context_bytes1.len() as u32,
+        );
+
+        // Same targetingKey should give same result (consistency)
+        let result2 = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes1.as_ptr(),
+            context_bytes1.len() as u32,
+        );
+
+        assert_eq!(result1.value, result2.value);
+        assert_eq!(result1.variant, result2.variant);
+        assert_eq!(result1.reason, ResolutionReason::TargetingMatch);
+    }
+
+    #[test]
+    fn test_edge_case_targeting_with_flag_key_reference() {
+        clear_flag_state();
+
+        // Targeting rule that uses the flagKey field
+        let config = r#"{
+            "flags": {
+                "debugFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "flagKey"}, "debugFlag"]},
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = r#"{}"#;
+        let context_bytes = context.as_bytes();
+        let flag_key = "debugFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        // Should match because flagKey is enriched in context
+        assert_eq!(result.value, json!(true));
+        assert_eq!(result.variant, Some("on".to_string()));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+    }
+
+    #[test]
+    fn test_edge_case_complex_targeting_with_all_operators() {
+        clear_flag_state();
+
+        // Complex rule using multiple custom operators
+        let config = r#"{
+            "flags": {
+                "complexFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "premium": "premium-tier",
+                        "standard": "standard-tier",
+                        "basic": "basic-tier"
+                    },
+                    "defaultVariant": "basic",
+                    "targeting": {
+                        "if": [
+                            {"starts_with": [{"var": "email"}, "admin@"]},
+                            "premium",
+                            {
+                                "if": [
+                                    {"sem_ver": [{"var": "appVersion"}, ">=", "2.0.0"]},
+                                    "standard",
+                                    "basic"
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        // Test admin email - should get premium
+        let context1 = r#"{"email": "admin@example.com", "appVersion": "1.0.0"}"#;
+        let context_bytes1 = context1.as_bytes();
+        let flag_key = "complexFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result1 = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes1.as_ptr(),
+            context_bytes1.len() as u32,
+        );
+
+        assert_eq!(result1.value, json!("premium-tier"));
+        assert_eq!(result1.variant, Some("premium".to_string()));
+
+        // Test non-admin with new version - should get standard
+        let context2 = r#"{"email": "user@example.com", "appVersion": "2.1.0"}"#;
+        let context_bytes2 = context2.as_bytes();
+
+        let result2 = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes2.as_ptr(),
+            context_bytes2.len() as u32,
+        );
+
+        assert_eq!(result2.value, json!("standard-tier"));
+        assert_eq!(result2.variant, Some("standard".to_string()));
+
+        // Test non-admin with old version - should get basic
+        let context3 = r#"{"email": "user@example.com", "appVersion": "1.5.0"}"#;
+        let context_bytes3 = context3.as_bytes();
+
+        let result3 = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes3.as_ptr(),
+            context_bytes3.len() as u32,
+        );
+
+        assert_eq!(result3.value, json!("basic-tier"));
+        assert_eq!(result3.variant, Some("basic".to_string()));
+    }
 }

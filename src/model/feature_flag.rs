@@ -34,6 +34,10 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FeatureFlag {
+    /// The key/name of the feature flag
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+
     /// The state of the feature flag (e.g., "ENABLED", "DISABLED")
     pub state: String,
 
@@ -65,6 +69,7 @@ impl FeatureFlag {
     /// use std::collections::HashMap;
     ///
     /// let mut flag = FeatureFlag {
+    ///     key: Some("my_flag".to_string()),
     ///     state: "ENABLED".to_string(),
     ///     default_variant: "on".to_string(),
     ///     variants: HashMap::new(),
@@ -164,11 +169,13 @@ impl ParsingResult {
             .as_object()
             .ok_or_else(|| "'flags' must be an object".to_string())?;
 
-        // Parse each flag
+        // Parse each flag and set its key
         let mut flags = HashMap::new();
         for (flag_name, flag_value) in flags_obj {
-            let flag: FeatureFlag = serde_json::from_value(flag_value.clone())
+            let mut flag: FeatureFlag = serde_json::from_value(flag_value.clone())
                 .map_err(|e| format!("Failed to parse flag '{}': {}", flag_name, e))?;
+            // Set the flag key
+            flag.key = Some(flag_name.clone());
             flags.insert(flag_name.clone(), flag);
         }
 
@@ -395,6 +402,7 @@ mod tests {
     #[test]
     fn test_get_targeting_with_rule() {
         let flag = FeatureFlag {
+            key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
             default_variant: "on".to_string(),
             variants: HashMap::new(),
@@ -410,6 +418,7 @@ mod tests {
     #[test]
     fn test_get_targeting_without_rule() {
         let flag = FeatureFlag {
+            key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
             default_variant: "on".to_string(),
             variants: HashMap::new(),
@@ -459,6 +468,7 @@ mod tests {
     #[test]
     fn test_flag_equality() {
         let flag1 = FeatureFlag {
+            key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
             default_variant: "on".to_string(),
             variants: HashMap::new(),
@@ -467,6 +477,7 @@ mod tests {
         };
 
         let flag2 = FeatureFlag {
+            key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
             default_variant: "on".to_string(),
             variants: HashMap::new(),
@@ -484,6 +495,7 @@ mod tests {
         variants.insert("off".to_string(), json!(false));
 
         let flag = FeatureFlag {
+            key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
             default_variant: "on".to_string(),
             variants,
@@ -512,5 +524,32 @@ mod tests {
         assert_eq!(flag.default_variant, "on");
         assert!(flag.targeting.is_some());
         assert_eq!(flag.metadata.get("key"), Some(&json!("value")));
+    }
+
+    #[test]
+    fn test_flag_key_set_during_parsing() {
+        let config = r#"{
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true},
+                    "defaultVariant": "on"
+                },
+                "anotherFlag": {
+                    "state": "DISABLED",
+                    "variants": {"off": false},
+                    "defaultVariant": "off"
+                }
+            }
+        }"#;
+
+        let result = ParsingResult::parse(config).unwrap();
+
+        // Verify keys are set correctly
+        let test_flag = result.flags.get("testFlag").unwrap();
+        assert_eq!(test_flag.key, Some("testFlag".to_string()));
+
+        let another_flag = result.flags.get("anotherFlag").unwrap();
+        assert_eq!(another_flag.key, Some("anotherFlag".to_string()));
     }
 }
