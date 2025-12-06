@@ -17,6 +17,7 @@
 //! ## Exported Functions
 //!
 //! - `evaluate_logic`: Main evaluation function
+//! - `update_state`: Update internal flag configuration state
 //! - `wasm_alloc`: Allocate memory from WASM linear memory
 //! - `wasm_dealloc`: Free allocated memory
 //!
@@ -35,6 +36,7 @@ pub mod error;
 pub mod memory;
 pub mod model;
 pub mod operators;
+pub mod storage;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -172,6 +174,78 @@ pub extern "C" fn alloc(len: u32) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
     wasm_dealloc(ptr, len)
+}
+
+/// Updates the internal flag state with a new configuration.
+///
+/// This function accepts a JSON configuration string in the standard flagd format
+/// and replaces the entire internal flag state. Each call to this function completely
+/// replaces the previous state - there is no merging or caching.
+///
+/// # Arguments
+/// * `config_ptr` - Pointer to the JSON configuration string in WASM memory
+/// * `config_len` - Length of the JSON configuration string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the response JSON string. The caller must free this memory using `wasm_dealloc`.
+///
+/// # Response Format
+/// The response is always valid JSON with the following structure:
+/// ```json
+/// {
+///   "success": true|false,
+///   "error": null|"error message"
+/// }
+/// ```
+///
+/// # Example JSON Configuration
+/// ```json
+/// {
+///   "flags": {
+///     "myFlag": {
+///       "state": "ENABLED",
+///       "defaultVariant": "on",
+///       "variants": {
+///         "on": true,
+///         "off": false
+///       }
+///     }
+///   }
+/// }
+/// ```
+///
+/// # Safety
+/// The caller must ensure:
+/// - `config_ptr` points to valid memory containing UTF-8 encoded JSON
+/// - The memory region is at least `config_len` bytes
+#[no_mangle]
+pub extern "C" fn update_state(config_ptr: *const u8, config_len: u32) -> u64 {
+    let response = update_state_internal(config_ptr, config_len);
+    string_to_memory(&response)
+}
+
+/// Internal function to update state and return JSON response.
+fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
+    // Read the configuration string from memory
+    let config_str = match unsafe { string_from_memory(config_ptr, config_len) } {
+        Ok(s) => s,
+        Err(e) => {
+            return format!(
+                r#"{{"success":false,"error":"Failed to read configuration: {}"}}"#,
+                e
+            )
+        }
+    };
+
+    // Update the flag state
+    match storage::update_flag_state(&config_str) {
+        Ok(()) => r#"{"success":true,"error":null}"#.to_string(),
+        Err(e) => format!(
+            r#"{{"success":false,"error":"{}"}}"#,
+            e.replace('"', "\\\"")
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -475,5 +549,149 @@ mod tests {
         let result = evaluate_json(rule, data);
         assert!(!result.success);
         assert!(result.error.is_some());
+    }
+
+    // ============================================================================
+    // update_state tests
+    // ============================================================================
+
+    fn call_update_state(config: &str) -> String {
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32)
+    }
+
+    #[test]
+    fn test_update_state_success() {
+        let config = r#"{
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    }
+                }
+            }
+        }"#;
+
+        let response = call_update_state(config);
+        assert!(response.contains(r#""success":true"#));
+        assert!(response.contains(r#""error":null"#));
+
+        // Verify the state was actually updated
+        let state = storage::get_flag_state();
+        assert!(state.is_some());
+        let state = state.unwrap();
+        assert_eq!(state.flags.len(), 1);
+        assert!(state.flags.contains_key("testFlag"));
+    }
+
+    #[test]
+    fn test_update_state_invalid_json() {
+        let config = "not valid json";
+        let response = call_update_state(config);
+        assert!(response.contains(r#""success":false"#));
+        assert!(response.contains(r#""error":"#));
+        assert!(response.contains("Failed to parse JSON"));
+    }
+
+    #[test]
+    fn test_update_state_missing_flags_field() {
+        let config = r#"{"other": "data"}"#;
+        let response = call_update_state(config);
+        assert!(response.contains(r#""success":false"#));
+        assert!(response.contains("Missing 'flags' field"));
+    }
+
+    #[test]
+    fn test_update_state_replaces_existing() {
+        // First configuration
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                }
+            }
+        }"#;
+        call_update_state(config1);
+
+        // Verify first config is stored
+        let state = storage::get_flag_state().unwrap();
+        assert!(state.flags.contains_key("flag1"));
+
+        // Second configuration
+        let config2 = r#"{
+            "flags": {
+                "flag2": {
+                    "state": "ENABLED",
+                    "defaultVariant": "off",
+                    "variants": {"off": false}
+                }
+            }
+        }"#;
+        let response = call_update_state(config2);
+        assert!(response.contains(r#""success":true"#));
+
+        // Verify state was replaced
+        let state = storage::get_flag_state().unwrap();
+        assert!(!state.flags.contains_key("flag1"));
+        assert!(state.flags.contains_key("flag2"));
+    }
+
+    #[test]
+    fn test_update_state_with_metadata() {
+        let config = r#"{
+            "$schema": "https://flagd.dev/schema/v0/flags.json",
+            "flags": {
+                "myFlag": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                }
+            }
+        }"#;
+
+        let response = call_update_state(config);
+        assert!(response.contains(r#""success":true"#));
+
+        let state = storage::get_flag_state().unwrap();
+        assert!(state.flag_set_metadata.contains_key("$schema"));
+    }
+
+    #[test]
+    fn test_update_state_empty_flags() {
+        let config = r#"{"flags": {}}"#;
+        let response = call_update_state(config);
+        assert!(response.contains(r#""success":true"#));
+
+        let state = storage::get_flag_state().unwrap();
+        assert_eq!(state.flags.len(), 0);
+    }
+
+    #[test]
+    fn test_update_state_multiple_flags() {
+        let config = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                },
+                "flag2": {
+                    "state": "DISABLED",
+                    "defaultVariant": "off",
+                    "variants": {"off": false}
+                }
+            }
+        }"#;
+
+        let response = call_update_state(config);
+        assert!(response.contains(r#""success":true"#));
+
+        let state = storage::get_flag_state().unwrap();
+        assert_eq!(state.flags.len(), 2);
     }
 }
