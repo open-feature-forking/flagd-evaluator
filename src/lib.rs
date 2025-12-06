@@ -33,6 +33,7 @@
 
 pub mod error;
 pub mod memory;
+pub mod model;
 pub mod operators;
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,7 @@ pub use error::{ErrorType, EvaluatorError};
 pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
+pub use model::{FeatureFlag, ParsingResult};
 pub use operators::{create_evaluator, ends_with, fractional, sem_ver, starts_with};
 
 /// The response format for evaluation results.

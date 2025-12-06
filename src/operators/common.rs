@@ -20,12 +20,9 @@ pub fn resolve_string_from_context(
     match value {
         Value::String(s) => Ok(s.clone()),
         Value::Object(obj) if obj.contains_key("var") => {
-            let var_path = obj
-                .get("var")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    DataLogicError::InvalidArguments("var reference must be a string".into())
-                })?;
+            let var_path = obj.get("var").and_then(|v| v.as_str()).ok_or_else(|| {
+                DataLogicError::InvalidArguments("var reference must be a string".into())
+            })?;
 
             // Get root data and navigate the path
             let root_ref = context.root();
