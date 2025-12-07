@@ -222,6 +222,7 @@ println!("{}", result_str);
 | `evaluate_logic` | `(rule_ptr, rule_len, data_ptr, data_len) -> u64` | Evaluates JSON Logic rule against data |
 | `update_state` | `(config_ptr, config_len) -> u64` | Updates the feature flag configuration state |
 | `evaluate` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a feature flag against context |
+| `set_validation_mode` | `(mode: u32) -> u64` | Sets validation mode (0=Strict, 1=Permissive) |
 | `alloc` | `(len: u32) -> *mut u8` | Allocates memory in WASM linear memory |
 | `dealloc` | `(ptr: *mut u8, len: u32)` | Frees previously allocated memory |
 
@@ -389,6 +390,7 @@ You can configure how validation errors are handled:
 - **Strict Mode (default)**: Rejects flag configurations that fail validation
 - **Permissive Mode**: Stores flag configurations even if validation fails (useful for legacy configurations)
 
+**From Rust:**
 ```rust
 use flagd_evaluator::storage::{set_validation_mode, ValidationMode};
 
@@ -398,6 +400,32 @@ set_validation_mode(ValidationMode::Strict);
 // Use permissive validation
 set_validation_mode(ValidationMode::Permissive);
 ```
+
+**From WASM (e.g., Java via Chicory):**
+```java
+// Get the set_validation_mode function
+WasmFunction setValidationMode = instance.export("set_validation_mode");
+
+// Set to permissive mode (1)
+long resultPtr = setValidationMode.apply(1L)[0];
+
+// Parse the response
+int ptr = (int) (resultPtr >>> 32);
+int len = (int) (resultPtr & 0xFFFFFFFFL);
+byte[] responseBytes = memory.readBytes(ptr, len);
+String response = new String(responseBytes, StandardCharsets.UTF_8);
+// {"success":true,"error":null}
+
+// Don't forget to free the memory
+dealloc.apply(ptr, len);
+
+// To set back to strict mode (0) - this is the default
+setValidationMode.apply(0L);
+```
+
+**Validation Mode Values:**
+- `0` = Strict mode (reject invalid configurations)
+- `1` = Permissive mode (accept with warnings)
 
 ### Validation Error Format
 
