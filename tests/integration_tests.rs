@@ -929,7 +929,9 @@ fn test_update_state_invalid_json() {
     let config = "not valid json";
     let result = flagd_evaluator::storage::update_flag_state(config);
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("parse"));
+    let err = result.unwrap_err();
+    // Error should be JSON format with validation errors
+    assert!(err.contains("Invalid JSON") || err.contains("\"valid\":false"));
 }
 
 #[test]
@@ -937,7 +939,9 @@ fn test_update_state_missing_flags_field() {
     let config = r#"{"other": "data"}"#;
     let result = flagd_evaluator::storage::update_flag_state(config);
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Missing 'flags' field"));
+    let err = result.unwrap_err();
+    // Error should indicate missing required field or invalid schema
+    assert!(err.contains("\"valid\":false") || err.contains("required"));
 }
 
 #[test]
@@ -1088,5 +1092,7 @@ fn test_update_state_invalid_flag_structure() {
     }"#;
     let result = flagd_evaluator::storage::update_flag_state(config);
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Failed to parse flag"));
+    let err = result.unwrap_err();
+    // Error should indicate validation failure due to missing required fields
+    assert!(err.contains("\"valid\":false") || err.contains("required"));
 }

@@ -9,10 +9,12 @@ A WebAssembly-based JSON Logic evaluator with custom operators for feature flag 
 
 - **Full JSON Logic Support**: Evaluate complex JSON Logic rules with all standard operators via [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
 - **Custom Operators**: Feature-flag specific operators like `fractional` for A/B testing
+- **JSON Schema Validation**: Validates flag configurations against the official [flagd-schemas](https://github.com/open-feature/flagd-schemas)
+- **Configurable Validation Mode**: Choose between strict (reject invalid configs) or permissive (store with warnings) validation
 - **Flag State Management**: Internal storage for flag configurations with `update_state` API
 - **Chicory Compatible**: Works seamlessly with pure Java WASM runtimes - no JNI required
 - **Zero Dependencies at Runtime**: Single WASM file, no external dependencies
-- **Optimized Size**: WASM binary optimized for size (~1.5MB, includes full JSON Logic implementation)
+- **Optimized Size**: WASM binary optimized for size (~2.4MB, includes full JSON Logic implementation and schema validation)
 - **Memory Safe**: Clean memory management with explicit alloc/dealloc functions
 
 ## Quick Start
@@ -374,6 +376,101 @@ String result = new String(resultBytes, StandardCharsets.UTF_8);
 dealloc.apply(keyPtr, keyBytes.length);
 dealloc.apply(contextPtr, contextBytes.length);
 dealloc.apply(resultPtr, resultLen);
+```
+
+## JSON Schema Validation
+
+The evaluator automatically validates flag configurations against the official [flagd-schemas](https://github.com/open-feature/flagd-schemas) before storing them. This ensures that your flag configurations match the expected structure and catches errors early.
+
+### Validation Modes
+
+You can configure how validation errors are handled:
+
+- **Strict Mode (default)**: Rejects flag configurations that fail validation
+- **Permissive Mode**: Stores flag configurations even if validation fails (useful for legacy configurations)
+
+```rust
+use flagd_evaluator::storage::{set_validation_mode, ValidationMode};
+
+// Use strict validation (default)
+set_validation_mode(ValidationMode::Strict);
+
+// Use permissive validation
+set_validation_mode(ValidationMode::Permissive);
+```
+
+### Validation Error Format
+
+When validation fails in strict mode, the `update_state` function returns a JSON error object:
+
+```json
+{
+  "valid": false,
+  "errors": [
+    {
+      "path": "/flags/myFlag/state",
+      "message": "'INVALID' is not one of ['ENABLED', 'DISABLED']"
+    },
+    {
+      "path": "/flags/myFlag",
+      "message": "'variants' is a required property"
+    }
+  ]
+}
+```
+
+### Common Validation Errors
+
+**Missing Required Fields:**
+```json
+{
+  "valid": false,
+  "errors": [
+    {
+      "path": "/flags/myFlag",
+      "message": "'state' is a required property"
+    }
+  ]
+}
+```
+
+**Invalid State Value:**
+```json
+{
+  "valid": false,
+  "errors": [
+    {
+      "path": "/flags/myFlag/state",
+      "message": "'INVALID_STATE' is not one of ['ENABLED', 'DISABLED']"
+    }
+  ]
+}
+```
+
+**Mixed Variant Types (e.g., boolean flag with string variant):**
+```json
+{
+  "valid": false,
+  "errors": [
+    {
+      "path": "/flags/boolFlag/variants/on",
+      "message": "'string value' is not of type 'boolean'"
+    }
+  ]
+}
+```
+
+**Invalid JSON:**
+```json
+{
+  "valid": false,
+  "errors": [
+    {
+      "path": "",
+      "message": "Invalid JSON: expected value at line 1 column 5"
+    }
+  ]
+}
 ```
 
 ## Custom Operators
