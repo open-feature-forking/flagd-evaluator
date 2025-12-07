@@ -152,19 +152,13 @@ impl EvaluationResult {
     }
 
     /// Sets the flag metadata for this result.
-    pub fn with_metadata(
-        mut self,
-        metadata: std::collections::HashMap<String, Value>,
-    ) -> Self {
+    pub fn with_metadata(mut self, metadata: std::collections::HashMap<String, Value>) -> Self {
         self.flag_metadata = Some(metadata);
         self
     }
 
     /// Attaches metadata to the result if the metadata is not empty.
-    fn with_metadata_if_present(
-        self,
-        metadata: &std::collections::HashMap<String, Value>,
-    ) -> Self {
+    fn with_metadata_if_present(self, metadata: &std::collections::HashMap<String, Value>) -> Self {
         if metadata.is_empty() {
             self
         } else {
@@ -545,7 +539,10 @@ mod tests {
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.flag_metadata.is_some());
         let result_metadata = result.flag_metadata.unwrap();
-        assert_eq!(result_metadata.get("description"), Some(&json!("Test flag")));
+        assert_eq!(
+            result_metadata.get("description"),
+            Some(&json!("Test flag"))
+        );
         assert_eq!(result_metadata.get("team"), Some(&json!("platform")));
     }
 
@@ -656,10 +653,7 @@ mod tests {
                 EvaluationResult::error(ErrorCode::General, "error"),
                 "ERROR",
             ),
-            (
-                EvaluationResult::flag_not_found("test"),
-                "FLAG_NOT_FOUND",
-            ),
+            (EvaluationResult::flag_not_found("test"), "FLAG_NOT_FOUND"),
         ];
 
         for (result, expected_reason) in test_cases {
@@ -691,10 +685,8 @@ mod tests {
 
     #[test]
     fn test_type_mismatch_error() {
-        let result = EvaluationResult::error(
-            ErrorCode::TypeMismatch,
-            "Expected boolean but got string",
-        );
+        let result =
+            EvaluationResult::error(ErrorCode::TypeMismatch, "Expected boolean but got string");
 
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
