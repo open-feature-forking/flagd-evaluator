@@ -304,6 +304,48 @@ The configuration should follow the [flagd flag definition schema](https://flagd
 }
 ```
 
+**State Update Flow:**
+
+```mermaid
+sequenceDiagram
+    participant Host as Host Application
+    participant WASM as WASM Module
+    participant Storage as Flag Storage
+    
+    Host->>Host: Allocate memory using alloc()
+    Host->>Host: Write config JSON to memory
+    Host->>WASM: Call update_state(config_ptr, config_len)
+    
+    WASM->>WASM: Read JSON from memory
+    alt Invalid UTF-8
+        WASM-->>Host: Return error response
+    end
+    
+    WASM->>WASM: Validate against JSON Schema
+    
+    alt Strict Mode
+        alt Validation Failed
+            WASM-->>Host: Return validation error
+        end
+    else Permissive Mode
+        alt Validation Failed
+            WASM->>WASM: Log warning, continue
+        end
+    end
+    
+    WASM->>WASM: Parse JSON to FeatureFlag objects
+    alt Parse Error
+        WASM-->>Host: Return parse error
+    end
+    
+    WASM->>Storage: Store parsed flags (replace existing)
+    WASM->>WASM: Allocate memory for success response
+    WASM-->>Host: Return packed pointer (success)
+    
+    Host->>Host: Read response from memory
+    Host->>Host: Deallocate memory using dealloc()
+```
+
 ### evaluate
 
 Evaluates a feature flag from the previously stored configuration (set via `update_state`) against the provided context.
@@ -377,6 +419,51 @@ String result = new String(resultBytes, StandardCharsets.UTF_8);
 dealloc.apply(keyPtr, keyBytes.length);
 dealloc.apply(contextPtr, contextBytes.length);
 dealloc.apply(resultPtr, resultLen);
+```
+
+**Flag Evaluation Flow:**
+
+```mermaid
+flowchart TD
+    Start([Host calls evaluate]) --> AllocMem[Host allocates memory for flag key and context]
+    AllocMem --> WriteData[Host writes data to WASM memory]
+    WriteData --> CallEval[Call evaluate with pointers]
+    
+    CallEval --> ReadMem[WASM reads flag key and context from memory]
+    ReadMem --> ParseCtx{Parse context JSON}
+    ParseCtx -->|Error| ReturnError[Return PARSE_ERROR]
+    
+    ParseCtx -->|Success| GetFlag{Retrieve flag from storage}
+    GetFlag -->|Not Found| ReturnNotFound[Return FLAG_NOT_FOUND]
+    GetFlag -->|Found| CheckState{Check flag state}
+    
+    CheckState -->|DISABLED| ReturnDisabled[Return default variant with DISABLED reason]
+    CheckState -->|ENABLED| CheckTargeting{Has targeting rules?}
+    
+    CheckTargeting -->|No| ReturnStatic[Return default variant with STATIC reason]
+    CheckTargeting -->|Yes| EnrichContext[Enrich context with:<br/>- $flagd.flagKey<br/>- $flagd.timestamp<br/>- targetingKey default]
+    
+    EnrichContext --> EvalRule[Evaluate targeting rule using JSON Logic]
+    EvalRule --> EvalResult{Evaluation result}
+    
+    EvalResult -->|Error| ReturnParseError[Return PARSE_ERROR]
+    EvalResult -->|Success| GetVariant{Variant exists?}
+    
+    GetVariant -->|Yes| ReturnMatch[Return variant value with TARGETING_MATCH]
+    GetVariant -->|No| ReturnDefault[Return default variant with DEFAULT reason]
+    
+    ReturnError --> PackResult[Pack result into memory]
+    ReturnNotFound --> PackResult
+    ReturnDisabled --> PackResult
+    ReturnStatic --> PackResult
+    ReturnParseError --> PackResult
+    ReturnMatch --> PackResult
+    ReturnDefault --> PackResult
+    
+    PackResult --> ReturnPacked[Return packed pointer to host]
+    ReturnPacked --> HostRead[Host reads result from memory]
+    HostRead --> HostDealloc[Host deallocates all memory]
+    HostDealloc --> End([Evaluation complete])
 ```
 
 ### Context Enrichment
@@ -703,6 +790,48 @@ The library uses a simple linear memory allocation model:
 **Important:** The caller is responsible for:
 - Freeing input memory after `evaluate_logic` returns
 - Freeing the result memory after reading it
+
+**Memory Management Flow:**
+
+```mermaid
+sequenceDiagram
+    participant Host as Host Application
+    participant WASM as WASM Module
+    participant Heap as WASM Heap
+    
+    Note over Host,Heap: Input Phase
+    Host->>WASM: Call alloc(input_len)
+    WASM->>Heap: Allocate input_len bytes
+    Heap-->>WASM: Return pointer or null
+    WASM-->>Host: Return input_ptr
+    
+    Host->>WASM: Write input data to memory[input_ptr]
+    
+    Note over Host,Heap: Processing Phase
+    Host->>WASM: Call function(input_ptr, input_len, ...)
+    WASM->>WASM: Read data from memory[input_ptr]
+    WASM->>WASM: Process data
+    
+    WASM->>WASM: Call alloc(result_len) internally
+    WASM->>Heap: Allocate result_len bytes
+    Heap-->>WASM: Return result_ptr
+    WASM->>WASM: Write result to memory[result_ptr]
+    
+    WASM->>WASM: Pack pointer and length:<br/>packed = (result_ptr << 32) | result_len
+    WASM-->>Host: Return packed u64
+    
+    Note over Host,Heap: Cleanup Phase
+    Host->>Host: Unpack u64:<br/>result_ptr = packed >> 32<br/>result_len = packed & 0xFFFFFFFF
+    Host->>WASM: Read result from memory[result_ptr]
+    
+    Host->>WASM: Call dealloc(input_ptr, input_len)
+    WASM->>Heap: Free input memory
+    
+    Host->>WASM: Call dealloc(result_ptr, result_len)
+    WASM->>Heap: Free result memory
+    
+    Note over Host,Heap: Memory lifecycle complete
+```
 
 ### Pointer Packing
 
