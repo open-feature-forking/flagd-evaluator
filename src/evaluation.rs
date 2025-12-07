@@ -181,19 +181,20 @@ impl EvaluationResult {
 /// Enriches the evaluation context with standard flagd fields.
 ///
 /// According to the flagd specification, the evaluation context should include:
-/// - `flagKey`: The key of the flag being evaluated
+/// - `$flagd.flagKey`: The key of the flag being evaluated
+/// - `$flagd.timestamp`: Unix timestamp (in seconds) of the time of evaluation
 /// - `targetingKey`: A key used for consistent hashing (extracted from context or empty)
 /// - All custom fields from the original context
 ///
-/// Note: `timestamp` is not included in this WASM implementation as it requires
-/// system time which may not be available in all WASM runtimes.
+/// The `$flagd` properties are stored as a nested object to support dot notation access
+/// in JSON Logic (e.g., `{"var": "$flagd.timestamp"}`).
 ///
 /// # Arguments
 /// * `flag_key` - The key of the flag being evaluated
 /// * `context` - The original evaluation context
 ///
 /// # Returns
-/// An enriched context with flagKey and targetingKey added
+/// An enriched context with $flagd properties and targetingKey added
 fn enrich_context(flag_key: &str, context: &Value) -> Value {
     let mut enriched = if let Some(obj) = context.as_object() {
         obj.clone()
@@ -201,8 +202,23 @@ fn enrich_context(flag_key: &str, context: &Value) -> Value {
         Map::new()
     };
 
-    // Add flagKey
-    enriched.insert("flagKey".to_string(), Value::String(flag_key.to_string()));
+    // Get current Unix timestamp (seconds since epoch)
+    // Note: SystemTime::now() is available in WASM runtimes that support WASI.
+    // If system time is unavailable, we default to 0 (Unix epoch).
+    // This allows targeting rules to detect the error condition by checking for timestamp == 0.
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0); // Default to 0 if system time is not available
+
+    // Create $flagd object with nested properties
+    let mut flagd_props = Map::new();
+    flagd_props.insert("flagKey".to_string(), Value::String(flag_key.to_string()));
+    // Store timestamp as u64 to avoid overflow issues. JSON can represent large numbers.
+    flagd_props.insert("timestamp".to_string(), Value::Number(timestamp.into()));
+
+    // Add $flagd object to context
+    enriched.insert("$flagd".to_string(), Value::Object(flagd_props));
 
     // Ensure targetingKey exists (use existing or empty string)
     if !enriched.contains_key("targetingKey") {
@@ -732,13 +748,13 @@ mod tests {
     #[test]
     fn test_context_enrichment_with_flag_key() {
         let targeting = json!({
-            "var": "flagKey"
+            "var": "$flagd.flagKey"
         });
         let flag = create_test_flag(Some(targeting));
         let context = json!({});
 
         let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
-        // The targeting rule returns the flagKey variant name, which should be looked up
+        // The targeting rule returns the $flagd.flagKey variant name, which should be looked up
         // Since "test_flag" is not a valid variant, it should fall back to default
         assert_eq!(result.variant, Some("off".to_string()));
     }
@@ -776,6 +792,92 @@ mod tests {
         let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         assert_eq!(result.value, json!(true));
         assert_eq!(result.variant, Some("on".to_string()));
+    }
+
+    #[test]
+    fn test_context_enrichment_with_timestamp() {
+        // Test that $flagd.timestamp is injected and is a valid unix timestamp
+        let targeting = json!({
+            "if": [
+                {">": [{"var": "$flagd.timestamp"}, 0]},
+                "on",
+                "off"
+            ]
+        });
+        let flag = create_test_flag(Some(targeting));
+        let context = json!({});
+
+        let result = evaluate_flag(&flag, &context);
+        // Should be "on" because timestamp should be > 0 (unless system time is before 1970)
+        assert_eq!(result.value, json!(true));
+        assert_eq!(result.variant, Some("on".to_string()));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+    }
+
+    #[test]
+    fn test_context_enrichment_timestamp_is_numeric() {
+        // Test that $flagd.timestamp is a number, not a string
+        let targeting = json!({
+            "var": "$flagd.timestamp"
+        });
+
+        let mut variants = HashMap::new();
+        // Use numeric variants to verify timestamp is returned as a number
+        variants.insert("timestamp".to_string(), json!(0));
+
+        let flag = FeatureFlag {
+            key: Some("test_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "timestamp".to_string(),
+            variants,
+            targeting: Some(targeting),
+            metadata: HashMap::new(),
+        };
+
+        let context = json!({});
+        let result = evaluate_flag(&flag, &context);
+
+        // The result should fall back to default because timestamp number
+        // won't match "timestamp" string variant name
+        assert_eq!(result.reason, ResolutionReason::Default);
+    }
+
+    #[test]
+    fn test_context_enrichment_all_flagd_properties() {
+        // Test that both $flagd.flagKey and $flagd.timestamp are present
+        let targeting = json!({
+            "if": [
+                {
+                    "and": [
+                        {"==": [{"var": "$flagd.flagKey"}, "test_flag"]},
+                        {">": [{"var": "$flagd.timestamp"}, 0]}
+                    ]
+                },
+                "success",
+                "failure"
+            ]
+        });
+
+        let mut variants = HashMap::new();
+        variants.insert("success".to_string(), json!("both-present"));
+        variants.insert("failure".to_string(), json!("missing-properties"));
+
+        let flag = FeatureFlag {
+            key: Some("test_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "failure".to_string(),
+            variants,
+            targeting: Some(targeting),
+            metadata: HashMap::new(),
+        };
+
+        let context = json!({});
+        let result = evaluate_flag(&flag, &context);
+
+        // Both conditions should be true, returning "success" variant
+        assert_eq!(result.variant, Some("success".to_string()));
+        assert_eq!(result.value, json!("both-present"));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
     }
 
     #[test]

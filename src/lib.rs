@@ -1624,7 +1624,7 @@ mod tests {
     fn test_edge_case_targeting_with_flag_key_reference() {
         clear_flag_state();
 
-        // Targeting rule that uses the flagKey field
+        // Targeting rule that uses the $flagd.flagKey field
         let config = r#"{
             "flags": {
                 "debugFlag": {
@@ -1636,7 +1636,7 @@ mod tests {
                     "defaultVariant": "off",
                     "targeting": {
                         "if": [
-                            {"==": [{"var": "flagKey"}, "debugFlag"]},
+                            {"==": [{"var": "$flagd.flagKey"}, "debugFlag"]},
                             "on",
                             "off"
                         ]
@@ -1660,7 +1660,7 @@ mod tests {
             context_bytes.len() as u32,
         );
 
-        // Should match because flagKey is enriched in context
+        // Should match because $flagd.flagKey is enriched in context
         assert_eq!(result.value, json!(true));
         assert_eq!(result.variant, Some("on".to_string()));
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
@@ -1744,6 +1744,103 @@ mod tests {
 
         assert_eq!(result3.value, json!("basic-tier"));
         assert_eq!(result3.variant, Some("basic".to_string()));
+    }
+
+    #[test]
+    fn test_flagd_timestamp_in_targeting() {
+        clear_flag_state();
+
+        // Flag that uses $flagd.timestamp for time-based targeting
+        let config = r#"{
+            "flags": {
+                "timeBasedFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "current": true,
+                        "expired": false
+                    },
+                    "defaultVariant": "expired",
+                    "targeting": {
+                        "if": [
+                            {">": [{"var": "$flagd.timestamp"}, 1000000000]},
+                            "current",
+                            "expired"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = r#"{}"#;
+        let context_bytes = context.as_bytes();
+        let flag_key = "timeBasedFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        // Current timestamp should be > 1000000000 (Sep 2001), so should get "current"
+        assert_eq!(result.value, json!(true));
+        assert_eq!(result.variant, Some("current".to_string()));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+    }
+
+    #[test]
+    fn test_flagd_properties_are_injected() {
+        clear_flag_state();
+
+        // Flag that verifies both $flagd properties exist
+        let config = r#"{
+            "flags": {
+                "verifyFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "verified": "properties-present",
+                        "failed": "properties-missing"
+                    },
+                    "defaultVariant": "failed",
+                    "targeting": {
+                        "if": [
+                            {
+                                "and": [
+                                    {"==": [{"var": "$flagd.flagKey"}, "verifyFlag"]},
+                                    {">": [{"var": "$flagd.timestamp"}, 0]}
+                                ]
+                            },
+                            "verified",
+                            "failed"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let context = r#"{}"#;
+        let context_bytes = context.as_bytes();
+        let flag_key = "verifyFlag";
+        let flag_key_bytes = flag_key.as_bytes();
+
+        let result = evaluate_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+
+        // Both conditions should pass
+        assert_eq!(result.value, json!("properties-present"));
+        assert_eq!(result.variant, Some("verified".to_string()));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
     }
 
     // ============================================================================
