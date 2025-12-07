@@ -1096,3 +1096,344 @@ fn test_update_state_invalid_flag_structure() {
     // Error should indicate validation failure due to missing required fields
     assert!(err.contains("\"valid\":false") || err.contains("required"));
 }
+
+// ============================================================================
+// Tests for $evaluators and $ref resolution
+// ============================================================================
+
+#[test]
+fn test_evaluators_simple_ref_evaluation() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    use serde_json::json;
+
+    clear_flag_state();
+
+    let config = r#"{
+        "$evaluators": {
+            "isAdmin": {
+                "in": ["admin@", {"var": "email"}]
+            }
+        },
+        "flags": {
+            "adminFeature": {
+                "state": "ENABLED",
+                "variants": {
+                    "on": true,
+                    "off": false
+                },
+                "defaultVariant": "off",
+                "targeting": {
+                    "if": [
+                        {"$ref": "isAdmin"},
+                        "on",
+                        "off"
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    // Update state
+    let result = update_flag_state(config);
+    assert!(result.is_ok(), "Failed to update state: {:?}", result);
+
+    // Get the flag
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let flag = state.flags.get("adminFeature").unwrap();
+
+    // Test with admin email - should return true
+    let context = json!({"email": "admin@example.com"});
+    let eval_result = evaluate_flag(flag, &context);
+    assert_eq!(eval_result.value, json!(true));
+    assert_eq!(eval_result.variant, Some("on".to_string()));
+
+    // Test with non-admin email - should return false
+    let context = json!({"email": "user@example.com"});
+    let eval_result = evaluate_flag(flag, &context);
+    assert_eq!(eval_result.value, json!(false));
+    assert_eq!(eval_result.variant, Some("off".to_string()));
+}
+
+#[test]
+fn test_evaluators_nested_ref_evaluation() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    use serde_json::json;
+
+    clear_flag_state();
+
+    let config = r#"{
+        "$evaluators": {
+            "isAdmin": {
+                "starts_with": [{"var": "email"}, "admin@"]
+            },
+            "isActive": {
+                "==": [{"var": "status"}, "active"]
+            },
+            "isActiveAdmin": {
+                "and": [
+                    {"$ref": "isAdmin"},
+                    {"$ref": "isActive"}
+                ]
+            }
+        },
+        "flags": {
+            "premiumFeature": {
+                "state": "ENABLED",
+                "variants": {
+                    "enabled": "premium",
+                    "disabled": "free"
+                },
+                "defaultVariant": "disabled",
+                "targeting": {
+                    "if": [
+                        {"$ref": "isActiveAdmin"},
+                        "enabled",
+                        "disabled"
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    update_flag_state(config).unwrap();
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let flag = state.flags.get("premiumFeature").unwrap();
+
+    // Test with active admin - should return premium
+    let context = json!({"email": "admin@company.com", "status": "active"});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.value, json!("premium"));
+    assert_eq!(result.variant, Some("enabled".to_string()));
+
+    // Test with non-admin - should return free
+    let context = json!({"email": "user@company.com", "status": "active"});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.value, json!("free"));
+    assert_eq!(result.variant, Some("disabled".to_string()));
+
+    // Test with admin but inactive - should return free
+    let context = json!({"email": "admin@company.com", "status": "inactive"});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.value, json!("free"));
+    assert_eq!(result.variant, Some("disabled".to_string()));
+}
+
+#[test]
+fn test_evaluators_with_fractional_operator() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use flagd_evaluator::storage::{
+        clear_flag_state, set_validation_mode, update_flag_state, ValidationMode,
+    };
+    use serde_json::json;
+
+    clear_flag_state();
+    // Use permissive mode since bare $ref at top level doesn't validate
+    set_validation_mode(ValidationMode::Permissive);
+
+    let config = r#"{
+        "$evaluators": {
+            "abTestSplit": {
+                "fractional": [
+                    {"var": "userId"},
+                    ["control", 50],
+                    ["treatment", 50]
+                ]
+            }
+        },
+        "flags": {
+            "experimentFlag": {
+                "state": "ENABLED",
+                "variants": {
+                    "control": "control-experience",
+                    "treatment": "treatment-experience"
+                },
+                "defaultVariant": "control",
+                "targeting": {
+                    "$ref": "abTestSplit"
+                }
+            }
+        }
+    }"#;
+
+    update_flag_state(config).unwrap();
+    set_validation_mode(ValidationMode::Strict); // Reset to strict for other tests
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let flag = state.flags.get("experimentFlag").unwrap();
+
+    // Test with specific user ID - should consistently return same variant
+    let context = json!({"userId": "user-123"});
+    let result1 = evaluate_flag(flag, &context);
+    let result2 = evaluate_flag(flag, &context);
+    assert_eq!(result1.value, result2.value);
+    assert!(
+        result1.value == json!("control-experience")
+            || result1.value == json!("treatment-experience")
+    );
+}
+
+#[test]
+fn test_evaluators_complex_targeting() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    use serde_json::json;
+
+    clear_flag_state();
+
+    let config = r#"{
+        "$evaluators": {
+            "isPremiumUser": {
+                "==": [{"var": "tier"}, "premium"]
+            },
+            "isHighValue": {
+                ">=": [{"var": "lifetime_value"}, 1000]
+            },
+            "isVIPUser": {
+                "or": [
+                    {"$ref": "isPremiumUser"},
+                    {"$ref": "isHighValue"}
+                ]
+            }
+        },
+        "flags": {
+            "vipFeatures": {
+                "state": "ENABLED",
+                "variants": {
+                    "vip": {"features": ["advanced", "priority_support", "custom_reports"]},
+                    "standard": {"features": ["basic"]}
+                },
+                "defaultVariant": "standard",
+                "targeting": {
+                    "if": [
+                        {
+                            "and": [
+                                {"$ref": "isVIPUser"},
+                                {"==": [{"var": "active"}, true]}
+                            ]
+                        },
+                        "vip",
+                        "standard"
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    update_flag_state(config).unwrap();
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let flag = state.flags.get("vipFeatures").unwrap();
+
+    // Premium + active - should get VIP
+    let context = json!({"tier": "premium", "lifetime_value": 500, "active": true});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.variant, Some("vip".to_string()));
+
+    // High value + active - should get VIP
+    let context = json!({"tier": "basic", "lifetime_value": 1500, "active": true});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.variant, Some("vip".to_string()));
+
+    // Premium but inactive - should get standard
+    let context = json!({"tier": "premium", "lifetime_value": 500, "active": false});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.variant, Some("standard".to_string()));
+
+    // Neither premium nor high value - should get standard
+    let context = json!({"tier": "basic", "lifetime_value": 100, "active": true});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.variant, Some("standard".to_string()));
+}
+
+#[test]
+fn test_evaluators_missing_ref_in_storage() {
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+
+    clear_flag_state();
+
+    let config = r#"{
+        "$evaluators": {
+            "validRule": {
+                "==": [{"var": "x"}, 1]
+            }
+        },
+        "flags": {
+            "testFlag": {
+                "state": "ENABLED",
+                "variants": {"on": true, "off": false},
+                "defaultVariant": "off",
+                "targeting": {
+                    "$ref": "nonExistentRule"
+                }
+            }
+        }
+    }"#;
+
+    let result = update_flag_state(config);
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("nonExistentRule"));
+}
+
+#[test]
+fn test_evaluators_multiple_refs_in_single_flag() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    use serde_json::json;
+
+    clear_flag_state();
+
+    let config = r#"{
+        "$evaluators": {
+            "isAdmin": {
+                "starts_with": [{"var": "email"}, "admin@"]
+            },
+            "isManager": {
+                "starts_with": [{"var": "email"}, "manager@"]
+            }
+        },
+        "flags": {
+            "accessFlag": {
+                "state": "ENABLED",
+                "variants": {
+                    "full": "full-access",
+                    "limited": "limited-access",
+                    "none": "no-access"
+                },
+                "defaultVariant": "none",
+                "targeting": {
+                    "if": [
+                        {"$ref": "isAdmin"},
+                        "full",
+                        {
+                            "if": [
+                                {"$ref": "isManager"},
+                                "limited",
+                                "none"
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    update_flag_state(config).unwrap();
+    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let flag = state.flags.get("accessFlag").unwrap();
+
+    // Admin gets full access
+    let context = json!({"email": "admin@company.com"});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.value, json!("full-access"));
+
+    // Manager gets limited access
+    let context = json!({"email": "manager@company.com"});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.value, json!("limited-access"));
+
+    // Regular user gets no access
+    let context = json!({"email": "user@company.com"});
+    let result = evaluate_flag(flag, &context);
+    assert_eq!(result.value, json!("no-access"));
+}

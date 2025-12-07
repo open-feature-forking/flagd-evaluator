@@ -162,6 +162,18 @@ impl ParsingResult {
         let config: serde_json::Value =
             serde_json::from_str(json_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
+        // Extract $evaluators if present
+        let evaluators =
+            if let Some(eval_obj) = config.get("$evaluators").and_then(|v| v.as_object()) {
+                let mut map = HashMap::new();
+                for (name, rule) in eval_obj {
+                    map.insert(name.clone(), rule.clone());
+                }
+                map
+            } else {
+                HashMap::new()
+            };
+
         // Extract the flags object
         let flags_obj = config
             .get("flags")
@@ -176,6 +188,22 @@ impl ParsingResult {
                 .map_err(|e| format!("Failed to parse flag '{}': {}", flag_name, e))?;
             // Set the flag key
             flag.key = Some(flag_name.clone());
+
+            // Resolve $ref references in targeting rules if evaluators exist
+            if !evaluators.is_empty() && flag.targeting.is_some() {
+                let targeting = flag.targeting.take().unwrap();
+                let mut visited = std::collections::HashSet::new();
+                match Self::resolve_refs(&targeting, &evaluators, &mut visited) {
+                    Ok(resolved) => flag.targeting = Some(resolved),
+                    Err(e) => {
+                        return Err(format!(
+                            "Failed to resolve $ref in flag '{}': {}",
+                            flag_name, e
+                        ))
+                    }
+                }
+            }
+
             flags.insert(flag_name.clone(), flag);
         }
 
@@ -202,6 +230,74 @@ impl ParsingResult {
         ParsingResult {
             flags: HashMap::new(),
             flag_set_metadata: HashMap::new(),
+        }
+    }
+
+    /// Resolves $ref references in a JSON value by replacing them with evaluators.
+    ///
+    /// This function recursively traverses the JSON structure and replaces any
+    /// `{"$ref": "evaluatorName"}` objects with the corresponding evaluator definition
+    /// from the evaluators map.
+    ///
+    /// # Arguments
+    /// * `value` - The JSON value to process (typically a targeting rule)
+    /// * `evaluators` - Map of evaluator names to their definitions
+    /// * `visited` - Set of evaluator names already being resolved (for circular reference detection)
+    ///
+    /// # Returns
+    /// * `Ok(Value)` - The JSON value with all $refs resolved
+    /// * `Err(String)` - Error if a $ref points to a non-existent evaluator or circular reference detected
+    fn resolve_refs(
+        value: &serde_json::Value,
+        evaluators: &HashMap<String, serde_json::Value>,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Result<serde_json::Value, String> {
+        use serde_json::{Map, Value};
+
+        match value {
+            Value::Object(obj) => {
+                // Check if this is a $ref object
+                if obj.len() == 1 && obj.contains_key("$ref") {
+                    if let Some(Value::String(ref_name)) = obj.get("$ref") {
+                        // Check for circular references
+                        if visited.contains(ref_name) {
+                            return Err(format!(
+                                "Circular reference detected in evaluator: {}",
+                                ref_name
+                            ));
+                        }
+
+                        // Look up the evaluator
+                        let evaluator = evaluators.get(ref_name).ok_or_else(|| {
+                            format!("Evaluator '{}' not found in $evaluators", ref_name)
+                        })?;
+
+                        // Add to visited set and recurse
+                        visited.insert(ref_name.clone());
+                        let resolved = Self::resolve_refs(evaluator, evaluators, visited)?;
+                        visited.remove(ref_name);
+
+                        return Ok(resolved);
+                    }
+                }
+
+                // Not a $ref, recursively resolve any nested $refs
+                let mut resolved_obj = Map::new();
+                for (key, val) in obj {
+                    resolved_obj.insert(key.clone(), Self::resolve_refs(val, evaluators, visited)?);
+                }
+                Ok(Value::Object(resolved_obj))
+            }
+            Value::Array(arr) => {
+                // Recursively resolve $refs in array elements
+                let mut resolved_arr = Vec::new();
+                for item in arr {
+                    resolved_arr.push(Self::resolve_refs(item, evaluators, visited)?);
+                }
+                Ok(Value::Array(resolved_arr))
+            }
+            // Primitives don't contain $refs
+            _ => Ok(value.clone()),
         }
     }
 }
@@ -551,5 +647,278 @@ mod tests {
 
         let another_flag = result.flags.get("anotherFlag").unwrap();
         assert_eq!(another_flag.key, Some("anotherFlag".to_string()));
+    }
+
+    #[test]
+    fn test_evaluators_with_simple_ref() {
+        let config = r#"{
+            "$evaluators": {
+                "isAdmin": {
+                    "in": ["admin@", {"var": "email"}]
+                }
+            },
+            "flags": {
+                "adminFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {"$ref": "isAdmin"},
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let result = ParsingResult::parse(config).unwrap();
+        assert_eq!(result.flags.len(), 1);
+
+        // Verify $evaluators is stored in metadata
+        assert!(result.flag_set_metadata.contains_key("$evaluators"));
+
+        // Verify the $ref was resolved in the targeting rule
+        let flag = result.flags.get("adminFlag").unwrap();
+        let targeting = flag.targeting.as_ref().unwrap();
+
+        // The $ref should be replaced with the actual evaluator rule
+        let targeting_obj = targeting.as_object().unwrap();
+        assert!(targeting_obj.contains_key("if"));
+
+        let if_array = targeting_obj.get("if").unwrap().as_array().unwrap();
+        // First element should be the resolved evaluator (not a $ref)
+        let first_elem = &if_array[0];
+        assert!(first_elem.is_object());
+        let first_obj = first_elem.as_object().unwrap();
+        assert!(first_obj.contains_key("in"));
+        assert!(!first_obj.contains_key("$ref"));
+    }
+
+    #[test]
+    fn test_evaluators_with_nested_ref() {
+        let config = r#"{
+            "$evaluators": {
+                "isAdmin": {
+                    "in": ["admin@", {"var": "email"}]
+                },
+                "isEnabled": {
+                    "and": [
+                        {"$ref": "isAdmin"},
+                        {"==": [{"var": "enabled"}, true]}
+                    ]
+                }
+            },
+            "flags": {
+                "featureFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {"$ref": "isEnabled"},
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let result = ParsingResult::parse(config).unwrap();
+        let flag = result.flags.get("featureFlag").unwrap();
+        let targeting = flag.targeting.as_ref().unwrap();
+
+        // Verify nested $ref is resolved
+        let targeting_str = targeting.to_string();
+        assert!(!targeting_str.contains("$ref"));
+        assert!(targeting_str.contains("in"));
+        assert!(targeting_str.contains("admin@"));
+    }
+
+    #[test]
+    fn test_evaluators_missing_ref_error() {
+        let config = r#"{
+            "$evaluators": {
+                "isAdmin": {
+                    "in": ["admin@", {"var": "email"}]
+                }
+            },
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {"$ref": "nonExistentRule"},
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let result = ParsingResult::parse(config);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("nonExistentRule"));
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn test_evaluators_circular_ref_error() {
+        let config = r#"{
+            "$evaluators": {
+                "rule1": {
+                    "$ref": "rule2"
+                },
+                "rule2": {
+                    "$ref": "rule1"
+                }
+            },
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "$ref": "rule1"
+                    }
+                }
+            }
+        }"#;
+
+        let result = ParsingResult::parse(config);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Circular reference"));
+    }
+
+    #[test]
+    fn test_evaluators_with_multiple_flags() {
+        let config = r#"{
+            "$evaluators": {
+                "isAdmin": {
+                    "in": ["admin@", {"var": "email"}]
+                },
+                "isPremium": {
+                    "==": [{"var": "tier"}, "premium"]
+                }
+            },
+            "flags": {
+                "adminFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [{"$ref": "isAdmin"}, "on", "off"]
+                    }
+                },
+                "premiumFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [{"$ref": "isPremium"}, "on", "off"]
+                    }
+                }
+            }
+        }"#;
+
+        let result = ParsingResult::parse(config).unwrap();
+        assert_eq!(result.flags.len(), 2);
+
+        // Both flags should have resolved $refs
+        let admin_flag = result.flags.get("adminFlag").unwrap();
+        let admin_targeting = admin_flag.targeting.as_ref().unwrap().to_string();
+        assert!(!admin_targeting.contains("$ref"));
+        assert!(admin_targeting.contains("in"));
+
+        let premium_flag = result.flags.get("premiumFlag").unwrap();
+        let premium_targeting = premium_flag.targeting.as_ref().unwrap().to_string();
+        assert!(!premium_targeting.contains("$ref"));
+        assert!(premium_targeting.contains("=="));
+    }
+
+    #[test]
+    fn test_flags_without_evaluators() {
+        // Flags should work fine without $evaluators
+        let config = r#"{
+            "flags": {
+                "simpleFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "on",
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "user"}, "admin"]},
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let result = ParsingResult::parse(config).unwrap();
+        assert_eq!(result.flags.len(), 1);
+        let flag = result.flags.get("simpleFlag").unwrap();
+        assert!(flag.targeting.is_some());
+    }
+
+    #[test]
+    fn test_evaluators_with_complex_nested_structure() {
+        let config = r#"{
+            "$evaluators": {
+                "baseRule": {
+                    "==": [{"var": "status"}, "active"]
+                },
+                "compositeRule": {
+                    "and": [
+                        {"$ref": "baseRule"},
+                        {">=": [{"var": "age"}, 18]}
+                    ]
+                }
+            },
+            "flags": {
+                "complexFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {
+                                "or": [
+                                    {"$ref": "compositeRule"},
+                                    {"==": [{"var": "override"}, true]}
+                                ]
+                            },
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let result = ParsingResult::parse(config).unwrap();
+        let flag = result.flags.get("complexFlag").unwrap();
+        let targeting = flag.targeting.as_ref().unwrap();
+
+        // Verify all $refs are resolved deeply
+        let targeting_str = targeting.to_string();
+        assert!(!targeting_str.contains("$ref"));
+        assert!(targeting_str.contains("status"));
+        assert!(targeting_str.contains("active"));
+        assert!(targeting_str.contains("age"));
     }
 }
