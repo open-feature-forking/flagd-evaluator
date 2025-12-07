@@ -211,7 +211,7 @@ fn enrich_context(flag_key: &str, context: &Value) -> Value {
     let mut flagd_props = Map::new();
     flagd_props.insert("flagKey".to_string(), Value::String(flag_key.to_string()));
     flagd_props.insert("timestamp".to_string(), Value::Number(timestamp.into()));
-    
+
     // Add $flagd object to context
     enriched.insert("$flagd".to_string(), Value::Object(flagd_props));
 
@@ -728,11 +728,11 @@ mod tests {
         let targeting = json!({
             "var": "$flagd.timestamp"
         });
-        
+
         let mut variants = HashMap::new();
         // Use numeric variants to verify timestamp is returned as a number
         variants.insert("timestamp".to_string(), json!(0));
-        
+
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
@@ -741,11 +741,11 @@ mod tests {
             targeting: Some(targeting),
             metadata: HashMap::new(),
         };
-        
+
         let context = json!({});
         let result = evaluate_flag(&flag, &context);
-        
-        // The result should fall back to default because timestamp number 
+
+        // The result should fall back to default because timestamp number
         // won't match "timestamp" string variant name
         assert_eq!(result.reason, ResolutionReason::Default);
     }
@@ -765,11 +765,11 @@ mod tests {
                 "failure"
             ]
         });
-        
+
         let mut variants = HashMap::new();
         variants.insert("success".to_string(), json!("both-present"));
         variants.insert("failure".to_string(), json!("missing-properties"));
-        
+
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
@@ -778,10 +778,10 @@ mod tests {
             targeting: Some(targeting),
             metadata: HashMap::new(),
         };
-        
+
         let context = json!({});
         let result = evaluate_flag(&flag, &context);
-        
+
         // Both conditions should be true, returning "success" variant
         assert_eq!(result.variant, Some("success".to_string()));
         assert_eq!(result.value, json!("both-present"));
