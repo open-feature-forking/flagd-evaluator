@@ -1,10 +1,21 @@
 //! Internal flag storage for managing feature flag state.
 //!
 //! This module provides a simple in-memory flag store that can be updated
-//! with JSON configurations in the standard flagd format.
+//! with JSON configurations in the standard flagd format. It also supports
+//! JSON Schema validation with configurable behavior.
 
 use crate::model::ParsingResult;
+use crate::validation::validate_flags_config;
 use std::cell::RefCell;
+
+/// Validation mode determines how validation errors are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationMode {
+    /// Store flags only if validation succeeds (default, strict mode)
+    Strict,
+    /// Store flags even if validation fails (permissive mode)
+    Permissive,
+}
 
 thread_local! {
     /// Thread-local storage for feature flags.
@@ -12,13 +23,46 @@ thread_local! {
     /// In WASM environments, there's a single thread, so we use RefCell for
     /// interior mutability without the overhead of multi-threading primitives.
     static FLAG_STORE: RefCell<Option<ParsingResult>> = const { RefCell::new(None) };
+
+    /// Thread-local storage for validation mode configuration.
+    ///
+    /// Controls whether flags should be stored when validation fails.
+    static VALIDATION_MODE: RefCell<ValidationMode> = const { RefCell::new(ValidationMode::Strict) };
+}
+
+/// Sets the validation mode for flag state updates.
+///
+/// # Arguments
+///
+/// * `mode` - The validation mode to use
+///
+/// # Example
+///
+/// ```
+/// use flagd_evaluator::storage::{set_validation_mode, ValidationMode};
+///
+/// // Use permissive mode to store flags even with validation errors
+/// set_validation_mode(ValidationMode::Permissive);
+/// ```
+pub fn set_validation_mode(mode: ValidationMode) {
+    VALIDATION_MODE.with(|m| {
+        *m.borrow_mut() = mode;
+    });
+}
+
+/// Gets the current validation mode.
+pub fn get_validation_mode() -> ValidationMode {
+    VALIDATION_MODE.with(|m| *m.borrow())
 }
 
 /// Updates the internal flag state with a new configuration.
 ///
-/// This function parses the provided JSON configuration in the standard flagd
-/// format and replaces the entire internal state. Any previously stored flags
-/// are discarded.
+/// This function validates the provided JSON configuration against the flagd schema,
+/// then parses and stores it. The behavior when validation fails depends on the
+/// current validation mode:
+///
+/// - `ValidationMode::Strict` (default): Flags are only stored if validation succeeds
+/// - `ValidationMode::Permissive`: Flags are stored even if validation fails
 ///
 /// # Arguments
 ///
@@ -26,8 +70,21 @@ thread_local! {
 ///
 /// # Returns
 ///
-/// * `Ok(())` - If the configuration was successfully parsed and stored
-/// * `Err(String)` - If there was an error parsing the configuration
+/// * `Ok(())` - If the configuration was successfully parsed and stored (validation may have warnings in permissive mode)
+/// * `Err(String)` - If there was an error (JSON parsing error in strict mode, or validation error in strict mode)
+///
+/// The error string contains a JSON object with validation details:
+/// ```json
+/// {
+///   "valid": false,
+///   "errors": [
+///     {
+///       "path": "/flags/myFlag",
+///       "message": "Missing required field: state"
+///     }
+///   ]
+/// }
+/// ```
 ///
 /// # Example
 ///
@@ -50,6 +107,28 @@ thread_local! {
 /// update_flag_state(config).unwrap();
 /// ```
 pub fn update_flag_state(json_config: &str) -> Result<(), String> {
+    let validation_mode = get_validation_mode();
+
+    // Validate the configuration against the schema
+    let validation_result = validate_flags_config(json_config);
+
+    match validation_mode {
+        ValidationMode::Strict => {
+            // In strict mode, fail if validation fails
+            if let Err(validation_error) = validation_result {
+                return Err(validation_error.to_json_string());
+            }
+        }
+        ValidationMode::Permissive => {
+            // In permissive mode, log but continue
+            if let Err(validation_error) = validation_result {
+                // We continue processing even with validation errors
+                // The caller can check the logs or handle this differently
+                eprintln!("Warning: Configuration has validation errors but will be stored due to permissive mode: {}", validation_error.to_json_string());
+            }
+        }
+    }
+
     // Parse the configuration
     let parsing_result = ParsingResult::parse(json_config)?;
 
@@ -148,18 +227,28 @@ mod tests {
 
     #[test]
     fn test_update_flag_state_invalid_json() {
+        clear_flag_state();
+        set_validation_mode(ValidationMode::Strict);
+
         let config = "not valid json";
         let result = update_flag_state(config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Failed to parse JSON"));
+        let err = result.unwrap_err();
+        // Error should contain "Invalid JSON" from validation module
+        assert!(err.contains("Invalid JSON") || err.contains("\"valid\":false"));
     }
 
     #[test]
     fn test_update_flag_state_missing_flags_field() {
+        clear_flag_state();
+        set_validation_mode(ValidationMode::Strict);
+
         let config = r#"{"other": "data"}"#;
         let result = update_flag_state(config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Missing 'flags' field"));
+        // Should fail validation because "flags" is required
+        let err = result.unwrap_err();
+        assert!(err.contains("\"valid\":false"));
     }
 
     #[test]
@@ -228,6 +317,9 @@ mod tests {
 
     #[test]
     fn test_update_flag_state_multiple_flags() {
+        clear_flag_state();
+        set_validation_mode(ValidationMode::Strict);
+
         let config = r#"{
             "flags": {
                 "flag1": {
@@ -257,5 +349,114 @@ mod tests {
         assert!(state.flags.contains_key("flag1"));
         assert!(state.flags.contains_key("flag2"));
         assert!(state.flags.contains_key("flag3"));
+    }
+
+    #[test]
+    fn test_validation_mode_strict_rejects_invalid() {
+        clear_flag_state();
+        set_validation_mode(ValidationMode::Strict);
+
+        // Invalid config - missing required fields
+        let config = r#"{
+            "flags": {
+                "badFlag": {
+                    "state": "ENABLED"
+                }
+            }
+        }"#;
+
+        let result = update_flag_state(config);
+        assert!(result.is_err());
+
+        // State should not be updated
+        assert!(get_flag_state().is_none());
+    }
+
+    #[test]
+    fn test_validation_mode_permissive_accepts_invalid() {
+        clear_flag_state();
+        set_validation_mode(ValidationMode::Permissive);
+
+        // Invalid config according to schema, but valid JSON that can be parsed
+        // Note: ParsingResult::parse will still fail if required fields are missing
+        // So we need a config that fails schema validation but parses correctly
+        let config = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true, "off": false}
+                }
+            },
+            "invalidField": "should not be here"
+        }"#;
+
+        // In permissive mode, this should succeed (or at least not fail on schema validation)
+        let result = update_flag_state(config);
+        // This might still succeed because the parser is more lenient
+        assert!(result.is_ok());
+
+        // Reset to strict mode for other tests
+        set_validation_mode(ValidationMode::Strict);
+    }
+
+    #[test]
+    fn test_validation_mode_switch() {
+        assert_eq!(get_validation_mode(), ValidationMode::Strict);
+
+        set_validation_mode(ValidationMode::Permissive);
+        assert_eq!(get_validation_mode(), ValidationMode::Permissive);
+
+        set_validation_mode(ValidationMode::Strict);
+        assert_eq!(get_validation_mode(), ValidationMode::Strict);
+    }
+
+    #[test]
+    fn test_validation_mode_strict_with_valid_config() {
+        clear_flag_state();
+        set_validation_mode(ValidationMode::Strict);
+
+        let config = r#"{
+            "flags": {
+                "validFlag": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true, "off": false}
+                }
+            }
+        }"#;
+
+        let result = update_flag_state(config);
+        assert!(result.is_ok());
+
+        let state = get_flag_state().unwrap();
+        assert_eq!(state.flags.len(), 1);
+        assert!(state.flags.contains_key("validFlag"));
+    }
+
+    #[test]
+    fn test_validation_error_format() {
+        clear_flag_state();
+        set_validation_mode(ValidationMode::Strict);
+
+        // Invalid state value
+        let config = r#"{
+            "flags": {
+                "badFlag": {
+                    "state": "INVALID",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                }
+            }
+        }"#;
+
+        let result = update_flag_state(config);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        // Error should be valid JSON
+        let error_json: serde_json::Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(error_json["valid"], false);
+        assert!(error_json["errors"].is_array());
     }
 }
