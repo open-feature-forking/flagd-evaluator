@@ -244,7 +244,7 @@ CLI integration tests verify that the `flagd-eval` binary works correctly end-to
 
 #### `tests/integration_tests.rs` - Comprehensive Integration Tests
 
-Integration tests verify the complete evaluation flow including memory management, JSON parsing, custom operators, and error handling. These tests include **100+ test cases** covering:
+Integration tests verify the complete evaluation flow including memory management, JSON parsing, custom operators, and error handling. These tests include **70+ test cases** covering:
 
 - **Basic JSON Logic Operations**:
   - Equality (`==`) and strict equality (`===`)
@@ -393,7 +393,7 @@ cargo test starts_with
 
 ### Performance Considerations
 
-- **Test execution is time-consuming** - The full test suite includes 100+ integration tests plus CLI tests
+- **Test execution is time-consuming** - The full test suite includes 70+ integration tests and 20+ CLI tests (90+ total)
 - **Build time** - Compiling the project and tests takes time
 - **The test suite is comprehensive** - Tests cover JSON Logic, custom operators, memory management, error handling, and edge cases
 - **Focus on understanding first** - Read the test files to understand coverage without executing them
