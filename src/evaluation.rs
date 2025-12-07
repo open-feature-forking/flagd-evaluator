@@ -157,15 +157,6 @@ impl EvaluationResult {
         self
     }
 
-    /// Attaches metadata to the result if the metadata is not empty.
-    fn with_metadata_if_present(self, metadata: &std::collections::HashMap<String, Value>) -> Self {
-        if metadata.is_empty() {
-            self
-        } else {
-            self.with_metadata(metadata.clone())
-        }
-    }
-
     /// Serializes the result to a JSON string.
     pub fn to_json_string(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|e| {
@@ -211,6 +202,38 @@ fn enrich_context(flag_key: &str, context: &Value) -> Value {
     Value::Object(enriched)
 }
 
+/// Merges flag-set metadata with flag-level metadata.
+///
+/// According to the flagd provider specification, flag metadata takes priority over
+/// flag-set metadata. This function creates a merged metadata map with flag-set
+/// metadata as the base and flag metadata overriding any duplicate keys.
+///
+/// # Arguments
+/// * `flag_set_metadata` - The metadata from the flag configuration root
+/// * `flag_metadata` - The metadata from the specific flag
+///
+/// # Returns
+/// A merged HashMap with flag metadata taking priority, or None if both are empty
+fn merge_metadata(
+    flag_set_metadata: &std::collections::HashMap<String, Value>,
+    flag_metadata: &std::collections::HashMap<String, Value>,
+) -> Option<std::collections::HashMap<String, Value>> {
+    // If both are empty, return None
+    if flag_set_metadata.is_empty() && flag_metadata.is_empty() {
+        return None;
+    }
+
+    // Start with flag-set metadata as the base
+    let mut merged = flag_set_metadata.clone();
+
+    // Override with flag-level metadata (flag metadata takes priority)
+    for (key, value) in flag_metadata {
+        merged.insert(key.clone(), value.clone());
+    }
+
+    Some(merged)
+}
+
 /// Evaluates a feature flag against a context.
 ///
 /// The flag's key should be set in the flag object (from storage).
@@ -219,10 +242,15 @@ fn enrich_context(flag_key: &str, context: &Value) -> Value {
 /// # Arguments
 /// * `flag` - The feature flag to evaluate (must have key set)
 /// * `context` - The evaluation context (JSON object)
+/// * `flag_set_metadata` - Optional flag-set level metadata to merge with flag metadata
 ///
 /// # Returns
-/// An EvaluationResult containing the resolved value, variant, and reason
-pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
+/// An EvaluationResult containing the resolved value, variant, reason, and merged metadata
+pub fn evaluate_flag(
+    flag: &FeatureFlag,
+    context: &Value,
+    flag_set_metadata: &std::collections::HashMap<String, Value>,
+) -> EvaluationResult {
     // Get the flag key from the flag object
     let flag_key = match &flag.key {
         Some(key) => key.as_str(),
@@ -230,12 +258,20 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
             return EvaluationResult::error(ErrorCode::General, "Flag key not set in flag object")
         }
     };
+
+    // Merge metadata (flag metadata takes priority over flag-set metadata)
+    let merged_metadata = merge_metadata(flag_set_metadata, &flag.metadata);
+
     // Check if flag is disabled
     if flag.state == "DISABLED" {
         // Return the default variant value
         if let Some(value) = flag.variants.get(&flag.default_variant) {
-            return EvaluationResult::disabled(value.clone(), flag.default_variant.clone())
-                .with_metadata_if_present(&flag.metadata);
+            let result = EvaluationResult::disabled(value.clone(), flag.default_variant.clone());
+            return if let Some(metadata) = merged_metadata {
+                result.with_metadata(metadata)
+            } else {
+                result
+            };
         } else {
             return EvaluationResult::error(
                 ErrorCode::General,
@@ -250,8 +286,12 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
     // If there's no targeting rule, return the default variant
     if flag.targeting.is_none() {
         if let Some(value) = flag.variants.get(&flag.default_variant) {
-            return EvaluationResult::static_result(value.clone(), flag.default_variant.clone())
-                .with_metadata_if_present(&flag.metadata);
+            let result = EvaluationResult::static_result(value.clone(), flag.default_variant.clone());
+            return if let Some(metadata) = merged_metadata {
+                result.with_metadata(metadata)
+            } else {
+                result
+            };
         } else {
             return EvaluationResult::error(
                 ErrorCode::General,
@@ -290,13 +330,21 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
 
             // Look up the variant value
             if let Some(value) = flag.variants.get(&variant_name) {
-                EvaluationResult::targeting_match(value.clone(), variant_name)
-                    .with_metadata_if_present(&flag.metadata)
+                let result = EvaluationResult::targeting_match(value.clone(), variant_name);
+                if let Some(metadata) = merged_metadata {
+                    result.with_metadata(metadata)
+                } else {
+                    result
+                }
             } else {
                 // Variant not found in targeting result, use default
                 if let Some(value) = flag.variants.get(&flag.default_variant) {
-                    EvaluationResult::default_result(value.clone(), flag.default_variant.clone())
-                        .with_metadata_if_present(&flag.metadata)
+                    let result = EvaluationResult::default_result(value.clone(), flag.default_variant.clone());
+                    if let Some(metadata) = merged_metadata {
+                        result.with_metadata(metadata)
+                    } else {
+                        result
+                    }
                 } else {
                     EvaluationResult::error(
                         ErrorCode::General,
@@ -319,11 +367,16 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
 /// # Arguments
 /// * `flag` - The feature flag to evaluate
 /// * `context` - The evaluation context (JSON object)
+/// * `flag_set_metadata` - Flag-set level metadata to merge with flag metadata
 ///
 /// # Returns
 /// An EvaluationResult with a boolean value or TYPE_MISMATCH error
-pub fn evaluate_bool_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
-    let result = evaluate_flag(flag, context);
+pub fn evaluate_bool_flag(
+    flag: &FeatureFlag,
+    context: &Value,
+    flag_set_metadata: &std::collections::HashMap<String, Value>,
+) -> EvaluationResult {
+    let result = evaluate_flag(flag, context, flag_set_metadata);
 
     // If there's already an error, return it as-is
     if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
@@ -352,11 +405,16 @@ pub fn evaluate_bool_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResu
 /// # Arguments
 /// * `flag` - The feature flag to evaluate
 /// * `context` - The evaluation context (JSON object)
+/// * `flag_set_metadata` - Flag-set level metadata to merge with flag metadata
 ///
 /// # Returns
 /// An EvaluationResult with a string value or TYPE_MISMATCH error
-pub fn evaluate_string_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
-    let result = evaluate_flag(flag, context);
+pub fn evaluate_string_flag(
+    flag: &FeatureFlag,
+    context: &Value,
+    flag_set_metadata: &std::collections::HashMap<String, Value>,
+) -> EvaluationResult {
+    let result = evaluate_flag(flag, context, flag_set_metadata);
 
     // If there's already an error, return it as-is
     if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
@@ -386,11 +444,16 @@ pub fn evaluate_string_flag(flag: &FeatureFlag, context: &Value) -> EvaluationRe
 /// # Arguments
 /// * `flag` - The feature flag to evaluate
 /// * `context` - The evaluation context (JSON object)
+/// * `flag_set_metadata` - Flag-set level metadata to merge with flag metadata
 ///
 /// # Returns
 /// An EvaluationResult with an integer value or TYPE_MISMATCH error
-pub fn evaluate_int_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
-    let result = evaluate_flag(flag, context);
+pub fn evaluate_int_flag(
+    flag: &FeatureFlag,
+    context: &Value,
+    flag_set_metadata: &std::collections::HashMap<String, Value>,
+) -> EvaluationResult {
+    let result = evaluate_flag(flag, context, flag_set_metadata);
 
     // If there's already an error, return it as-is
     if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
@@ -420,11 +483,16 @@ pub fn evaluate_int_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResul
 /// # Arguments
 /// * `flag` - The feature flag to evaluate
 /// * `context` - The evaluation context (JSON object)
+/// * `flag_set_metadata` - Flag-set level metadata to merge with flag metadata
 ///
 /// # Returns
 /// An EvaluationResult with a float value or TYPE_MISMATCH error
-pub fn evaluate_float_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
-    let result = evaluate_flag(flag, context);
+pub fn evaluate_float_flag(
+    flag: &FeatureFlag,
+    context: &Value,
+    flag_set_metadata: &std::collections::HashMap<String, Value>,
+) -> EvaluationResult {
+    let result = evaluate_flag(flag, context, flag_set_metadata);
 
     // If there's already an error, return it as-is
     if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
@@ -453,11 +521,16 @@ pub fn evaluate_float_flag(flag: &FeatureFlag, context: &Value) -> EvaluationRes
 /// # Arguments
 /// * `flag` - The feature flag to evaluate
 /// * `context` - The evaluation context (JSON object)
+/// * `flag_set_metadata` - Flag-set level metadata to merge with flag metadata
 ///
 /// # Returns
 /// An EvaluationResult with an object value or TYPE_MISMATCH error
-pub fn evaluate_object_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
-    let result = evaluate_flag(flag, context);
+pub fn evaluate_object_flag(
+    flag: &FeatureFlag,
+    context: &Value,
+    flag_set_metadata: &std::collections::HashMap<String, Value>,
+) -> EvaluationResult {
+    let result = evaluate_flag(flag, context, flag_set_metadata);
 
     // If there's already an error, return it as-is
     if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
@@ -521,12 +594,17 @@ mod tests {
         }
     }
 
+    // Helper to get empty flag-set metadata for tests
+    fn empty_flag_set_metadata() -> HashMap<String, Value> {
+        HashMap::new()
+    }
+
     #[test]
     fn test_static_result() {
         let flag = create_test_flag(None);
         let context = json!({});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         assert_eq!(result.value, json!(false));
         assert_eq!(result.variant, Some("off".to_string()));
         assert_eq!(result.reason, ResolutionReason::Static);
@@ -539,7 +617,7 @@ mod tests {
         flag.state = "DISABLED".to_string();
         let context = json!({});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         assert_eq!(result.value, json!(false));
         assert_eq!(result.variant, Some("off".to_string()));
         assert_eq!(result.reason, ResolutionReason::Disabled);
@@ -557,7 +635,7 @@ mod tests {
         let flag = create_test_flag(Some(targeting));
         let context = json!({"user": "admin"});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         assert_eq!(result.value, json!(true));
         assert_eq!(result.variant, Some("on".to_string()));
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
@@ -575,7 +653,7 @@ mod tests {
         let flag = create_test_flag(Some(targeting));
         let context = json!({"user": "guest"});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         assert_eq!(result.value, json!(false));
         assert_eq!(result.variant, Some("off".to_string()));
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
@@ -621,23 +699,23 @@ mod tests {
         };
 
         // Test string variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "string_variant"}));
+        let result = evaluate_flag(&flag, &json!({"variant_name": "string_variant"}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!("hello"));
 
         // Test int variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "int_variant"}));
+        let result = evaluate_flag(&flag, &json!({"variant_name": "int_variant"}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!(42));
 
         // Test float variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "float_variant"}));
+        let result = evaluate_flag(&flag, &json!({"variant_name": "float_variant"}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!(3.14));
 
         // Test bool variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "bool_variant"}));
+        let result = evaluate_flag(&flag, &json!({"variant_name": "bool_variant"}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!(true));
 
         // Test object variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "object_variant"}));
+        let result = evaluate_flag(&flag, &json!({"variant_name": "object_variant"}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!({"key": "value"}));
     }
 
@@ -649,7 +727,7 @@ mod tests {
         let flag = create_test_flag(Some(targeting));
         let context = json!({});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         // The targeting rule returns the flagKey variant name, which should be looked up
         // Since "test_flag" is not a valid variant, it should fall back to default
         assert_eq!(result.variant, Some("off".to_string()));
@@ -667,7 +745,7 @@ mod tests {
         let flag = create_test_flag(Some(targeting));
         let context = json!({"targetingKey": "user-123"});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         assert_eq!(result.value, json!(true));
         assert_eq!(result.variant, Some("on".to_string()));
     }
@@ -685,7 +763,7 @@ mod tests {
         let flag = create_test_flag(Some(targeting));
         let context = json!({});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         assert_eq!(result.value, json!(true));
         assert_eq!(result.variant, Some("on".to_string()));
     }
@@ -696,7 +774,7 @@ mod tests {
         flag.key = None; // Remove the key
         let context = json!({});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::General));
         assert!(result.error_message.is_some());
@@ -723,7 +801,7 @@ mod tests {
         };
 
         let context = json!({});
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
 
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.flag_metadata.is_some());
@@ -763,7 +841,7 @@ mod tests {
         };
 
         let context = json!({"user": "admin"});
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
 
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
         assert_eq!(result.value, json!(true));
@@ -779,7 +857,7 @@ mod tests {
         let flag = create_test_flag(None);
         let context = json!({});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         assert!(result.flag_metadata.is_none());
     }
 
@@ -890,7 +968,7 @@ mod tests {
         let mut flag = create_test_flag(Some(json!({"invalid_operator": [1, 2, 3]})));
         flag.key = Some("test".to_string());
 
-        let result = evaluate_flag(&flag, &json!({}));
+        let result = evaluate_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::ParseError));
         assert!(result.error_message.is_some());
@@ -905,7 +983,7 @@ mod tests {
         flag.state = "DISABLED".to_string();
         flag.metadata = metadata;
 
-        let result = evaluate_flag(&flag, &json!({}));
+        let result = evaluate_flag(&flag, &json!({}), &empty_flag_set_metadata());
 
         assert_eq!(result.reason, ResolutionReason::Disabled);
         assert!(result.flag_metadata.is_some());
@@ -974,7 +1052,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_bool_flag(&flag, &json!({}));
+        let result = evaluate_bool_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!(true));
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
@@ -995,7 +1073,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_bool_flag(&flag, &json!({}));
+        let result = evaluate_bool_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
         assert!(result
@@ -1019,7 +1097,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_string_flag(&flag, &json!({}));
+        let result = evaluate_string_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!("crimson"));
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
@@ -1040,7 +1118,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_string_flag(&flag, &json!({}));
+        let result = evaluate_string_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
         assert!(result
@@ -1064,7 +1142,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_int_flag(&flag, &json!({}));
+        let result = evaluate_int_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!(10));
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
@@ -1085,7 +1163,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_int_flag(&flag, &json!({}));
+        let result = evaluate_int_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
         assert!(result
@@ -1109,7 +1187,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_int_flag(&flag, &json!({}));
+        let result = evaluate_int_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
         assert!(result
@@ -1133,7 +1211,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_float_flag(&flag, &json!({}));
+        let result = evaluate_float_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!(1.5));
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
@@ -1155,7 +1233,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_float_flag(&flag, &json!({}));
+        let result = evaluate_float_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!(1));
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
@@ -1176,7 +1254,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_float_flag(&flag, &json!({}));
+        let result = evaluate_float_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
         assert!(result
@@ -1200,7 +1278,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_object_flag(&flag, &json!({}));
+        let result = evaluate_object_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!({"timeout": 30, "retries": 3}));
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
@@ -1221,7 +1299,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_object_flag(&flag, &json!({}));
+        let result = evaluate_object_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
         assert!(result
@@ -1236,7 +1314,7 @@ mod tests {
         let mut flag = create_test_flag(None);
         flag.key = None; // This will cause an error
 
-        let result = evaluate_bool_flag(&flag, &json!({}));
+        let result = evaluate_bool_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::General));
         // Error should be about the flag key, not about type mismatch
@@ -1266,7 +1344,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_string_flag(&flag, &json!({"role": "admin"}));
+        let result = evaluate_string_flag(&flag, &json!({"role": "admin"}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!("admin_message"));
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
         assert!(result.error_code.is_none());
@@ -1287,7 +1365,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_int_flag(&flag, &json!({}));
+        let result = evaluate_int_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!(10));
         assert_eq!(result.reason, ResolutionReason::Disabled);
         assert!(result.error_code.is_none());
@@ -1320,7 +1398,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_object_flag(&flag, &json!({}));
+        let result = evaluate_object_flag(&flag, &json!({}), &empty_flag_set_metadata());
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
         assert!(result
@@ -1348,7 +1426,7 @@ mod tests {
             targeting: Some(bool_targeting),
             metadata: HashMap::new(),
         };
-        let bool_result = evaluate_bool_flag(&bool_flag, &json!({"score": 90}));
+        let bool_result = evaluate_bool_flag(&bool_flag, &json!({"score": 90}), &empty_flag_set_metadata());
         assert_eq!(bool_result.value, json!(true));
         assert_eq!(bool_result.reason, ResolutionReason::TargetingMatch);
 
@@ -1367,7 +1445,7 @@ mod tests {
             targeting: Some(string_targeting),
             metadata: HashMap::new(),
         };
-        let string_result = evaluate_string_flag(&string_flag, &json!({"tier": "premium"}));
+        let string_result = evaluate_string_flag(&string_flag, &json!({"tier": "premium"}), &empty_flag_set_metadata());
         assert_eq!(string_result.value, json!("gold_tier"));
         assert_eq!(string_result.reason, ResolutionReason::TargetingMatch);
 
@@ -1386,7 +1464,7 @@ mod tests {
             targeting: Some(int_targeting),
             metadata: HashMap::new(),
         };
-        let int_result = evaluate_int_flag(&int_flag, &json!({"age": 15}));
+        let int_result = evaluate_int_flag(&int_flag, &json!({"age": 15}), &empty_flag_set_metadata());
         assert_eq!(int_result.value, json!(10));
         assert_eq!(int_result.reason, ResolutionReason::TargetingMatch);
     }
