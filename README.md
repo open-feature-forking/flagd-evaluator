@@ -42,6 +42,8 @@ The WASM file will be at: `target/wasm32-unknown-unknown/release/flagd_evaluator
 cargo test
 ```
 
+See [tests/README.md](tests/README.md) for detailed information about the test suite, including integration tests based on the flagd provider specification and Gherkin test scenarios.
+
 ## CLI Tool
 
 A command-line interface is available for testing and debugging JSON Logic rules without requiring WASM compilation or Java integration.
