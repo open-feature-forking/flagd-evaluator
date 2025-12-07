@@ -54,7 +54,7 @@ pub use evaluation::{
 pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
-pub use model::{FeatureFlag, ParsingResult};
+pub use model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 pub use operators::{create_evaluator, ends_with, fractional, sem_ver, starts_with};
 pub use storage::{
     clear_flag_state, get_flag_state, set_validation_mode, update_flag_state, ValidationMode,
@@ -252,7 +252,8 @@ pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
 /// Updates the feature flag state with a new configuration.
 ///
 /// This function parses the provided JSON configuration and stores it in
-/// thread-local storage for later evaluation.
+/// thread-local storage for later evaluation. It also detects which flags
+/// have changed by comparing the new configuration with the previous state.
 ///
 /// # Arguments
 /// * `config_ptr` - Pointer to the JSON configuration string in WASM memory
@@ -260,15 +261,21 @@ pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
 ///
 /// # Returns
 /// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
-/// of the response JSON string. The response indicates success or failure.
+/// of the response JSON string. The response includes a list of changed flag keys.
 ///
 /// # Response Format
 /// ```json
 /// {
 ///   "success": true|false,
-///   "error": null|"error message"
+///   "error": null|"error message",
+///   "changedFlags": ["flag1", "flag2", ...]
 /// }
 /// ```
+///
+/// The `changedFlags` array contains the keys of all flags that were:
+/// - Added (present in new config but not in old)
+/// - Removed (present in old config but not in new)
+/// - Mutated (default variant, targeting rules, or metadata changed)
 ///
 /// # Safety
 /// The caller must ensure:
@@ -289,7 +296,8 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
         Err(e) => {
             return serde_json::json!({
                 "success": false,
-                "error": format!("Failed to read configuration: {}", e)
+                "error": format!("Failed to read configuration: {}", e),
+                "changedFlags": null
             })
             .to_string()
         }
@@ -297,14 +305,21 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
 
     // Parse and store the configuration using the storage module
     match update_flag_state(&config_str) {
-        Ok(()) => serde_json::json!({
-            "success": true,
-            "error": null
-        })
-        .to_string(),
+        Ok(response) => {
+            // Convert UpdateStateResponse to JSON
+            serde_json::to_string(&response).unwrap_or_else(|e| {
+                serde_json::json!({
+                    "success": false,
+                    "error": format!("Failed to serialize response: {}", e),
+                    "changedFlags": null
+                })
+                .to_string()
+            })
+        }
         Err(e) => serde_json::json!({
             "success": false,
-            "error": e
+            "error": e,
+            "changedFlags": null
         })
         .to_string(),
     }
