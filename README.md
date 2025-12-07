@@ -327,10 +327,12 @@ The response follows the [flagd provider specification](https://flagd.dev/refere
 ```
 
 **Reasons:**
-- `DEFAULT`: The resolved value is statically configured (no targeting rules)
+- `STATIC`: The resolved value is statically configured (no targeting rules exist)
+- `DEFAULT`: The resolved value uses the default variant because targeting didn't match
 - `TARGETING_MATCH`: The resolved value is the result of targeting rule evaluation
 - `DISABLED`: The flag is disabled, returning the default variant
 - `ERROR`: An error occurred during evaluation
+- `FLAG_NOT_FOUND`: The flag was not found in the configuration
 
 **Error Codes:**
 - `FLAG_NOT_FOUND`: The flag key was not found in the configuration

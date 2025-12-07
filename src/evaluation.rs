@@ -14,14 +14,18 @@ use serde_json::{Map, Value};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResolutionReason {
-    /// The resolved value is statically configured (no targeting rules).
+    /// The resolved value is statically configured (no targeting rules exist).
+    Static,
+    /// The resolved value uses the default variant because targeting didn't match.
     Default,
-    /// The resolved value is the result of targeting rule evaluation.
+    /// The resolved value is the result of a successful targeting rule match.
     TargetingMatch,
     /// The flag is disabled, returning the default variant.
     Disabled,
     /// An error occurred during evaluation.
     Error,
+    /// The flag was not found in the configuration.
+    FlagNotFound,
 }
 
 /// Error codes matching the flagd provider specification.
@@ -71,8 +75,22 @@ pub struct EvaluationResult {
 impl EvaluationResult {
     /// Creates a successful static evaluation result.
     ///
-    /// Used when no targeting rules are evaluated and the default variant is used.
+    /// Used when no targeting rules exist and the default variant is used.
     pub fn static_result(value: Value, variant: String) -> Self {
+        Self {
+            value,
+            variant: Some(variant),
+            reason: ResolutionReason::Static,
+            error_code: None,
+            error_message: None,
+            flag_metadata: None,
+        }
+    }
+
+    /// Creates a successful default evaluation result.
+    ///
+    /// Used when targeting rules exist but didn't match, falling back to default variant.
+    pub fn default_result(value: Value, variant: String) -> Self {
         Self {
             value,
             variant: Some(variant),
@@ -85,7 +103,7 @@ impl EvaluationResult {
 
     /// Creates a successful targeting match evaluation result.
     ///
-    /// Used when targeting rules are evaluated and match.
+    /// Used when targeting rules are evaluated and successfully match.
     pub fn targeting_match(value: Value, variant: String) -> Self {
         Self {
             value,
@@ -121,12 +139,16 @@ impl EvaluationResult {
         }
     }
 
-    /// Creates a flag not found error result.
+    /// Creates a flag not found result.
     pub fn flag_not_found(flag_key: &str) -> Self {
-        Self::error(
-            ErrorCode::FlagNotFound,
-            format!("Flag '{}' not found in configuration", flag_key),
-        )
+        Self {
+            value: Value::Null,
+            variant: None,
+            reason: ResolutionReason::FlagNotFound,
+            error_code: Some(ErrorCode::FlagNotFound),
+            error_message: Some(format!("Flag '{}' not found in configuration", flag_key)),
+            flag_metadata: None,
+        }
     }
 
     /// Sets the flag metadata for this result.
@@ -277,9 +299,9 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
                 EvaluationResult::targeting_match(value.clone(), variant_name)
                     .with_metadata_if_present(&flag.metadata)
             } else {
-                // Variant not found, use default
+                // Variant not found in targeting result, use default
                 if let Some(value) = flag.variants.get(&flag.default_variant) {
-                    EvaluationResult::targeting_match(value.clone(), flag.default_variant.clone())
+                    EvaluationResult::default_result(value.clone(), flag.default_variant.clone())
                         .with_metadata_if_present(&flag.metadata)
                 } else {
                     EvaluationResult::error(
@@ -324,7 +346,7 @@ mod tests {
         let result = evaluate_flag(&flag, &context);
         assert_eq!(result.value, json!(false));
         assert_eq!(result.variant, Some("off".to_string()));
-        assert_eq!(result.reason, ResolutionReason::Default);
+        assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
     }
 
@@ -379,7 +401,7 @@ mod tests {
     #[test]
     fn test_flag_not_found_result() {
         let result = EvaluationResult::flag_not_found("missing-flag");
-        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.reason, ResolutionReason::FlagNotFound);
         assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
         assert!(result.error_message.is_some());
     }
@@ -390,7 +412,7 @@ mod tests {
         let json_str = result.to_json_string();
         assert!(json_str.contains("\"value\":42"));
         assert!(json_str.contains("\"variant\":\"variant1\""));
-        assert!(json_str.contains("\"reason\":\"DEFAULT\""));
+        assert!(json_str.contains("\"reason\":\"STATIC\""));
     }
 
     #[test]
@@ -520,7 +542,7 @@ mod tests {
         let context = json!({});
         let result = evaluate_flag(&flag, &context);
 
-        assert_eq!(result.reason, ResolutionReason::Default);
+        assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.flag_metadata.is_some());
         let result_metadata = result.flag_metadata.unwrap();
         assert_eq!(result_metadata.get("description"), Some(&json!("Test flag")));
@@ -616,6 +638,10 @@ mod tests {
         let test_cases = vec![
             (
                 EvaluationResult::static_result(json!(true), "on".to_string()),
+                "STATIC",
+            ),
+            (
+                EvaluationResult::default_result(json!(false), "off".to_string()),
                 "DEFAULT",
             ),
             (
@@ -629,6 +655,10 @@ mod tests {
             (
                 EvaluationResult::error(ErrorCode::General, "error"),
                 "ERROR",
+            ),
+            (
+                EvaluationResult::flag_not_found("test"),
+                "FLAG_NOT_FOUND",
             ),
         ];
 
@@ -653,7 +683,7 @@ mod tests {
 
         assert_eq!(parsed["value"], "test");
         assert_eq!(parsed["variant"], "variant");
-        assert_eq!(parsed["reason"], "DEFAULT");
+        assert_eq!(parsed["reason"], "STATIC");
         assert!(parsed["flagMetadata"].is_object());
         assert_eq!(parsed["flagMetadata"]["key1"], "value1");
         assert_eq!(parsed["flagMetadata"]["key2"], 42);
@@ -719,7 +749,7 @@ mod tests {
         // Verify all fields are present and correctly formatted
         assert_eq!(parsed["value"], 42);
         assert_eq!(parsed["variant"], "variant1");
-        assert_eq!(parsed["reason"], "DEFAULT");
+        assert_eq!(parsed["reason"], "STATIC");
         assert!(parsed["flagMetadata"].is_object());
         assert_eq!(parsed["flagMetadata"]["test"], "value");
         // errorCode and errorMessage should not be present for success
