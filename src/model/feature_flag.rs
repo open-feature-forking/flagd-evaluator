@@ -87,10 +87,10 @@ impl FeatureFlag {
             .unwrap_or_else(|| "{}".to_string())
     }
 
-    /// Checks if this flag is substantially different from another flag.
+    /// Checks if this flag is different from another flag.
     ///
-    /// Compares the default variant, targeting rules, and metadata.
-    /// Returns true if any of these fields differ.
+    /// Compares all fields of the flag using the derived PartialEq implementation.
+    /// This includes state, default variant, variants, targeting rules, and metadata.
     ///
     /// # Arguments
     ///
@@ -118,22 +118,7 @@ impl FeatureFlag {
     /// assert!(flag1.is_different_from(&flag2));
     /// ```
     pub fn is_different_from(&self, other: &FeatureFlag) -> bool {
-        // Compare default variant
-        if self.default_variant != other.default_variant {
-            return true;
-        }
-
-        // Compare targeting rules
-        if self.targeting != other.targeting {
-            return true;
-        }
-
-        // Compare metadata
-        if self.metadata != other.metadata {
-            return true;
-        }
-
-        false
+        self != other
     }
 }
 

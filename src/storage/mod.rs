@@ -68,7 +68,7 @@ pub fn get_validation_mode() -> ValidationMode {
 /// The function also detects changes between the old and new configuration by comparing:
 /// - Added flags (present in new config but not in old)
 /// - Removed flags (present in old config but not in new)
-/// - Mutated flags (changed default variant, targeting rules, or metadata)
+/// - Mutated flags (any field changed: state, default variant, variants, targeting rules, or metadata)
 ///
 /// # Arguments
 ///
@@ -177,7 +177,7 @@ pub fn update_flag_state(json_config: &str) -> Result<UpdateStateResponse, Strin
 /// Compares flags based on:
 /// - Added flags (in new but not in old)
 /// - Removed flags (in old but not in new)
-/// - Mutated flags (default variant, targeting, or metadata changed)
+/// - Mutated flags (any field changed: state, default variant, variants, targeting, or metadata)
 ///
 /// # Arguments
 ///
@@ -797,6 +797,124 @@ mod tests {
                     "variants": {"on": true},
                     "metadata": {
                         "description": "Updated description"
+                    }
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+        
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_state_mutation() {
+        clear_flag_state();
+
+        // Initial state
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true, "off": false}
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Change state from ENABLED to DISABLED
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "DISABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true, "off": false}
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+        
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_variants_mutation() {
+        clear_flag_state();
+
+        // Initial state
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    }
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Change variant value
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {
+                        "on": true,
+                        "off": true
+                    }
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+        
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_variants_added() {
+        clear_flag_state();
+
+        // Initial state with two variants
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "red",
+                    "variants": {
+                        "red": "red-value",
+                        "blue": "blue-value"
+                    }
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Add a new variant
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "red",
+                    "variants": {
+                        "red": "red-value",
+                        "blue": "blue-value",
+                        "green": "green-value"
                     }
                 }
             }
