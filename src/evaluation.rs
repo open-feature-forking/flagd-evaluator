@@ -312,7 +312,8 @@ pub fn evaluate_flag(
     // If there's no targeting rule, return the default variant
     if flag.targeting.is_none() {
         if let Some(value) = flag.variants.get(&flag.default_variant) {
-            let result = EvaluationResult::static_result(value.clone(), flag.default_variant.clone());
+            let result =
+                EvaluationResult::static_result(value.clone(), flag.default_variant.clone());
             return if let Some(metadata) = merged_metadata {
                 result.with_metadata(metadata)
             } else {
@@ -365,7 +366,10 @@ pub fn evaluate_flag(
             } else {
                 // Variant not found in targeting result, use default
                 if let Some(value) = flag.variants.get(&flag.default_variant) {
-                    let result = EvaluationResult::default_result(value.clone(), flag.default_variant.clone());
+                    let result = EvaluationResult::default_result(
+                        value.clone(),
+                        flag.default_variant.clone(),
+                    );
                     if let Some(metadata) = merged_metadata {
                         result.with_metadata(metadata)
                     } else {
@@ -725,23 +729,43 @@ mod tests {
         };
 
         // Test string variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "string_variant"}), &empty_flag_set_metadata());
+        let result = evaluate_flag(
+            &flag,
+            &json!({"variant_name": "string_variant"}),
+            &empty_flag_set_metadata(),
+        );
         assert_eq!(result.value, json!("hello"));
 
         // Test int variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "int_variant"}), &empty_flag_set_metadata());
+        let result = evaluate_flag(
+            &flag,
+            &json!({"variant_name": "int_variant"}),
+            &empty_flag_set_metadata(),
+        );
         assert_eq!(result.value, json!(42));
 
         // Test float variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "float_variant"}), &empty_flag_set_metadata());
+        let result = evaluate_flag(
+            &flag,
+            &json!({"variant_name": "float_variant"}),
+            &empty_flag_set_metadata(),
+        );
         assert_eq!(result.value, json!(3.14));
 
         // Test bool variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "bool_variant"}), &empty_flag_set_metadata());
+        let result = evaluate_flag(
+            &flag,
+            &json!({"variant_name": "bool_variant"}),
+            &empty_flag_set_metadata(),
+        );
         assert_eq!(result.value, json!(true));
 
         // Test object variant
-        let result = evaluate_flag(&flag, &json!({"variant_name": "object_variant"}), &empty_flag_set_metadata());
+        let result = evaluate_flag(
+            &flag,
+            &json!({"variant_name": "object_variant"}),
+            &empty_flag_set_metadata(),
+        );
         assert_eq!(result.value, json!({"key": "value"}));
     }
 
@@ -807,7 +831,7 @@ mod tests {
         let flag = create_test_flag(Some(targeting));
         let context = json!({});
 
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
         // Should be "on" because timestamp should be > 0 (unless system time is before 1970)
         assert_eq!(result.value, json!(true));
         assert_eq!(result.variant, Some("on".to_string()));
@@ -835,7 +859,7 @@ mod tests {
         };
 
         let context = json!({});
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
 
         // The result should fall back to default because timestamp number
         // won't match "timestamp" string variant name
@@ -872,7 +896,7 @@ mod tests {
         };
 
         let context = json!({});
-        let result = evaluate_flag(&flag, &context);
+        let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
 
         // Both conditions should be true, returning "success" variant
         assert_eq!(result.variant, Some("success".to_string()));
@@ -1456,7 +1480,8 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let result = evaluate_string_flag(&flag, &json!({"role": "admin"}), &empty_flag_set_metadata());
+        let result =
+            evaluate_string_flag(&flag, &json!({"role": "admin"}), &empty_flag_set_metadata());
         assert_eq!(result.value, json!("admin_message"));
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
         assert!(result.error_code.is_none());
@@ -1538,7 +1563,11 @@ mod tests {
             targeting: Some(bool_targeting),
             metadata: HashMap::new(),
         };
-        let bool_result = evaluate_bool_flag(&bool_flag, &json!({"score": 90}), &empty_flag_set_metadata());
+        let bool_result = evaluate_bool_flag(
+            &bool_flag,
+            &json!({"score": 90}),
+            &empty_flag_set_metadata(),
+        );
         assert_eq!(bool_result.value, json!(true));
         assert_eq!(bool_result.reason, ResolutionReason::TargetingMatch);
 
@@ -1557,7 +1586,11 @@ mod tests {
             targeting: Some(string_targeting),
             metadata: HashMap::new(),
         };
-        let string_result = evaluate_string_flag(&string_flag, &json!({"tier": "premium"}), &empty_flag_set_metadata());
+        let string_result = evaluate_string_flag(
+            &string_flag,
+            &json!({"tier": "premium"}),
+            &empty_flag_set_metadata(),
+        );
         assert_eq!(string_result.value, json!("gold_tier"));
         assert_eq!(string_result.reason, ResolutionReason::TargetingMatch);
 
@@ -1576,7 +1609,8 @@ mod tests {
             targeting: Some(int_targeting),
             metadata: HashMap::new(),
         };
-        let int_result = evaluate_int_flag(&int_flag, &json!({"age": 15}), &empty_flag_set_metadata());
+        let int_result =
+            evaluate_int_flag(&int_flag, &json!({"age": 15}), &empty_flag_set_metadata());
         assert_eq!(int_result.value, json!(10));
         assert_eq!(int_result.reason, ResolutionReason::TargetingMatch);
     }

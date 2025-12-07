@@ -44,13 +44,13 @@ fn test_metadata_merging_flag_priority() {
     // Verify metadata is merged with flag metadata taking priority
     assert!(result.flag_metadata.is_some());
     let metadata = result.flag_metadata.unwrap();
-    
+
     // Flag metadata should override flag-set metadata
     assert_eq!(metadata.get("owner").unwrap(), "flag-owner");
-    
+
     // Flag metadata should be included
     assert_eq!(metadata.get("description").unwrap(), "Test flag");
-    
+
     // Flag-set metadata should be included where not overridden
     assert_eq!(metadata.get("version").unwrap(), "1.0");
     assert_eq!(metadata.get("env").unwrap(), "production");
@@ -156,7 +156,10 @@ fn test_metadata_with_disabled_flag() {
     let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
 
     // Verify disabled flag returns metadata
-    assert_eq!(result.reason, flagd_evaluator::evaluation::ResolutionReason::Disabled);
+    assert_eq!(
+        result.reason,
+        flagd_evaluator::evaluation::ResolutionReason::Disabled
+    );
     assert!(result.flag_metadata.is_some());
     let metadata = result.flag_metadata.unwrap();
     assert_eq!(metadata.get("reason").unwrap(), "deprecated");
@@ -200,7 +203,10 @@ fn test_metadata_with_targeting_match() {
     let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
 
     // Verify targeting match includes merged metadata
-    assert_eq!(result.reason, flagd_evaluator::evaluation::ResolutionReason::TargetingMatch);
+    assert_eq!(
+        result.reason,
+        flagd_evaluator::evaluation::ResolutionReason::TargetingMatch
+    );
     assert!(result.flag_metadata.is_some());
     let metadata = result.flag_metadata.unwrap();
     assert_eq!(metadata.get("category").unwrap(), "access-control");
