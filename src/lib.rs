@@ -56,7 +56,9 @@ pub use memory::{
 };
 pub use model::{FeatureFlag, ParsingResult};
 pub use operators::{create_evaluator, ends_with, fractional, sem_ver, starts_with};
-pub use storage::{clear_flag_state, get_flag_state, update_flag_state, set_validation_mode, ValidationMode};
+pub use storage::{
+    clear_flag_state, get_flag_state, set_validation_mode, update_flag_state, ValidationMode,
+};
 pub use validation::{validate_flags_config, ValidationError, ValidationResult};
 
 /// The response format for evaluation results.
@@ -210,7 +212,7 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
 /// ```java
 /// // Set to permissive mode (1)
 /// long result = instance.export("set_validation_mode").apply(1L)[0];
-/// 
+///
 /// // Set to strict mode (0) - this is the default
 /// long result = instance.export("set_validation_mode").apply(0L)[0];
 /// ```
@@ -222,7 +224,7 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
 #[export_name = "set_validation_mode"]
 pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
     use crate::storage::ValidationMode;
-    
+
     let validation_mode = match mode {
         0 => ValidationMode::Strict,
         1 => ValidationMode::Permissive,
@@ -230,18 +232,20 @@ pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
             let response = serde_json::json!({
                 "success": false,
                 "error": "Invalid validation mode. Use 0 for Strict or 1 for Permissive."
-            }).to_string();
+            })
+            .to_string();
             return string_to_memory(&response);
         }
     };
-    
+
     crate::storage::set_validation_mode(validation_mode);
-    
+
     let response = serde_json::json!({
         "success": true,
         "error": null
-    }).to_string();
-    
+    })
+    .to_string();
+
     string_to_memory(&response)
 }
 
@@ -1383,7 +1387,7 @@ mod tests {
                 || result.value == json!("treatment-experience")
         );
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
-        
+
         set_validation_mode(ValidationMode::Strict);
     }
 
@@ -1450,7 +1454,7 @@ mod tests {
             "Expected variant-a or variant-b, got: {:?}",
             result.value
         );
-        
+
         set_validation_mode(ValidationMode::Strict);
     }
 
@@ -1542,7 +1546,7 @@ mod tests {
         // The error code might be General instead of ParseError due to unknown operator
         assert!(result.error_code.is_some());
         assert!(result.error_message.is_some());
-        
+
         set_validation_mode(ValidationMode::Strict);
     }
 
@@ -1598,7 +1602,7 @@ mod tests {
         assert_eq!(result1.value, result2.value);
         assert_eq!(result1.variant, result2.variant);
         assert_eq!(result1.reason, ResolutionReason::TargetingMatch);
-        
+
         set_validation_mode(ValidationMode::Strict);
     }
 

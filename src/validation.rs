@@ -18,7 +18,8 @@ const FLAGS_SCHEMA: &str = include_str!("../schemas/flags.json");
 const TARGETING_SCHEMA: &str = include_str!("../schemas/targeting.json");
 
 /// Fallback error JSON when serialization fails.
-const VALIDATION_RESULT_FALLBACK: &str = r#"{"valid":false,"errors":[{"path":"","message":"Failed to serialize validation result"}]}"#;
+const VALIDATION_RESULT_FALLBACK: &str =
+    r#"{"valid":false,"errors":[{"path":"","message":"Failed to serialize validation result"}]}"#;
 
 thread_local! {
     /// Thread-local cached compiled schema.
@@ -86,12 +87,12 @@ impl ValidationResult {
 fn get_compiled_schema() -> Result<(), String> {
     COMPILED_SCHEMA.with(|schema| {
         let mut schema_ref = schema.borrow_mut();
-        
+
         // If already compiled, return early
         if schema_ref.is_some() {
             return Ok(());
         }
-        
+
         // Parse the schemas
         let schema_value: Value = serde_json::from_str(FLAGS_SCHEMA)
             .map_err(|e| format!("Failed to parse flags schema: {}", e))?;
@@ -101,13 +102,13 @@ fn get_compiled_schema() -> Result<(), String> {
 
         // Create a schema with external resources registered
         let targeting_resource = jsonschema::Resource::from_contents(targeting_schema_value);
-        
+
         let validator = jsonschema::options()
             .with_draft(jsonschema::Draft::Draft7)
             .with_resource("./targeting.json", targeting_resource)
             .build(&schema_value)
             .map_err(|e| format!("Failed to compile schema: {}", e))?;
-        
+
         *schema_ref = Some(validator);
         Ok(())
     })
@@ -117,9 +118,10 @@ fn get_compiled_schema() -> Result<(), String> {
 fn validate_with_schema(config: &Value) -> Result<(), Vec<ValidationError>> {
     COMPILED_SCHEMA.with(|schema| {
         let schema_ref = schema.borrow();
-        let validator = schema_ref.as_ref()
+        let validator = schema_ref
+            .as_ref()
             .ok_or_else(|| vec![ValidationError::new("", "Schema not initialized")])?;
-        
+
         if validator.is_valid(config) {
             Ok(())
         } else {
@@ -166,10 +168,7 @@ pub fn validate_flags_config(json_str: &str) -> Result<(), ValidationResult> {
     let config: Value = match serde_json::from_str(json_str) {
         Ok(v) => v,
         Err(e) => {
-            let error = ValidationError::new(
-                "",
-                format!("Invalid JSON: {}", e),
-            );
+            let error = ValidationError::new("", format!("Invalid JSON: {}", e));
             return Err(ValidationResult::failure(vec![error]));
         }
     };
@@ -225,7 +224,7 @@ mod tests {
 
         let result = validate_flags_config(config);
         assert!(result.is_err());
-        
+
         let validation_result = result.unwrap_err();
         assert!(!validation_result.valid);
         assert!(!validation_result.errors.is_empty());
@@ -247,7 +246,7 @@ mod tests {
 
         let result = validate_flags_config(config);
         assert!(result.is_err());
-        
+
         let validation_result = result.unwrap_err();
         assert!(!validation_result.valid);
         assert!(!validation_result.errors.is_empty());
@@ -261,7 +260,7 @@ mod tests {
 
         let result = validate_flags_config(config);
         assert!(result.is_err());
-        
+
         let validation_result = result.unwrap_err();
         assert!(!validation_result.valid);
         assert!(!validation_result.errors.is_empty());
@@ -273,7 +272,7 @@ mod tests {
 
         let result = validate_flags_config(config);
         assert!(result.is_err());
-        
+
         let validation_result = result.unwrap_err();
         assert!(!validation_result.valid);
         assert_eq!(validation_result.errors.len(), 1);
@@ -427,9 +426,10 @@ mod tests {
         let json = result.to_json_string();
         assert!(json.contains("\"valid\":true"));
 
-        let errors = vec![
-            ValidationError::new("/flags/myFlag", "Missing required field"),
-        ];
+        let errors = vec![ValidationError::new(
+            "/flags/myFlag",
+            "Missing required field",
+        )];
         let result = ValidationResult::failure(errors);
         let json = result.to_json_string();
         assert!(json.contains("\"valid\":false"));

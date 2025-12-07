@@ -23,7 +23,7 @@ thread_local! {
     /// In WASM environments, there's a single thread, so we use RefCell for
     /// interior mutability without the overhead of multi-threading primitives.
     static FLAG_STORE: RefCell<Option<ParsingResult>> = const { RefCell::new(None) };
-    
+
     /// Thread-local storage for validation mode configuration.
     ///
     /// Controls whether flags should be stored when validation fails.
@@ -108,10 +108,10 @@ pub fn get_validation_mode() -> ValidationMode {
 /// ```
 pub fn update_flag_state(json_config: &str) -> Result<(), String> {
     let validation_mode = get_validation_mode();
-    
+
     // Validate the configuration against the schema
     let validation_result = validate_flags_config(json_config);
-    
+
     match validation_mode {
         ValidationMode::Strict => {
             // In strict mode, fail if validation fails
@@ -128,7 +128,7 @@ pub fn update_flag_state(json_config: &str) -> Result<(), String> {
             }
         }
     }
-    
+
     // Parse the configuration
     let parsing_result = ParsingResult::parse(json_config)?;
 
@@ -229,7 +229,7 @@ mod tests {
     fn test_update_flag_state_invalid_json() {
         clear_flag_state();
         set_validation_mode(ValidationMode::Strict);
-        
+
         let config = "not valid json";
         let result = update_flag_state(config);
         assert!(result.is_err());
@@ -242,7 +242,7 @@ mod tests {
     fn test_update_flag_state_missing_flags_field() {
         clear_flag_state();
         set_validation_mode(ValidationMode::Strict);
-        
+
         let config = r#"{"other": "data"}"#;
         let result = update_flag_state(config);
         assert!(result.is_err());
@@ -319,7 +319,7 @@ mod tests {
     fn test_update_flag_state_multiple_flags() {
         clear_flag_state();
         set_validation_mode(ValidationMode::Strict);
-        
+
         let config = r#"{
             "flags": {
                 "flag1": {
@@ -367,7 +367,7 @@ mod tests {
 
         let result = update_flag_state(config);
         assert!(result.is_err());
-        
+
         // State should not be updated
         assert!(get_flag_state().is_none());
     }
@@ -452,7 +452,7 @@ mod tests {
 
         let result = update_flag_state(config);
         assert!(result.is_err());
-        
+
         let error = result.unwrap_err();
         // Error should be valid JSON
         let error_json: serde_json::Value = serde_json::from_str(&error).unwrap();
