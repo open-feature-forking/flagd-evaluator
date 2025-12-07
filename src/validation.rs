@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::OnceLock;
 
 /// The embedded JSON Schema for flag definitions.
 ///
@@ -15,6 +16,12 @@ const FLAGS_SCHEMA: &str = include_str!("../schemas/flags.json");
 ///
 /// This schema is referenced by the flags schema.
 const TARGETING_SCHEMA: &str = include_str!("../schemas/targeting.json");
+
+/// Fallback error JSON when serialization fails.
+const VALIDATION_RESULT_FALLBACK: &str = r#"{"valid":false,"errors":[{"path":"","message":"Failed to serialize validation result"}]}"#;
+
+/// Global cached compiled schema (wrapped in Option for initialization).
+static COMPILED_SCHEMA: OnceLock<Option<jsonschema::Validator>> = OnceLock::new();
 
 /// Represents a validation error with location and message information.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -63,10 +70,41 @@ impl ValidationResult {
 
     /// Converts the validation result to a JSON string.
     pub fn to_json_string(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| {
-            r#"{"valid":false,"errors":[{"path":"","message":"Failed to serialize validation result"}]}"#.to_string()
-        })
+        serde_json::to_string(self).unwrap_or_else(|_| VALIDATION_RESULT_FALLBACK.to_string())
     }
+}
+
+/// Gets or compiles the JSON schema validator.
+///
+/// The validator is compiled once and cached for subsequent use.
+fn get_compiled_schema() -> Result<&'static jsonschema::Validator, String> {
+    // Use get_or_init which always succeeds by wrapping Result in Option
+    let cached = COMPILED_SCHEMA.get_or_init(|| {
+        // Parse the schemas
+        let schema_value: Value = match serde_json::from_str(FLAGS_SCHEMA) {
+            Ok(v) => v,
+            Err(_) => return None,
+        };
+
+        let targeting_schema_value: Value = match serde_json::from_str(TARGETING_SCHEMA) {
+            Ok(v) => v,
+            Err(_) => return None,
+        };
+
+        // Create a schema with external resources registered
+        let targeting_resource = jsonschema::Resource::from_contents(targeting_schema_value);
+        
+        match jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft7)
+            .with_resource("./targeting.json", targeting_resource)
+            .build(&schema_value)
+        {
+            Ok(schema) => Some(schema),
+            Err(_) => None,
+        }
+    });
+    
+    cached.as_ref().ok_or_else(|| "Failed to compile schema".to_string())
 }
 
 /// Validates a JSON configuration string against the flagd schema.
@@ -111,43 +149,11 @@ pub fn validate_flags_config(json_str: &str) -> Result<(), ValidationResult> {
         }
     };
 
-    // Parse the schemas
-    let schema_value: Value = match serde_json::from_str(FLAGS_SCHEMA) {
-        Ok(v) => v,
-        Err(e) => {
-            let error = ValidationError::new(
-                "",
-                format!("Failed to parse flags schema: {}", e),
-            );
-            return Err(ValidationResult::failure(vec![error]));
-        }
-    };
-
-    let targeting_schema_value: Value = match serde_json::from_str(TARGETING_SCHEMA) {
-        Ok(v) => v,
-        Err(e) => {
-            let error = ValidationError::new(
-                "",
-                format!("Failed to parse targeting schema: {}", e),
-            );
-            return Err(ValidationResult::failure(vec![error]));
-        }
-    };
-
-    // Create a schema with external resources registered
-    let targeting_resource = jsonschema::Resource::from_contents(targeting_schema_value);
-    
-    let compiled_schema = match jsonschema::options()
-        .with_draft(jsonschema::Draft::Draft7)
-        .with_resource("./targeting.json", targeting_resource)
-        .build(&schema_value)
-    {
+    // Get the compiled schema (cached after first use)
+    let compiled_schema = match get_compiled_schema() {
         Ok(schema) => schema,
         Err(e) => {
-            let error = ValidationError::new(
-                "",
-                format!("Failed to compile schema: {}", e),
-            );
+            let error = ValidationError::new("", e);
             return Err(ValidationResult::failure(vec![error]));
         }
     };
