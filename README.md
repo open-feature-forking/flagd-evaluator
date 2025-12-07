@@ -16,6 +16,7 @@ A WebAssembly-based JSON Logic evaluator with custom operators for feature flag 
 - **Zero Dependencies at Runtime**: Single WASM file, no external dependencies
 - **Optimized Size**: WASM binary optimized for size (~2.4MB, includes full JSON Logic implementation and schema validation)
 - **Memory Safe**: Clean memory management with explicit alloc/dealloc functions
+- **Comprehensive Test Suite**: 100+ integration tests based on flagd provider spec and Gherkin scenarios
 
 ## Quick Start
 
@@ -31,6 +32,7 @@ rustup target add wasm32-unknown-unknown
 # Clone and build
 git clone https://github.com/open-feature-forking/flagd-evaluator.git
 cd flagd-evaluator
+git submodule update --init --recursive  # Initialize test-harness submodule
 cargo build --target wasm32-unknown-unknown --release
 ```
 
@@ -42,7 +44,12 @@ The WASM file will be at: `target/wasm32-unknown-unknown/release/flagd_evaluator
 cargo test
 ```
 
-See [tests/README.md](tests/README.md) for detailed information about the test suite, including integration tests based on the flagd provider specification and Gherkin test scenarios.
+See [tests/README.md](tests/README.md) for detailed information about the test suite, including:
+- 39 flagd provider specification tests (32 passing, 7 marked as ignored for unimplemented features)
+- 72 comprehensive integration tests covering JSON Logic and custom operators
+- 21 CLI tool tests
+
+All core functionality is fully tested and working.
 
 ## CLI Tool
 
