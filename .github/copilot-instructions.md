@@ -209,6 +209,206 @@ cargo run --bin flagd-eval -- test examples/rules/test-suite.json
 cargo run --bin flagd-eval -- operators
 ```
 
+## Testing Guidelines
+
+### Test Suite Structure
+
+The flagd-evaluator repository has a comprehensive test suite organized into two main test files:
+
+#### `tests/cli_tests.rs` - CLI Integration Tests
+
+CLI integration tests verify that the `flagd-eval` binary works correctly end-to-end. These tests cover:
+
+- **Help and Version Commands** - Verifying command-line interface displays correct information
+- **Eval Command** - Testing JSON Logic evaluation functionality:
+  - Inline JSON rules and data
+  - File-based inputs (rules and data from files using `@` prefix)
+  - Comparison operators with variable references
+  - Custom fractional operator with basic usage
+  - Pretty-printed output formatting
+  - Invalid JSON error handling
+  - Missing file error handling
+  - Variable resolution failures
+- **Test Command** - Running test suites:
+  - Test suite execution from JSON files
+  - Verbose output mode showing rule, data, and expected values
+  - Missing file error handling
+  - Invalid test format error handling
+- **Operators Command** - Documentation:
+  - Listing all available operators
+  - Showing operator syntax examples
+- **Edge Cases**:
+  - Empty data objects
+  - Complex nested rules with multiple conditions
+  - Unicode string handling in both rules and data
+
+#### `tests/integration_tests.rs` - Comprehensive Integration Tests
+
+Integration tests verify the complete evaluation flow including memory management, JSON parsing, custom operators, and error handling. These tests include **72 test cases** covering:
+
+- **Basic JSON Logic Operations**:
+  - Equality (`==`) and strict equality (`===`)
+  - Comparison operators (`>`, `<`, `>=`, `<=`)
+  - Boolean operations (`and`, `or`, `!`)
+  - Conditional logic (`if-then-else` with nested conditions)
+
+- **Variable Access**:
+  - Simple variable references (`{"var": "name"}`)
+  - Nested path access (`{"var": "user.profile.name"}`)
+  - Missing variable handling (returns null)
+  - Default values for missing variables
+
+- **Array Operations**:
+  - `in` operator for membership testing
+  - `merge` operator for array concatenation
+
+- **Arithmetic Operations**:
+  - Addition (`+`), subtraction (`-`), multiplication (`*`)
+  - Division (`/`), modulo (`%`)
+
+- **Custom Fractional Operator** (A/B testing and gradual rollouts):
+  - Basic bucketing with percentage distributions
+  - Consistency verification (same key always returns same bucket)
+  - Variable references for bucket keys
+  - Nested variable path resolution
+  - Single bucket edge case (100% allocation)
+  - Numeric key handling
+  - Distribution verification over 1000 iterations
+  - Missing buckets error handling
+  - Empty buckets error handling
+  - Missing variable error handling
+
+- **Custom starts_with Operator** (string prefix matching):
+  - Basic prefix matching with variable references
+  - Literal string matching
+  - Empty prefix handling (always true)
+  - Case-sensitive comparison verification
+  - False case testing
+
+- **Custom ends_with Operator** (string suffix matching):
+  - Basic suffix matching with variable references
+  - Literal string matching
+  - Empty suffix handling (always true)
+  - Case-sensitive comparison verification
+  - False case testing
+
+- **Custom sem_ver Operator** (semantic version comparison):
+  - Equality (`=`) and inequality (`!=`) comparisons
+  - Less than (`<`) and less than or equal (`<=`)
+  - Greater than (`>`) and greater than or equal (`>=`)
+  - Caret range (`^`) - compatible with major version
+  - Tilde range (`~`) - compatible with minor version
+  - Pre-release version handling
+  - Literal version comparisons (without variables)
+  - Invalid version error handling
+  - Missing version parts (treated as 0)
+  - Complex targeting rules combining sem_ver with variable paths
+
+- **Memory Management**:
+  - `alloc` and `dealloc` functions
+  - Zero-byte allocation handling
+  - Multiple allocations and deallocations
+  - Pack and unpack pointer/length operations
+
+- **Error Handling**:
+  - Invalid JSON in rules
+  - Invalid JSON in data
+  - Fractional operator validation errors
+  - Semantic version parsing errors
+
+- **Edge Cases**:
+  - Empty rules and data
+  - Null value comparisons
+  - Unicode string handling
+  - Large number arithmetic
+  - Deeply nested data structures (4+ levels)
+  - Complex nested rules with multiple conditions
+
+- **Response Format Validation**:
+  - Success response structure (`success: true`, `result`)
+  - Error response structure (`success: false`, `error`)
+  - JSON serialization of responses
+
+- **State Management**:
+  - `update_state` with flag configurations
+  - Invalid JSON error handling
+  - Missing 'flags' field error handling
+  - State replacement behavior
+  - Flags with targeting rules (JsonLogic conditions)
+  - Metadata fields (`$schema`, `$evaluators`)
+  - Empty flags object handling
+  - Multiple flags storage
+  - Invalid flag structure error handling
+
+### When NOT to Run Tests
+
+Tests are **resource-intensive** and should **NOT** be run during:
+
+- **Initial exploration or code analysis** - Understanding repository structure, reading code to learn architecture
+- **Repository structure understanding** - Browsing directories, viewing file organization
+- **Documentation review** - Reading README, contributing guides, or other documentation
+- **Issue triage or discussion** - Understanding requirements, asking clarifying questions
+- **Understanding existing implementations** - Reading through source code to learn how features work
+- **Reading through code to learn architecture** - Studying design patterns, code organization, and implementation details
+- **Answering questions about the codebase** - Providing information about how the code works
+- **Planning phases** - Creating implementation plans, discussing approaches
+
+**Key principle**: If you're not changing code, don't run tests. Understanding test coverage through documentation is sufficient for exploration.
+
+### When to Run Tests
+
+Tests should **ONLY** be run when:
+
+- **Explicitly requested by the user** - User specifically asks to run tests
+- **Implementing new features** - Adding new operators, functionality, or WASM exports
+- **Making bug fixes** - Fixing identified issues that affect behavior
+- **Making code changes that could affect behavior** - Modifying evaluation logic, operators, or core functionality
+- **Debugging specific test failures** - Investigating why a particular test is failing
+- **Validating changes before creating a PR** - Final verification that all changes work correctly
+- **Verifying custom operator implementations** - After adding or modifying fractional, sem_ver, starts_with, ends_with operators
+- **Testing WASM build** - After making changes that affect WASM compilation or exports
+
+**Key principle**: Only run tests when you need to verify that code changes work correctly.
+
+### Running Tests Efficiently
+
+When you do need to run tests:
+
+```bash
+# Run all tests (use sparingly - takes significant time)
+cargo test
+
+# Run specific test file (more efficient)
+cargo test --test integration_tests
+cargo test --test cli_tests
+
+# Run specific test function (most efficient)
+cargo test test_fractional_operator
+cargo test test_sem_ver_operator_equal
+
+# Run tests matching a pattern
+cargo test fractional
+cargo test starts_with
+```
+
+### Performance Considerations
+
+- **Test execution is time-consuming** - The full test suite includes 72 integration tests and 21 CLI tests (93 total)
+- **Build time** - Compiling the project and tests takes time
+- **The test suite is comprehensive** - Tests cover JSON Logic, custom operators, memory management, error handling, and edge cases
+- **Focus on understanding first** - Read the test files to understand coverage without executing them
+- **Run tests intentionally and purposefully** - Only execute when validating actual code changes
+- **Avoid redundant test runs** - Don't re-run tests if nothing has changed since the last execution
+
+### Test-Driven Development
+
+When making changes:
+
+1. **First**: Understand existing test coverage by reading test files
+2. **Then**: Make your code changes
+3. **Finally**: Run relevant tests to validate changes
+4. **Avoid**: Running tests before understanding what needs to be tested
+
 ## Extension Instructions
 
 ### Updating This File
