@@ -68,6 +68,16 @@ pub struct EvaluationResult {
     pub error_message: Option<String>,
 
     /// Optional metadata associated with the flag.
+    ///
+    /// This is a merged representation of flag-set metadata (from the root level of the
+    /// configuration) and flag-level metadata (from the specific flag definition), with
+    /// flag-level metadata taking priority over flag-set metadata when keys conflict.
+    ///
+    /// Metadata is returned on a "best effort" basis:
+    /// - For successful evaluations: both flag-set and flag metadata are merged
+    /// - For disabled flags: both flag-set and flag metadata are merged  
+    /// - For missing flags (FLAG_NOT_FOUND): only flag-set metadata is returned
+    /// - For error cases: metadata is omitted
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flag_metadata: Option<std::collections::HashMap<String, Value>>,
 }
