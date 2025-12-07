@@ -586,7 +586,7 @@ mod tests {
 
         let response = update_flag_state(config).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 2);
         assert!(changed.contains(&"flag1".to_string()));
@@ -627,7 +627,7 @@ mod tests {
 
         let response = update_flag_state(config2).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&"flag2".to_string()));
@@ -667,7 +667,7 @@ mod tests {
 
         let response = update_flag_state(config2).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&"flag2".to_string()));
@@ -708,7 +708,7 @@ mod tests {
 
         let response = update_flag_state(config2).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&"flag1".to_string()));
@@ -763,7 +763,7 @@ mod tests {
 
         let response = update_flag_state(config2).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&"flag1".to_string()));
@@ -804,7 +804,7 @@ mod tests {
 
         let response = update_flag_state(config2).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&"flag1".to_string()));
@@ -839,7 +839,7 @@ mod tests {
 
         let response = update_flag_state(config2).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&"flag1".to_string()));
@@ -880,7 +880,7 @@ mod tests {
 
         let response = update_flag_state(config2).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&"flag1".to_string()));
@@ -922,7 +922,7 @@ mod tests {
 
         let response = update_flag_state(config2).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 1);
         assert!(changed.contains(&"flag1".to_string()));
@@ -947,7 +947,7 @@ mod tests {
         // Apply same config again
         let response = update_flag_state(config).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 0);
     }
@@ -1001,7 +1001,7 @@ mod tests {
 
         let response = update_flag_state(config2).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         // flag2 modified, flag3 removed, flag4 added
         assert_eq!(changed.len(), 3);
@@ -1038,7 +1038,7 @@ mod tests {
 
         let response = update_flag_state(config).unwrap();
         assert!(response.success);
-        
+
         let changed = response.changed_flags.unwrap();
         assert_eq!(changed.len(), 3);
         // Should be sorted alphabetically

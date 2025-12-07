@@ -17,11 +17,11 @@ use serde::{Deserialize, Serialize};
 pub struct UpdateStateResponse {
     /// Whether the update was successful
     pub success: bool,
-    
+
     /// Error message if the update failed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    
+
     /// List of flag keys that were changed (added, removed, or mutated)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_flags: Option<Vec<String>>,
