@@ -86,6 +86,40 @@ impl FeatureFlag {
             .map(|t| t.to_string())
             .unwrap_or_else(|| "{}".to_string())
     }
+
+    /// Checks if this flag is different from another flag.
+    ///
+    /// Compares all fields of the flag using the derived PartialEq implementation.
+    /// This includes state, default variant, variants, targeting rules, and metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The flag to compare against
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flagd_evaluator::model::FeatureFlag;
+    /// use serde_json::json;
+    /// use std::collections::HashMap;
+    ///
+    /// let flag1 = FeatureFlag {
+    ///     key: Some("test".to_string()),
+    ///     state: "ENABLED".to_string(),
+    ///     default_variant: "on".to_string(),
+    ///     variants: HashMap::new(),
+    ///     targeting: Some(json!({"==": [1, 1]})),
+    ///     metadata: HashMap::new(),
+    /// };
+    ///
+    /// let mut flag2 = flag1.clone();
+    /// flag2.default_variant = "off".to_string();
+    ///
+    /// assert!(flag1.is_different_from(&flag2));
+    /// ```
+    pub fn is_different_from(&self, other: &FeatureFlag) -> bool {
+        self != other
+    }
 }
 
 /// Result of parsing a flagd configuration file.

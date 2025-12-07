@@ -4,9 +4,10 @@
 //! with JSON configurations in the standard flagd format. It also supports
 //! JSON Schema validation with configurable behavior.
 
-use crate::model::ParsingResult;
+use crate::model::{ParsingResult, UpdateStateResponse};
 use crate::validation::validate_flags_config;
 use std::cell::RefCell;
+use std::collections::HashSet;
 
 /// Validation mode determines how validation errors are handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,14 +65,20 @@ pub fn get_validation_mode() -> ValidationMode {
 /// - `ValidationMode::Strict` (default): Flags are only stored if validation succeeds
 /// - `ValidationMode::Permissive`: Flags are stored even if validation fails
 ///
+/// The function also detects changes between the old and new configuration by comparing:
+/// - Added flags (present in new config but not in old)
+/// - Removed flags (present in old config but not in new)
+/// - Mutated flags (any field changed: state, default variant, variants, targeting rules, or metadata)
+///
 /// # Arguments
 ///
 /// * `json_config` - JSON string containing the flag configuration
 ///
 /// # Returns
 ///
-/// * `Ok(())` - If the configuration was successfully parsed and stored (validation may have warnings in permissive mode)
-/// * `Err(String)` - If there was an error (JSON parsing error in strict mode, or validation error in strict mode)
+/// * `Ok(UpdateStateResponse)` - If the configuration was successfully parsed and stored,
+///   with a list of changed flag keys
+/// * `Err(String)` - If there was an error (JSON parsing error or validation error in strict mode)
 ///
 /// The error string contains a JSON object with validation details:
 /// ```json
@@ -104,9 +111,11 @@ pub fn get_validation_mode() -> ValidationMode {
 ///     }
 /// }"#;
 ///
-/// update_flag_state(config).unwrap();
+/// let response = update_flag_state(config).unwrap();
+/// assert!(response.success);
+/// assert!(response.changed_flags.is_some());
 /// ```
-pub fn update_flag_state(json_config: &str) -> Result<(), String> {
+pub fn update_flag_state(json_config: &str) -> Result<UpdateStateResponse, String> {
     let validation_mode = get_validation_mode();
 
     // Validate the configuration against the schema
@@ -116,7 +125,11 @@ pub fn update_flag_state(json_config: &str) -> Result<(), String> {
         ValidationMode::Strict => {
             // In strict mode, fail if validation fails
             if let Err(validation_error) = validation_result {
-                return Err(validation_error.to_json_string());
+                return Ok(UpdateStateResponse {
+                    success: false,
+                    error: Some(validation_error.to_json_string()),
+                    changed_flags: None,
+                });
             }
         }
         ValidationMode::Permissive => {
@@ -130,14 +143,93 @@ pub fn update_flag_state(json_config: &str) -> Result<(), String> {
     }
 
     // Parse the configuration
-    let parsing_result = ParsingResult::parse(json_config)?;
+    let new_parsing_result = match ParsingResult::parse(json_config) {
+        Ok(result) => result,
+        Err(e) => {
+            return Ok(UpdateStateResponse {
+                success: false,
+                error: Some(e),
+                changed_flags: None,
+            });
+        }
+    };
+
+    // Get the current state to compare
+    let old_state = get_flag_state();
+
+    // Detect changed flags
+    let changed_flags = detect_changed_flags(old_state.as_ref(), &new_parsing_result);
 
     // Store the parsed flags, replacing any existing state
     FLAG_STORE.with(|store| {
-        *store.borrow_mut() = Some(parsing_result);
+        *store.borrow_mut() = Some(new_parsing_result);
     });
 
-    Ok(())
+    Ok(UpdateStateResponse {
+        success: true,
+        error: None,
+        changed_flags: Some(changed_flags),
+    })
+}
+
+/// Detects which flags have changed between the old and new state.
+///
+/// Compares flags based on:
+/// - Added flags (in new but not in old)
+/// - Removed flags (in old but not in new)
+/// - Mutated flags (any field changed: state, default variant, variants, targeting, or metadata)
+///
+/// # Arguments
+///
+/// * `old_state` - The previous flag state (if any)
+/// * `new_state` - The new flag state
+///
+/// # Returns
+///
+/// A vector of flag keys that have changed
+fn detect_changed_flags(
+    old_state: Option<&ParsingResult>,
+    new_state: &ParsingResult,
+) -> Vec<String> {
+    let mut changed_keys = HashSet::new();
+
+    match old_state {
+        None => {
+            // No previous state, all flags are new
+            for key in new_state.flags.keys() {
+                changed_keys.insert(key.clone());
+            }
+        }
+        Some(old) => {
+            // Check for added and mutated flags
+            for (key, new_flag) in &new_state.flags {
+                match old.flags.get(key) {
+                    None => {
+                        // Flag was added
+                        changed_keys.insert(key.clone());
+                    }
+                    Some(old_flag) => {
+                        // Flag exists in both, check if it changed
+                        if new_flag.is_different_from(old_flag) {
+                            changed_keys.insert(key.clone());
+                        }
+                    }
+                }
+            }
+
+            // Check for removed flags
+            for key in old.flags.keys() {
+                if !new_state.flags.contains_key(key) {
+                    changed_keys.insert(key.clone());
+                }
+            }
+        }
+    }
+
+    // Convert to sorted Vec for consistent output
+    let mut result: Vec<String> = changed_keys.into_iter().collect();
+    result.sort();
+    result
 }
 
 /// Retrieves a copy of the current flag state.
@@ -179,8 +271,10 @@ mod tests {
             }
         }"#;
 
-        let result = update_flag_state(config);
-        assert!(result.is_ok());
+        let response = update_flag_state(config).unwrap();
+        assert!(response.success);
+        assert!(response.error.is_none());
+        assert!(response.changed_flags.is_some());
 
         let state = get_flag_state();
         assert!(state.is_some());
@@ -218,7 +312,11 @@ mod tests {
             }
         }"#;
 
-        update_flag_state(config2).unwrap();
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+        // Both flags changed (flag1 removed, flag2 added)
+        assert_eq!(response.changed_flags.unwrap().len(), 2);
+
         let state = get_flag_state().unwrap();
         assert_eq!(state.flags.len(), 1);
         assert!(!state.flags.contains_key("flag1"));
@@ -231,9 +329,10 @@ mod tests {
         set_validation_mode(ValidationMode::Strict);
 
         let config = "not valid json";
-        let result = update_flag_state(config);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let response = update_flag_state(config).unwrap();
+        assert!(!response.success);
+        assert!(response.error.is_some());
+        let err = response.error.unwrap();
         // Error should contain "Invalid JSON" from validation module
         assert!(err.contains("Invalid JSON") || err.contains("\"valid\":false"));
     }
@@ -244,10 +343,11 @@ mod tests {
         set_validation_mode(ValidationMode::Strict);
 
         let config = r#"{"other": "data"}"#;
-        let result = update_flag_state(config);
-        assert!(result.is_err());
+        let response = update_flag_state(config).unwrap();
+        assert!(!response.success);
         // Should fail validation because "flags" is required
-        let err = result.unwrap_err();
+        assert!(response.error.is_some());
+        let err = response.error.unwrap();
         assert!(err.contains("\"valid\":false"));
     }
 
@@ -260,8 +360,9 @@ mod tests {
                 }
             }
         }"#;
-        let result = update_flag_state(config);
-        assert!(result.is_err());
+        let response = update_flag_state(config).unwrap();
+        assert!(!response.success);
+        assert!(response.error.is_some());
     }
 
     #[test]
@@ -365,8 +466,8 @@ mod tests {
             }
         }"#;
 
-        let result = update_flag_state(config);
-        assert!(result.is_err());
+        let response = update_flag_state(config).unwrap();
+        assert!(!response.success);
 
         // State should not be updated
         assert!(get_flag_state().is_none());
@@ -426,8 +527,8 @@ mod tests {
             }
         }"#;
 
-        let result = update_flag_state(config);
-        assert!(result.is_ok());
+        let response = update_flag_state(config).unwrap();
+        assert!(response.success);
 
         let state = get_flag_state().unwrap();
         assert_eq!(state.flags.len(), 1);
@@ -450,13 +551,499 @@ mod tests {
             }
         }"#;
 
-        let result = update_flag_state(config);
-        assert!(result.is_err());
+        let response = update_flag_state(config).unwrap();
+        assert!(!response.success);
 
-        let error = result.unwrap_err();
+        let error = response.error.unwrap();
         // Error should be valid JSON
         let error_json: serde_json::Value = serde_json::from_str(&error).unwrap();
         assert_eq!(error_json["valid"], false);
         assert!(error_json["errors"].is_array());
+    }
+
+    // ============================================================================
+    // Change detection tests
+    // ============================================================================
+
+    #[test]
+    fn test_changed_flags_on_first_update() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                },
+                "flag2": {
+                    "state": "ENABLED",
+                    "defaultVariant": "off",
+                    "variants": {"off": false}
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 2);
+        assert!(changed.contains(&"flag1".to_string()));
+        assert!(changed.contains(&"flag2".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_added() {
+        clear_flag_state();
+
+        // Initial state
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Add a new flag
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                },
+                "flag2": {
+                    "state": "ENABLED",
+                    "defaultVariant": "off",
+                    "variants": {"off": false}
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag2".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_removed() {
+        clear_flag_state();
+
+        // Initial state with two flags
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                },
+                "flag2": {
+                    "state": "ENABLED",
+                    "defaultVariant": "off",
+                    "variants": {"off": false}
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Remove flag2
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag2".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_default_variant_mutation() {
+        clear_flag_state();
+
+        // Initial state
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    }
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Change default variant
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "off",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    }
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_targeting_mutation() {
+        clear_flag_state();
+
+        // Initial state
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "user"}, "admin"]},
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Change targeting rule
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "user"}, "superadmin"]},
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_metadata_mutation() {
+        clear_flag_state();
+
+        // Initial state
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true},
+                    "metadata": {
+                        "description": "Original description"
+                    }
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Change metadata
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true},
+                    "metadata": {
+                        "description": "Updated description"
+                    }
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_state_mutation() {
+        clear_flag_state();
+
+        // Initial state
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true, "off": false}
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Change state from ENABLED to DISABLED
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "DISABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true, "off": false}
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_variants_mutation() {
+        clear_flag_state();
+
+        // Initial state
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    }
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Change variant value
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {
+                        "on": true,
+                        "off": true
+                    }
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_variants_added() {
+        clear_flag_state();
+
+        // Initial state with two variants
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "red",
+                    "variants": {
+                        "red": "red-value",
+                        "blue": "blue-value"
+                    }
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Add a new variant
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "red",
+                    "variants": {
+                        "red": "red-value",
+                        "blue": "blue-value",
+                        "green": "green-value"
+                    }
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_no_changes() {
+        clear_flag_state();
+
+        // Initial state
+        let config = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                }
+            }
+        }"#;
+        update_flag_state(config).unwrap();
+
+        // Apply same config again
+        let response = update_flag_state(config).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 0);
+    }
+
+    #[test]
+    fn test_changed_flags_mixed_operations() {
+        clear_flag_state();
+
+        // Initial state
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                },
+                "flag2": {
+                    "state": "ENABLED",
+                    "defaultVariant": "off",
+                    "variants": {"off": false}
+                },
+                "flag3": {
+                    "state": "ENABLED",
+                    "defaultVariant": "red",
+                    "variants": {"red": "red", "blue": "blue"}
+                }
+            }
+        }"#;
+        update_flag_state(config1).unwrap();
+
+        // Mixed: keep flag1 same, modify flag2, remove flag3, add flag4
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                },
+                "flag2": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"off": false}
+                },
+                "flag4": {
+                    "state": "ENABLED",
+                    "defaultVariant": "green",
+                    "variants": {"green": "green"}
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config2).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        // flag2 modified, flag3 removed, flag4 added
+        assert_eq!(changed.len(), 3);
+        assert!(changed.contains(&"flag2".to_string()));
+        assert!(changed.contains(&"flag3".to_string()));
+        assert!(changed.contains(&"flag4".to_string()));
+        assert!(!changed.contains(&"flag1".to_string()));
+    }
+
+    #[test]
+    fn test_changed_flags_sorted_output() {
+        clear_flag_state();
+
+        // Add multiple flags at once
+        let config = r#"{
+            "flags": {
+                "zFlag": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                },
+                "aFlag": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                },
+                "mFlag": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": {"on": true}
+                }
+            }
+        }"#;
+
+        let response = update_flag_state(config).unwrap();
+        assert!(response.success);
+
+        let changed = response.changed_flags.unwrap();
+        assert_eq!(changed.len(), 3);
+        // Should be sorted alphabetically
+        assert_eq!(changed[0], "aFlag");
+        assert_eq!(changed[1], "mFlag");
+        assert_eq!(changed[2], "zFlag");
     }
 }
