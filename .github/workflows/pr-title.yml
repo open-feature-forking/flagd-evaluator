@@ -1,0 +1,46 @@
+name: PR Title Validation
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - edited
+
+jobs:
+  validate-pr-title:
+    name: Validate PR Title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Configure which types are allowed (must match release-please config)
+          types: |
+            feat
+            fix
+            docs
+            chore
+            refactor
+            test
+            ci
+            perf
+            build
+            style
+          # Require a scope (optional - can be removed if scopes aren't required)
+          requireScope: false
+          # Subjects must not be sentence-case, start-case, pascal-case, or upper-case
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: |
+            The subject "{subject}" found in the pull request title "{title}"
+            didn't match the configured pattern. Please ensure that the subject
+            doesn't start with an uppercase character.
+          # Validate length of PR title
+          headerPattern: '^(\w+)(?:\([\w$.\-*/ ]+\))?: (.+)$'
+          headerPatternCorrespondence: type, subject
+          # Provide helpful error messages
+          validateSingleCommit: false
+          ignoreLabels: |
+            dependencies
+            skip-changelog

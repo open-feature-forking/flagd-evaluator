@@ -282,7 +282,28 @@ git commit -m "docs: update API examples in README"
 
 2. Create a Pull Request against `main`
 
-3. Fill out the PR template with:
+3. **Important: Format your PR title using Conventional Commits**
+   
+   We use **squash and merge** for all PRs, which means your PR title becomes the commit message in the main branch. This is used by Release Please for automated changelog generation and semantic versioning.
+   
+   **PR Title Format:**
+   ```
+   <type>(<optional-scope>): <description>
+   ```
+   
+   **Examples:**
+   - `feat(operators): add string comparison operator`
+   - `fix(wasm): correct memory allocation issue`
+   - `docs: update API examples`
+   - `chore(deps): bump dependencies`
+   
+   **For breaking changes:**
+   - `feat(api)!: redesign evaluation API` (use `!` after type/scope)
+   - Or include `BREAKING CHANGE:` in the PR description
+   
+   Your PR title will be automatically validated to ensure it follows this format.
+
+4. Fill out the PR template with:
    - Description of changes
    - Related issues
    - Testing performed
