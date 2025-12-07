@@ -927,9 +927,9 @@ fn test_update_state_success() {
 #[test]
 fn test_update_state_invalid_json() {
     let config = "not valid json";
-    let result = flagd_evaluator::storage::update_flag_state(config);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
+    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    assert!(!response.success);
+    let err = response.error.unwrap();
     // Error should be JSON format with validation errors
     assert!(err.contains("Invalid JSON") || err.contains("\"valid\":false"));
 }
@@ -937,9 +937,9 @@ fn test_update_state_invalid_json() {
 #[test]
 fn test_update_state_missing_flags_field() {
     let config = r#"{"other": "data"}"#;
-    let result = flagd_evaluator::storage::update_flag_state(config);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
+    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    assert!(!response.success);
+    let err = response.error.unwrap();
     // Error should indicate missing required field or invalid schema
     assert!(err.contains("\"valid\":false") || err.contains("required"));
 }
@@ -1090,9 +1090,9 @@ fn test_update_state_invalid_flag_structure() {
             }
         }
     }"#;
-    let result = flagd_evaluator::storage::update_flag_state(config);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
+    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    assert!(!response.success);
+    let err = response.error.unwrap();
     // Error should indicate validation failure due to missing required fields
     assert!(err.contains("\"valid\":false") || err.contains("required"));
 }
@@ -1370,8 +1370,9 @@ fn test_evaluators_missing_ref_in_storage() {
     }"#;
 
     let result = update_flag_state(config);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
+    let response = result.unwrap();
+    assert!(!response.success);
+    let err = response.error.unwrap();
     assert!(err.contains("nonExistentRule"));
 }
 
@@ -1436,4 +1437,249 @@ fn test_evaluators_multiple_refs_in_single_flag() {
     let context = json!({"email": "user@company.com"});
     let result = evaluate_flag(flag, &context);
     assert_eq!(result.value, json!("no-access"));
+}
+
+// ============================================================================
+// Tests for changed flags detection in update_state
+// ============================================================================
+
+#[test]
+fn test_update_state_changed_flags_on_first_update() {
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+
+    clear_flag_state();
+
+    let config = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true}
+            },
+            "flag2": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"off": false}
+            }
+        }
+    }"#;
+
+    let response = update_flag_state(config).unwrap();
+    assert!(response.success);
+    let changed = response.changed_flags.unwrap();
+    assert_eq!(changed.len(), 2);
+    assert!(changed.contains(&"flag1".to_string()));
+    assert!(changed.contains(&"flag2".to_string()));
+}
+
+#[test]
+fn test_update_state_changed_flags_partial_update() {
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+
+    clear_flag_state();
+
+    // Initial config
+    let config1 = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true}
+            },
+            "flag2": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"off": false}
+            }
+        }
+    }"#;
+    update_flag_state(config1).unwrap();
+
+    // Update - modify flag1, keep flag2 same
+    let config2 = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"on": true}
+            },
+            "flag2": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"off": false}
+            }
+        }
+    }"#;
+
+    let response = update_flag_state(config2).unwrap();
+    assert!(response.success);
+    let changed = response.changed_flags.unwrap();
+    assert_eq!(changed.len(), 1);
+    assert!(changed.contains(&"flag1".to_string()));
+}
+
+#[test]
+fn test_update_state_changed_flags_targeting_change() {
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+
+    clear_flag_state();
+
+    // Initial config
+    let config1 = r#"{
+        "flags": {
+            "featureFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"on": true, "off": false},
+                "targeting": {
+                    "if": [
+                        {"==": [{"var": "tier"}, "premium"]},
+                        "on",
+                        "off"
+                    ]
+                }
+            }
+        }
+    }"#;
+    update_flag_state(config1).unwrap();
+
+    // Update with different targeting rule
+    let config2 = r#"{
+        "flags": {
+            "featureFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"on": true, "off": false},
+                "targeting": {
+                    "if": [
+                        {"==": [{"var": "tier"}, "enterprise"]},
+                        "on",
+                        "off"
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    let response = update_flag_state(config2).unwrap();
+    assert!(response.success);
+    let changed = response.changed_flags.unwrap();
+    assert_eq!(changed.len(), 1);
+    assert!(changed.contains(&"featureFlag".to_string()));
+}
+
+#[test]
+fn test_update_state_changed_flags_metadata_change() {
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+
+    clear_flag_state();
+
+    // Initial config
+    let config1 = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true},
+                "metadata": {
+                    "description": "Original"
+                }
+            }
+        }
+    }"#;
+    update_flag_state(config1).unwrap();
+
+    // Update with different metadata
+    let config2 = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true},
+                "metadata": {
+                    "description": "Updated"
+                }
+            }
+        }
+    }"#;
+
+    let response = update_flag_state(config2).unwrap();
+    assert!(response.success);
+    let changed = response.changed_flags.unwrap();
+    assert_eq!(changed.len(), 1);
+    assert!(changed.contains(&"flag1".to_string()));
+}
+
+#[test]
+fn test_update_state_changed_flags_no_changes() {
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+
+    clear_flag_state();
+
+    let config = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true}
+            }
+        }
+    }"#;
+
+    // First update
+    update_flag_state(config).unwrap();
+
+    // Second update with same config
+    let response = update_flag_state(config).unwrap();
+    assert!(response.success);
+    let changed = response.changed_flags.unwrap();
+    assert_eq!(changed.len(), 0);
+}
+
+#[test]
+fn test_update_state_changed_flags_add_and_remove() {
+    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+
+    clear_flag_state();
+
+    // Initial config
+    let config1 = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true}
+            },
+            "flag2": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"off": false}
+            }
+        }
+    }"#;
+    update_flag_state(config1).unwrap();
+
+    // Remove flag2, add flag3
+    let config2 = r#"{
+        "flags": {
+            "flag1": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true}
+            },
+            "flag3": {
+                "state": "ENABLED",
+                "defaultVariant": "red",
+                "variants": {"red": "red"}
+            }
+        }
+    }"#;
+
+    let response = update_flag_state(config2).unwrap();
+    assert!(response.success);
+    let changed = response.changed_flags.unwrap();
+    assert_eq!(changed.len(), 2);
+    assert!(changed.contains(&"flag2".to_string())); // Removed
+    assert!(changed.contains(&"flag3".to_string())); // Added
+    assert!(!changed.contains(&"flag1".to_string())); // Unchanged
 }
