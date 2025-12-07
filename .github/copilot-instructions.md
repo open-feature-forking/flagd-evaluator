@@ -62,7 +62,7 @@ Key characteristics:
 
 - **[JSON Logic](https://jsonlogic.com/)** - The rule evaluation engine
 - **[datalogic-rs](https://github.com/cozylogic/datalogic-rs)** - Rust implementation of JSON Logic
-- **[Chicory](https://github.com/dylibso/chicory)** - Pure Java WebAssembly runtime (no JNI required)
+- **[Chicory](https://github.com/nicknisi/chicory)** - Pure Java WebAssembly runtime (no JNI required)
 
 ## Relationship to flagd Ecosystem
 
@@ -254,7 +254,7 @@ Avoid including:
 
 ### Chicory Compatibility
 
-This evaluator is designed to work with [Chicory](https://github.com/dylibso/chicory), a pure Java WebAssembly runtime that requires **no JNI** or native dependencies. To ensure compatibility:
+This evaluator is designed to work with [Chicory](https://github.com/nicknisi/chicory), a pure Java WebAssembly runtime that requires **no JNI** or native dependencies. To ensure compatibility:
 
 - Avoid WASM features that require JavaScript bindings (`wasm-bindgen`)
 - Don't use browser-specific APIs
