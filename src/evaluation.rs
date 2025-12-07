@@ -14,15 +14,17 @@ use serde_json::{Map, Value};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResolutionReason {
-    /// The resolved value is statically configured (no targeting rules).
+    /// The resolved value is statically configured (no targeting rules exist).
     Static,
-    /// The resolved value is the result of targeting rule evaluation.
+    /// The resolved value uses the default variant because targeting didn't match.
+    Default,
+    /// The resolved value is the result of a successful targeting rule match.
     TargetingMatch,
     /// The flag is disabled, returning the default variant.
     Disabled,
     /// An error occurred during evaluation.
     Error,
-    /// The flag was not found.
+    /// The flag was not found in the configuration.
     FlagNotFound,
 }
 
@@ -64,12 +66,16 @@ pub struct EvaluationResult {
     /// Error message if an error occurred.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+
+    /// Optional metadata associated with the flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flag_metadata: Option<std::collections::HashMap<String, Value>>,
 }
 
 impl EvaluationResult {
     /// Creates a successful static evaluation result.
     ///
-    /// Used when no targeting rules are evaluated and the default variant is used.
+    /// Used when no targeting rules exist and the default variant is used.
     pub fn static_result(value: Value, variant: String) -> Self {
         Self {
             value,
@@ -77,12 +83,27 @@ impl EvaluationResult {
             reason: ResolutionReason::Static,
             error_code: None,
             error_message: None,
+            flag_metadata: None,
+        }
+    }
+
+    /// Creates a successful default evaluation result.
+    ///
+    /// Used when targeting rules exist but didn't match, falling back to default variant.
+    pub fn default_result(value: Value, variant: String) -> Self {
+        Self {
+            value,
+            variant: Some(variant),
+            reason: ResolutionReason::Default,
+            error_code: None,
+            error_message: None,
+            flag_metadata: None,
         }
     }
 
     /// Creates a successful targeting match evaluation result.
     ///
-    /// Used when targeting rules are evaluated and match.
+    /// Used when targeting rules are evaluated and successfully match.
     pub fn targeting_match(value: Value, variant: String) -> Self {
         Self {
             value,
@@ -90,6 +111,7 @@ impl EvaluationResult {
             reason: ResolutionReason::TargetingMatch,
             error_code: None,
             error_message: None,
+            flag_metadata: None,
         }
     }
 
@@ -101,6 +123,7 @@ impl EvaluationResult {
             reason: ResolutionReason::Disabled,
             error_code: None,
             error_message: None,
+            flag_metadata: None,
         }
     }
 
@@ -112,15 +135,35 @@ impl EvaluationResult {
             reason: ResolutionReason::Error,
             error_code: Some(error_code),
             error_message: Some(error_message.into()),
+            flag_metadata: None,
         }
     }
 
-    /// Creates a flag not found error result.
+    /// Creates a flag not found result.
     pub fn flag_not_found(flag_key: &str) -> Self {
-        Self::error(
-            ErrorCode::FlagNotFound,
-            format!("Flag '{}' not found in configuration", flag_key),
-        )
+        Self {
+            value: Value::Null,
+            variant: None,
+            reason: ResolutionReason::FlagNotFound,
+            error_code: Some(ErrorCode::FlagNotFound),
+            error_message: Some(format!("Flag '{}' not found in configuration", flag_key)),
+            flag_metadata: None,
+        }
+    }
+
+    /// Sets the flag metadata for this result.
+    pub fn with_metadata(mut self, metadata: std::collections::HashMap<String, Value>) -> Self {
+        self.flag_metadata = Some(metadata);
+        self
+    }
+
+    /// Attaches metadata to the result if the metadata is not empty.
+    fn with_metadata_if_present(self, metadata: &std::collections::HashMap<String, Value>) -> Self {
+        if metadata.is_empty() {
+            self
+        } else {
+            self.with_metadata(metadata.clone())
+        }
     }
 
     /// Serializes the result to a JSON string.
@@ -191,7 +234,8 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
     if flag.state == "DISABLED" {
         // Return the default variant value
         if let Some(value) = flag.variants.get(&flag.default_variant) {
-            return EvaluationResult::disabled(value.clone(), flag.default_variant.clone());
+            return EvaluationResult::disabled(value.clone(), flag.default_variant.clone())
+                .with_metadata_if_present(&flag.metadata);
         } else {
             return EvaluationResult::error(
                 ErrorCode::General,
@@ -206,7 +250,8 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
     // If there's no targeting rule, return the default variant
     if flag.targeting.is_none() {
         if let Some(value) = flag.variants.get(&flag.default_variant) {
-            return EvaluationResult::static_result(value.clone(), flag.default_variant.clone());
+            return EvaluationResult::static_result(value.clone(), flag.default_variant.clone())
+                .with_metadata_if_present(&flag.metadata);
         } else {
             return EvaluationResult::error(
                 ErrorCode::General,
@@ -246,10 +291,12 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
             // Look up the variant value
             if let Some(value) = flag.variants.get(&variant_name) {
                 EvaluationResult::targeting_match(value.clone(), variant_name)
+                    .with_metadata_if_present(&flag.metadata)
             } else {
-                // Variant not found, use default
+                // Variant not found in targeting result, use default
                 if let Some(value) = flag.variants.get(&flag.default_variant) {
-                    EvaluationResult::targeting_match(value.clone(), flag.default_variant.clone())
+                    EvaluationResult::default_result(value.clone(), flag.default_variant.clone())
+                        .with_metadata_if_present(&flag.metadata)
                 } else {
                     EvaluationResult::error(
                         ErrorCode::General,
@@ -348,7 +395,7 @@ mod tests {
     #[test]
     fn test_flag_not_found_result() {
         let result = EvaluationResult::flag_not_found("missing-flag");
-        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.reason, ResolutionReason::FlagNotFound);
         assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
         assert!(result.error_message.is_some());
     }
@@ -464,5 +511,258 @@ mod tests {
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::General));
         assert!(result.error_message.is_some());
+    }
+
+    #[test]
+    fn test_flag_metadata_preserved_in_result() {
+        let mut metadata = HashMap::new();
+        metadata.insert("description".to_string(), json!("Test flag"));
+        metadata.insert("team".to_string(), json!("platform"));
+
+        let flag = FeatureFlag {
+            key: Some("test_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "on".to_string(),
+            variants: {
+                let mut v = HashMap::new();
+                v.insert("on".to_string(), json!(true));
+                v.insert("off".to_string(), json!(false));
+                v
+            },
+            targeting: None,
+            metadata: metadata.clone(),
+        };
+
+        let context = json!({});
+        let result = evaluate_flag(&flag, &context);
+
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.flag_metadata.is_some());
+        let result_metadata = result.flag_metadata.unwrap();
+        assert_eq!(
+            result_metadata.get("description"),
+            Some(&json!("Test flag"))
+        );
+        assert_eq!(result_metadata.get("team"), Some(&json!("platform")));
+    }
+
+    #[test]
+    fn test_flag_metadata_with_targeting() {
+        let mut metadata = HashMap::new();
+        metadata.insert("version".to_string(), json!(2));
+
+        let targeting = json!({
+            "if": [
+                {"==": [{"var": "user"}, "admin"]},
+                "on",
+                "off"
+            ]
+        });
+
+        let flag = FeatureFlag {
+            key: Some("test_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "off".to_string(),
+            variants: {
+                let mut v = HashMap::new();
+                v.insert("on".to_string(), json!(true));
+                v.insert("off".to_string(), json!(false));
+                v
+            },
+            targeting: Some(targeting),
+            metadata: metadata.clone(),
+        };
+
+        let context = json!({"user": "admin"});
+        let result = evaluate_flag(&flag, &context);
+
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+        assert_eq!(result.value, json!(true));
+        assert!(result.flag_metadata.is_some());
+        assert_eq!(
+            result.flag_metadata.unwrap().get("version"),
+            Some(&json!(2))
+        );
+    }
+
+    #[test]
+    fn test_flag_metadata_not_included_when_empty() {
+        let flag = create_test_flag(None);
+        let context = json!({});
+
+        let result = evaluate_flag(&flag, &context);
+        assert!(result.flag_metadata.is_none());
+    }
+
+    #[test]
+    fn test_error_result_structure() {
+        let result = EvaluationResult::error(ErrorCode::ParseError, "Invalid targeting rule");
+
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::ParseError));
+        assert_eq!(
+            result.error_message,
+            Some("Invalid targeting rule".to_string())
+        );
+        assert_eq!(result.value, Value::Null);
+        assert!(result.variant.is_none());
+        assert!(result.flag_metadata.is_none());
+    }
+
+    #[test]
+    fn test_all_error_codes_serialize() {
+        let error_codes = vec![
+            ErrorCode::FlagNotFound,
+            ErrorCode::ParseError,
+            ErrorCode::TypeMismatch,
+            ErrorCode::General,
+        ];
+
+        for error_code in error_codes {
+            let result = EvaluationResult::error(error_code.clone(), "test error");
+            let json_str = result.to_json_string();
+            let parsed: Value = serde_json::from_str(&json_str).unwrap();
+
+            assert_eq!(parsed["reason"], "ERROR");
+            assert!(parsed["errorCode"].is_string());
+            assert_eq!(parsed["errorMessage"], "test error");
+            assert_eq!(parsed["value"], Value::Null);
+        }
+    }
+
+    #[test]
+    fn test_all_resolution_reasons_serialize() {
+        let test_cases = vec![
+            (
+                EvaluationResult::static_result(json!(true), "on".to_string()),
+                "STATIC",
+            ),
+            (
+                EvaluationResult::default_result(json!(false), "off".to_string()),
+                "DEFAULT",
+            ),
+            (
+                EvaluationResult::targeting_match(json!(false), "off".to_string()),
+                "TARGETING_MATCH",
+            ),
+            (
+                EvaluationResult::disabled(json!(null), "default".to_string()),
+                "DISABLED",
+            ),
+            (
+                EvaluationResult::error(ErrorCode::General, "error"),
+                "ERROR",
+            ),
+            (EvaluationResult::flag_not_found("test"), "FLAG_NOT_FOUND"),
+        ];
+
+        for (result, expected_reason) in test_cases {
+            let json_str = result.to_json_string();
+            let parsed: Value = serde_json::from_str(&json_str).unwrap();
+            assert_eq!(parsed["reason"], expected_reason);
+        }
+    }
+
+    #[test]
+    fn test_result_with_metadata_serialization() {
+        let mut metadata = HashMap::new();
+        metadata.insert("key1".to_string(), json!("value1"));
+        metadata.insert("key2".to_string(), json!(42));
+
+        let result = EvaluationResult::static_result(json!("test"), "variant".to_string())
+            .with_metadata(metadata);
+
+        let json_str = result.to_json_string();
+        let parsed: Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["value"], "test");
+        assert_eq!(parsed["variant"], "variant");
+        assert_eq!(parsed["reason"], "STATIC");
+        assert!(parsed["flagMetadata"].is_object());
+        assert_eq!(parsed["flagMetadata"]["key1"], "value1");
+        assert_eq!(parsed["flagMetadata"]["key2"], 42);
+    }
+
+    #[test]
+    fn test_type_mismatch_error() {
+        let result =
+            EvaluationResult::error(ErrorCode::TypeMismatch, "Expected boolean but got string");
+
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result
+            .error_message
+            .unwrap()
+            .contains("Expected boolean but got string"));
+    }
+
+    #[test]
+    fn test_parse_error_from_invalid_targeting() {
+        let mut flag = create_test_flag(Some(json!({"invalid_operator": [1, 2, 3]})));
+        flag.key = Some("test".to_string());
+
+        let result = evaluate_flag(&flag, &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::ParseError));
+        assert!(result.error_message.is_some());
+    }
+
+    #[test]
+    fn test_disabled_flag_with_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert("reason".to_string(), json!("deprecated"));
+
+        let mut flag = create_test_flag(None);
+        flag.state = "DISABLED".to_string();
+        flag.metadata = metadata;
+
+        let result = evaluate_flag(&flag, &json!({}));
+
+        assert_eq!(result.reason, ResolutionReason::Disabled);
+        assert!(result.flag_metadata.is_some());
+        assert_eq!(
+            result.flag_metadata.unwrap().get("reason"),
+            Some(&json!("deprecated"))
+        );
+    }
+
+    #[test]
+    fn test_json_serialization_format() {
+        // Test that the JSON output matches the expected format
+        let mut metadata = HashMap::new();
+        metadata.insert("test".to_string(), json!("value"));
+
+        let result = EvaluationResult::static_result(json!(42), "variant1".to_string())
+            .with_metadata(metadata);
+
+        let json_str = result.to_json_string();
+        let parsed: Value = serde_json::from_str(&json_str).unwrap();
+
+        // Verify all fields are present and correctly formatted
+        assert_eq!(parsed["value"], 42);
+        assert_eq!(parsed["variant"], "variant1");
+        assert_eq!(parsed["reason"], "STATIC");
+        assert!(parsed["flagMetadata"].is_object());
+        assert_eq!(parsed["flagMetadata"]["test"], "value");
+        // errorCode and errorMessage should not be present for success
+        assert!(parsed.get("errorCode").is_none() || parsed["errorCode"].is_null());
+        assert!(parsed.get("errorMessage").is_none() || parsed["errorMessage"].is_null());
+    }
+
+    #[test]
+    fn test_error_json_serialization_format() {
+        let result = EvaluationResult::error(ErrorCode::FlagNotFound, "Flag not found");
+
+        let json_str = result.to_json_string();
+        let parsed: Value = serde_json::from_str(&json_str).unwrap();
+
+        // Verify error fields
+        assert_eq!(parsed["reason"], "ERROR");
+        assert_eq!(parsed["errorCode"], "FLAG_NOT_FOUND");
+        assert_eq!(parsed["errorMessage"], "Flag not found");
+        assert!(parsed["value"].is_null());
+        // variant should not be present for errors
+        assert!(parsed.get("variant").is_none() || parsed["variant"].is_null());
+        assert!(parsed.get("flagMetadata").is_none() || parsed["flagMetadata"].is_null());
     }
 }

@@ -264,7 +264,7 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
 /// {
 ///   "value": <resolved_value>,
 ///   "variant": "variant_name",
-///   "reason": "STATIC"|"TARGETING_MATCH"|"DISABLED"|"ERROR"|"FLAG_NOT_FOUND",
+///   "reason": "STATIC"|"DEFAULT"|"TARGETING_MATCH"|"DISABLED"|"ERROR"|"FLAG_NOT_FOUND",
 ///   "errorCode": "FLAG_NOT_FOUND"|"PARSE_ERROR"|"TYPE_MISMATCH"|"GENERAL",
 ///   "errorMessage": "error description"
 /// }
@@ -961,7 +961,7 @@ mod tests {
             context_bytes.len() as u32,
         );
 
-        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.reason, ResolutionReason::FlagNotFound);
         assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
         assert!(result.error_message.is_some());
     }
@@ -1163,7 +1163,7 @@ mod tests {
         );
 
         // Should fall back to default variant when unknown variant is returned
-        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+        assert_eq!(result.reason, ResolutionReason::Default);
         assert_eq!(result.value, json!(false));
         assert_eq!(result.variant, Some("off".to_string()));
     }
