@@ -86,6 +86,55 @@ impl FeatureFlag {
             .map(|t| t.to_string())
             .unwrap_or_else(|| "{}".to_string())
     }
+
+    /// Checks if this flag is substantially different from another flag.
+    ///
+    /// Compares the default variant, targeting rules, and metadata.
+    /// Returns true if any of these fields differ.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The flag to compare against
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flagd_evaluator::model::FeatureFlag;
+    /// use serde_json::json;
+    /// use std::collections::HashMap;
+    ///
+    /// let flag1 = FeatureFlag {
+    ///     key: Some("test".to_string()),
+    ///     state: "ENABLED".to_string(),
+    ///     default_variant: "on".to_string(),
+    ///     variants: HashMap::new(),
+    ///     targeting: Some(json!({"==": [1, 1]})),
+    ///     metadata: HashMap::new(),
+    /// };
+    ///
+    /// let mut flag2 = flag1.clone();
+    /// flag2.default_variant = "off".to_string();
+    ///
+    /// assert!(flag1.is_different_from(&flag2));
+    /// ```
+    pub fn is_different_from(&self, other: &FeatureFlag) -> bool {
+        // Compare default variant
+        if self.default_variant != other.default_variant {
+            return true;
+        }
+
+        // Compare targeting rules
+        if self.targeting != other.targeting {
+            return true;
+        }
+
+        // Compare metadata
+        if self.metadata != other.metadata {
+            return true;
+        }
+
+        false
+    }
 }
 
 /// Result of parsing a flagd configuration file.
