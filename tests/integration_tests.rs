@@ -913,8 +913,8 @@ fn test_update_state_success() {
         }
     }"#;
 
-    let result = flagd_evaluator::storage::update_flag_state(config);
-    assert!(result.is_ok());
+    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    assert!(response.success);
 
     // Verify the state was actually stored
     let state = flagd_evaluator::storage::get_flag_state();
@@ -956,8 +956,8 @@ fn test_update_state_replaces_existing_state() {
             }
         }
     }"#;
-    let result = flagd_evaluator::storage::update_flag_state(config1);
-    assert!(result.is_ok());
+    let response = flagd_evaluator::storage::update_flag_state(config1).unwrap();
+    assert!(response.success);
 
     // Verify first state
     let state = flagd_evaluator::storage::get_flag_state().unwrap();
@@ -973,8 +973,8 @@ fn test_update_state_replaces_existing_state() {
             }
         }
     }"#;
-    let result = flagd_evaluator::storage::update_flag_state(config2);
-    assert!(result.is_ok());
+    let response = flagd_evaluator::storage::update_flag_state(config2).unwrap();
+    assert!(response.success);
 
     // Verify state was replaced
     let state = flagd_evaluator::storage::get_flag_state().unwrap();
@@ -1005,8 +1005,8 @@ fn test_update_state_with_targeting() {
         }
     }"#;
 
-    let result = flagd_evaluator::storage::update_flag_state(config);
-    assert!(result.is_ok());
+    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    assert!(response.success);
 
     let state = flagd_evaluator::storage::get_flag_state().unwrap();
     let flag = state.flags.get("complexFlag").unwrap();
@@ -1031,8 +1031,8 @@ fn test_update_state_with_metadata() {
         }
     }"#;
 
-    let result = flagd_evaluator::storage::update_flag_state(config);
-    assert!(result.is_ok());
+    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    assert!(response.success);
 
     let state = flagd_evaluator::storage::get_flag_state().unwrap();
     assert!(state.flag_set_metadata.contains_key("$schema"));
