@@ -311,6 +311,191 @@ pub fn evaluate_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
     }
 }
 
+/// Evaluates a boolean feature flag with type checking.
+///
+/// This function evaluates the flag and ensures the result is a boolean value.
+/// If the value is not a boolean, it returns a TYPE_MISMATCH error.
+///
+/// # Arguments
+/// * `flag` - The feature flag to evaluate
+/// * `context` - The evaluation context (JSON object)
+///
+/// # Returns
+/// An EvaluationResult with a boolean value or TYPE_MISMATCH error
+pub fn evaluate_bool_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
+    let result = evaluate_flag(flag, context);
+
+    // If there's already an error, return it as-is
+    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+        return result;
+    }
+
+    // Check if the value is a boolean
+    if result.value.is_boolean() {
+        result
+    } else {
+        EvaluationResult::error(
+            ErrorCode::TypeMismatch,
+            format!(
+                "Flag value has incorrect type. Expected boolean, got {}",
+                type_name(&result.value)
+            ),
+        )
+    }
+}
+
+/// Evaluates a string feature flag with type checking.
+///
+/// This function evaluates the flag and ensures the result is a string value.
+/// If the value is not a string, it returns a TYPE_MISMATCH error.
+///
+/// # Arguments
+/// * `flag` - The feature flag to evaluate
+/// * `context` - The evaluation context (JSON object)
+///
+/// # Returns
+/// An EvaluationResult with a string value or TYPE_MISMATCH error
+pub fn evaluate_string_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
+    let result = evaluate_flag(flag, context);
+
+    // If there's already an error, return it as-is
+    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+        return result;
+    }
+
+    // Check if the value is a string
+    if result.value.is_string() {
+        result
+    } else {
+        EvaluationResult::error(
+            ErrorCode::TypeMismatch,
+            format!(
+                "Flag value has incorrect type. Expected string, got {}",
+                type_name(&result.value)
+            ),
+        )
+    }
+}
+
+/// Evaluates an integer feature flag with type checking.
+///
+/// This function evaluates the flag and ensures the result is an integer value.
+/// If the value is not an integer (i64), it returns a TYPE_MISMATCH error.
+/// Note: Floating point numbers are not considered valid integers.
+///
+/// # Arguments
+/// * `flag` - The feature flag to evaluate
+/// * `context` - The evaluation context (JSON object)
+///
+/// # Returns
+/// An EvaluationResult with an integer value or TYPE_MISMATCH error
+pub fn evaluate_int_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
+    let result = evaluate_flag(flag, context);
+
+    // If there's already an error, return it as-is
+    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+        return result;
+    }
+
+    // Check if the value is an integer (i64)
+    // Note: JSON numbers can be i64 or f64, we need to ensure it's an integer
+    if result.value.is_i64() || result.value.is_u64() {
+        result
+    } else {
+        EvaluationResult::error(
+            ErrorCode::TypeMismatch,
+            format!(
+                "Flag value has incorrect type. Expected integer, got {}",
+                type_name(&result.value)
+            ),
+        )
+    }
+}
+
+/// Evaluates a float feature flag with type checking.
+///
+/// This function evaluates the flag and ensures the result is a numeric value.
+/// Both integers and floating point numbers are accepted as valid float values.
+///
+/// # Arguments
+/// * `flag` - The feature flag to evaluate
+/// * `context` - The evaluation context (JSON object)
+///
+/// # Returns
+/// An EvaluationResult with a float value or TYPE_MISMATCH error
+pub fn evaluate_float_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
+    let result = evaluate_flag(flag, context);
+
+    // If there's already an error, return it as-is
+    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+        return result;
+    }
+
+    // Check if the value is a number (integer or float)
+    if result.value.is_number() {
+        result
+    } else {
+        EvaluationResult::error(
+            ErrorCode::TypeMismatch,
+            format!(
+                "Flag value has incorrect type. Expected number, got {}",
+                type_name(&result.value)
+            ),
+        )
+    }
+}
+
+/// Evaluates an object/struct feature flag with type checking.
+///
+/// This function evaluates the flag and ensures the result is an object value.
+/// If the value is not an object, it returns a TYPE_MISMATCH error.
+///
+/// # Arguments
+/// * `flag` - The feature flag to evaluate
+/// * `context` - The evaluation context (JSON object)
+///
+/// # Returns
+/// An EvaluationResult with an object value or TYPE_MISMATCH error
+pub fn evaluate_object_flag(flag: &FeatureFlag, context: &Value) -> EvaluationResult {
+    let result = evaluate_flag(flag, context);
+
+    // If there's already an error, return it as-is
+    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+        return result;
+    }
+
+    // Check if the value is an object
+    if result.value.is_object() {
+        result
+    } else {
+        EvaluationResult::error(
+            ErrorCode::TypeMismatch,
+            format!(
+                "Flag value has incorrect type. Expected object, got {}",
+                type_name(&result.value)
+            ),
+        )
+    }
+}
+
+/// Helper function to get a human-readable type name from a JSON value.
+fn type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) => {
+            if n.is_i64() || n.is_u64() {
+                "integer"
+            } else {
+                "number"
+            }
+        }
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,5 +949,441 @@ mod tests {
         // variant should not be present for errors
         assert!(parsed.get("variant").is_none() || parsed["variant"].is_null());
         assert!(parsed.get("flagMetadata").is_none() || parsed["flagMetadata"].is_null());
+    }
+
+    // ============================================================================
+    // Type-specific evaluation tests
+    // ============================================================================
+
+    #[test]
+    fn test_evaluate_bool_flag_success() {
+        let mut variants = HashMap::new();
+        variants.insert("on".to_string(), json!(true));
+        variants.insert("off".to_string(), json!(false));
+
+        let flag = FeatureFlag {
+            key: Some("bool_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "on".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_bool_flag(&flag, &json!({}));
+        assert_eq!(result.value, json!(true));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_bool_flag_type_mismatch() {
+        let mut variants = HashMap::new();
+        variants.insert("on".to_string(), json!("not_a_bool"));
+        variants.insert("off".to_string(), json!(false));
+
+        let flag = FeatureFlag {
+            key: Some("bool_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "on".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_bool_flag(&flag, &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result
+            .error_message
+            .unwrap()
+            .contains("Expected boolean, got string"));
+    }
+
+    #[test]
+    fn test_evaluate_string_flag_success() {
+        let mut variants = HashMap::new();
+        variants.insert("red".to_string(), json!("crimson"));
+        variants.insert("blue".to_string(), json!("azure"));
+
+        let flag = FeatureFlag {
+            key: Some("string_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "red".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_string_flag(&flag, &json!({}));
+        assert_eq!(result.value, json!("crimson"));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_string_flag_type_mismatch() {
+        let mut variants = HashMap::new();
+        variants.insert("red".to_string(), json!(123));
+        variants.insert("blue".to_string(), json!("azure"));
+
+        let flag = FeatureFlag {
+            key: Some("string_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "red".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_string_flag(&flag, &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result
+            .error_message
+            .unwrap()
+            .contains("Expected string, got integer"));
+    }
+
+    #[test]
+    fn test_evaluate_int_flag_success() {
+        let mut variants = HashMap::new();
+        variants.insert("small".to_string(), json!(10));
+        variants.insert("large".to_string(), json!(100));
+
+        let flag = FeatureFlag {
+            key: Some("int_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "small".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_int_flag(&flag, &json!({}));
+        assert_eq!(result.value, json!(10));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_int_flag_type_mismatch_float() {
+        let mut variants = HashMap::new();
+        variants.insert("small".to_string(), json!(3.14));
+        variants.insert("large".to_string(), json!(100));
+
+        let flag = FeatureFlag {
+            key: Some("int_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "small".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_int_flag(&flag, &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result
+            .error_message
+            .unwrap()
+            .contains("Expected integer, got number"));
+    }
+
+    #[test]
+    fn test_evaluate_int_flag_type_mismatch_string() {
+        let mut variants = HashMap::new();
+        variants.insert("small".to_string(), json!("10"));
+        variants.insert("large".to_string(), json!(100));
+
+        let flag = FeatureFlag {
+            key: Some("int_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "small".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_int_flag(&flag, &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result
+            .error_message
+            .unwrap()
+            .contains("Expected integer, got string"));
+    }
+
+    #[test]
+    fn test_evaluate_float_flag_success_with_float() {
+        let mut variants = HashMap::new();
+        variants.insert("low".to_string(), json!(1.5));
+        variants.insert("high".to_string(), json!(9.99));
+
+        let flag = FeatureFlag {
+            key: Some("float_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "low".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_float_flag(&flag, &json!({}));
+        assert_eq!(result.value, json!(1.5));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_float_flag_success_with_int() {
+        // Float evaluation should accept integers as valid floats
+        let mut variants = HashMap::new();
+        variants.insert("low".to_string(), json!(1));
+        variants.insert("high".to_string(), json!(10));
+
+        let flag = FeatureFlag {
+            key: Some("float_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "low".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_float_flag(&flag, &json!({}));
+        assert_eq!(result.value, json!(1));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_float_flag_type_mismatch() {
+        let mut variants = HashMap::new();
+        variants.insert("low".to_string(), json!("not_a_number"));
+        variants.insert("high".to_string(), json!(9.99));
+
+        let flag = FeatureFlag {
+            key: Some("float_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "low".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_float_flag(&flag, &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result
+            .error_message
+            .unwrap()
+            .contains("Expected number, got string"));
+    }
+
+    #[test]
+    fn test_evaluate_object_flag_success() {
+        let mut variants = HashMap::new();
+        variants.insert("config1".to_string(), json!({"timeout": 30, "retries": 3}));
+        variants.insert("config2".to_string(), json!({"timeout": 60, "retries": 5}));
+
+        let flag = FeatureFlag {
+            key: Some("object_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "config1".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_object_flag(&flag, &json!({}));
+        assert_eq!(result.value, json!({"timeout": 30, "retries": 3}));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_object_flag_type_mismatch() {
+        let mut variants = HashMap::new();
+        variants.insert("config1".to_string(), json!("not_an_object"));
+        variants.insert("config2".to_string(), json!({"timeout": 60, "retries": 5}));
+
+        let flag = FeatureFlag {
+            key: Some("object_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "config1".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_object_flag(&flag, &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result
+            .error_message
+            .unwrap()
+            .contains("Expected object, got string"));
+    }
+
+    #[test]
+    fn test_evaluate_bool_flag_preserves_error() {
+        // When the flag itself has an error (e.g., not found), type checking should not be applied
+        let mut flag = create_test_flag(None);
+        flag.key = None; // This will cause an error
+
+        let result = evaluate_bool_flag(&flag, &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::General));
+        // Error should be about the flag key, not about type mismatch
+        assert!(result.error_message.unwrap().contains("Flag key not set"));
+    }
+
+    #[test]
+    fn test_evaluate_string_flag_with_targeting() {
+        let mut variants = HashMap::new();
+        variants.insert("admin".to_string(), json!("admin_message"));
+        variants.insert("user".to_string(), json!("user_message"));
+
+        let targeting = json!({
+            "if": [
+                {"==": [{"var": "role"}, "admin"]},
+                "admin",
+                "user"
+            ]
+        });
+
+        let flag = FeatureFlag {
+            key: Some("message_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "user".to_string(),
+            variants,
+            targeting: Some(targeting),
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_string_flag(&flag, &json!({"role": "admin"}));
+        assert_eq!(result.value, json!("admin_message"));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_int_flag_with_disabled_state() {
+        let mut variants = HashMap::new();
+        variants.insert("small".to_string(), json!(10));
+        variants.insert("large".to_string(), json!(100));
+
+        let flag = FeatureFlag {
+            key: Some("int_flag".to_string()),
+            state: "DISABLED".to_string(),
+            default_variant: "small".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_int_flag(&flag, &json!({}));
+        assert_eq!(result.value, json!(10));
+        assert_eq!(result.reason, ResolutionReason::Disabled);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_type_name_helper() {
+        assert_eq!(type_name(&json!(null)), "null");
+        assert_eq!(type_name(&json!(true)), "boolean");
+        assert_eq!(type_name(&json!(false)), "boolean");
+        assert_eq!(type_name(&json!(42)), "integer");
+        assert_eq!(type_name(&json!(3.14)), "number");
+        assert_eq!(type_name(&json!("hello")), "string");
+        assert_eq!(type_name(&json!([1, 2, 3])), "array");
+        assert_eq!(type_name(&json!({"key": "value"})), "object");
+    }
+
+    #[test]
+    fn test_evaluate_object_flag_with_array_type_mismatch() {
+        let mut variants = HashMap::new();
+        variants.insert("config1".to_string(), json!([1, 2, 3]));
+        variants.insert("config2".to_string(), json!({"timeout": 60, "retries": 5}));
+
+        let flag = FeatureFlag {
+            key: Some("object_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "config1".to_string(),
+            variants,
+            targeting: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = evaluate_object_flag(&flag, &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result
+            .error_message
+            .unwrap()
+            .contains("Expected object, got array"));
+    }
+
+    #[test]
+    fn test_all_typed_evaluators_with_complex_targeting() {
+        // Test that all type-specific evaluators work correctly with targeting rules
+
+        // Boolean flag with targeting
+        let bool_targeting = json!({
+            "if": [{">=": [{"var": "score"}, 80]}, "on", "off"]
+        });
+        let mut bool_variants = HashMap::new();
+        bool_variants.insert("on".to_string(), json!(true));
+        bool_variants.insert("off".to_string(), json!(false));
+        let bool_flag = FeatureFlag {
+            key: Some("bool_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "off".to_string(),
+            variants: bool_variants,
+            targeting: Some(bool_targeting),
+            metadata: HashMap::new(),
+        };
+        let bool_result = evaluate_bool_flag(&bool_flag, &json!({"score": 90}));
+        assert_eq!(bool_result.value, json!(true));
+        assert_eq!(bool_result.reason, ResolutionReason::TargetingMatch);
+
+        // String flag with targeting
+        let string_targeting = json!({
+            "if": [{"==": [{"var": "tier"}, "premium"]}, "gold", "silver"]
+        });
+        let mut string_variants = HashMap::new();
+        string_variants.insert("gold".to_string(), json!("gold_tier"));
+        string_variants.insert("silver".to_string(), json!("silver_tier"));
+        let string_flag = FeatureFlag {
+            key: Some("string_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "silver".to_string(),
+            variants: string_variants,
+            targeting: Some(string_targeting),
+            metadata: HashMap::new(),
+        };
+        let string_result = evaluate_string_flag(&string_flag, &json!({"tier": "premium"}));
+        assert_eq!(string_result.value, json!("gold_tier"));
+        assert_eq!(string_result.reason, ResolutionReason::TargetingMatch);
+
+        // Integer flag with targeting
+        let int_targeting = json!({
+            "if": [{"<": [{"var": "age"}, 18]}, "minor", "adult"]
+        });
+        let mut int_variants = HashMap::new();
+        int_variants.insert("minor".to_string(), json!(10));
+        int_variants.insert("adult".to_string(), json!(100));
+        let int_flag = FeatureFlag {
+            key: Some("int_flag".to_string()),
+            state: "ENABLED".to_string(),
+            default_variant: "adult".to_string(),
+            variants: int_variants,
+            targeting: Some(int_targeting),
+            metadata: HashMap::new(),
+        };
+        let int_result = evaluate_int_flag(&int_flag, &json!({"age": 15}));
+        assert_eq!(int_result.value, json!(10));
+        assert_eq!(int_result.reason, ResolutionReason::TargetingMatch);
     }
 }

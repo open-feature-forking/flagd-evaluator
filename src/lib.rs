@@ -46,7 +46,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use error::{ErrorType, EvaluatorError};
-pub use evaluation::{evaluate_flag, ErrorCode, EvaluationResult, ResolutionReason};
+pub use evaluation::{
+    evaluate_bool_flag, evaluate_flag, evaluate_float_flag, evaluate_int_flag,
+    evaluate_object_flag, evaluate_string_flag, ErrorCode, EvaluationResult, ResolutionReason,
+};
 pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
@@ -343,6 +346,269 @@ fn evaluate_internal(
 
     // Evaluate the flag
     evaluate_flag(&flag, &context)
+}
+
+/// Evaluates a boolean feature flag against the provided context.
+///
+/// This function retrieves a flag from the previously stored state (set via `update_state`)
+/// and evaluates it as a boolean flag. If the resolved value is not a boolean, it returns
+/// a TYPE_MISMATCH error.
+///
+/// # Arguments
+/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
+/// * `flag_key_len` - Length of the flag key string
+/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
+/// * `context_len` - Length of the evaluation context JSON string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the EvaluationResult JSON string.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `flag_key_ptr` and `context_ptr` point to valid memory
+/// - The memory regions are valid UTF-8
+/// - The caller will free the returned memory using `dealloc`
+#[no_mangle]
+pub extern "C" fn evaluate_boolean(
+    flag_key_ptr: *const u8,
+    flag_key_len: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> u64 {
+    let result = evaluate_typed_internal(
+        flag_key_ptr,
+        flag_key_len,
+        context_ptr,
+        context_len,
+        evaluate_bool_flag,
+    );
+    string_to_memory(&result.to_json_string())
+}
+
+/// Evaluates a string feature flag against the provided context.
+///
+/// This function retrieves a flag from the previously stored state (set via `update_state`)
+/// and evaluates it as a string flag. If the resolved value is not a string, it returns
+/// a TYPE_MISMATCH error.
+///
+/// # Arguments
+/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
+/// * `flag_key_len` - Length of the flag key string
+/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
+/// * `context_len` - Length of the evaluation context JSON string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the EvaluationResult JSON string.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `flag_key_ptr` and `context_ptr` point to valid memory
+/// - The memory regions are valid UTF-8
+/// - The caller will free the returned memory using `dealloc`
+#[no_mangle]
+pub extern "C" fn evaluate_string(
+    flag_key_ptr: *const u8,
+    flag_key_len: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> u64 {
+    let result = evaluate_typed_internal(
+        flag_key_ptr,
+        flag_key_len,
+        context_ptr,
+        context_len,
+        evaluate_string_flag,
+    );
+    string_to_memory(&result.to_json_string())
+}
+
+/// Evaluates an integer feature flag against the provided context.
+///
+/// This function retrieves a flag from the previously stored state (set via `update_state`)
+/// and evaluates it as an integer flag. If the resolved value is not an integer, it returns
+/// a TYPE_MISMATCH error.
+///
+/// # Arguments
+/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
+/// * `flag_key_len` - Length of the flag key string
+/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
+/// * `context_len` - Length of the evaluation context JSON string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the EvaluationResult JSON string.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `flag_key_ptr` and `context_ptr` point to valid memory
+/// - The memory regions are valid UTF-8
+/// - The caller will free the returned memory using `dealloc`
+#[no_mangle]
+pub extern "C" fn evaluate_integer(
+    flag_key_ptr: *const u8,
+    flag_key_len: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> u64 {
+    let result = evaluate_typed_internal(
+        flag_key_ptr,
+        flag_key_len,
+        context_ptr,
+        context_len,
+        evaluate_int_flag,
+    );
+    string_to_memory(&result.to_json_string())
+}
+
+/// Evaluates a float feature flag against the provided context.
+///
+/// This function retrieves a flag from the previously stored state (set via `update_state`)
+/// and evaluates it as a float flag. If the resolved value is not a number, it returns
+/// a TYPE_MISMATCH error.
+///
+/// # Arguments
+/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
+/// * `flag_key_len` - Length of the flag key string
+/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
+/// * `context_len` - Length of the evaluation context JSON string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the EvaluationResult JSON string.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `flag_key_ptr` and `context_ptr` point to valid memory
+/// - The memory regions are valid UTF-8
+/// - The caller will free the returned memory using `dealloc`
+#[no_mangle]
+pub extern "C" fn evaluate_float(
+    flag_key_ptr: *const u8,
+    flag_key_len: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> u64 {
+    let result = evaluate_typed_internal(
+        flag_key_ptr,
+        flag_key_len,
+        context_ptr,
+        context_len,
+        evaluate_float_flag,
+    );
+    string_to_memory(&result.to_json_string())
+}
+
+/// Evaluates an object feature flag against the provided context.
+///
+/// This function retrieves a flag from the previously stored state (set via `update_state`)
+/// and evaluates it as an object flag. If the resolved value is not an object, it returns
+/// a TYPE_MISMATCH error.
+///
+/// # Arguments
+/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
+/// * `flag_key_len` - Length of the flag key string
+/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
+/// * `context_len` - Length of the evaluation context JSON string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the EvaluationResult JSON string.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `flag_key_ptr` and `context_ptr` point to valid memory
+/// - The memory regions are valid UTF-8
+/// - The caller will free the returned memory using `dealloc`
+#[no_mangle]
+pub extern "C" fn evaluate_object(
+    flag_key_ptr: *const u8,
+    flag_key_len: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> u64 {
+    let result = evaluate_typed_internal(
+        flag_key_ptr,
+        flag_key_len,
+        context_ptr,
+        context_len,
+        evaluate_object_flag,
+    );
+    string_to_memory(&result.to_json_string())
+}
+
+/// Internal helper function for type-specific evaluation.
+///
+/// This function handles the common logic for all typed evaluation functions:
+/// parsing inputs, retrieving the flag, and calling the type-specific evaluator.
+///
+/// # Arguments
+/// * `flag_key_ptr` - Pointer to the flag key string
+/// * `flag_key_len` - Length of the flag key string
+/// * `context_ptr` - Pointer to the context JSON string
+/// * `context_len` - Length of the context JSON string
+/// * `evaluator` - The type-specific evaluation function to use
+fn evaluate_typed_internal<F>(
+    flag_key_ptr: *const u8,
+    flag_key_len: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+    evaluator: F,
+) -> EvaluationResult
+where
+    F: Fn(&FeatureFlag, &Value) -> EvaluationResult,
+{
+    // SAFETY: The caller guarantees valid memory regions
+    let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
+        Ok(s) => s,
+        Err(e) => {
+            return EvaluationResult::error(
+                ErrorCode::ParseError,
+                format!("Failed to read flag key: {}", e),
+            )
+        }
+    };
+
+    let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
+        Ok(s) => s,
+        Err(e) => {
+            return EvaluationResult::error(
+                ErrorCode::ParseError,
+                format!("Failed to read context: {}", e),
+            )
+        }
+    };
+
+    // Parse the context JSON
+    let context: Value = match serde_json::from_str(&context_str) {
+        Ok(v) => v,
+        Err(e) => {
+            return EvaluationResult::error(
+                ErrorCode::ParseError,
+                format!("Failed to parse context JSON: {}", e),
+            )
+        }
+    };
+
+    // Retrieve the flag from state
+    let flag_state = match get_flag_state() {
+        Some(state) => state,
+        None => {
+            return EvaluationResult::error(
+                ErrorCode::General,
+                "Flag state not initialized. Call update_state first.",
+            )
+        }
+    };
+
+    let flag = match flag_state.flags.get(&flag_key) {
+        Some(f) => f.clone(),
+        None => return EvaluationResult::flag_not_found(&flag_key),
+    };
+
+    // Use the type-specific evaluator
+    evaluator(&flag, &context)
 }
 
 #[cfg(test)]
@@ -1387,5 +1653,488 @@ mod tests {
 
         assert_eq!(result3.value, json!("basic-tier"));
         assert_eq!(result3.variant, Some("basic".to_string()));
+    }
+
+    // ============================================================================
+    // Type-specific WASM evaluation tests
+    // ============================================================================
+
+    fn evaluate_boolean_internal(flag_key: &str, context: &str) -> EvaluationResult {
+        let flag_key_bytes = flag_key.as_bytes();
+        let context_bytes = context.as_bytes();
+        evaluate_typed_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+            evaluate_bool_flag,
+        )
+    }
+
+    fn evaluate_string_internal(flag_key: &str, context: &str) -> EvaluationResult {
+        let flag_key_bytes = flag_key.as_bytes();
+        let context_bytes = context.as_bytes();
+        evaluate_typed_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+            evaluate_string_flag,
+        )
+    }
+
+    fn evaluate_integer_internal(flag_key: &str, context: &str) -> EvaluationResult {
+        let flag_key_bytes = flag_key.as_bytes();
+        let context_bytes = context.as_bytes();
+        evaluate_typed_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+            evaluate_int_flag,
+        )
+    }
+
+    fn evaluate_float_internal(flag_key: &str, context: &str) -> EvaluationResult {
+        let flag_key_bytes = flag_key.as_bytes();
+        let context_bytes = context.as_bytes();
+        evaluate_typed_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+            evaluate_float_flag,
+        )
+    }
+
+    fn evaluate_object_internal(flag_key: &str, context: &str) -> EvaluationResult {
+        let flag_key_bytes = flag_key.as_bytes();
+        let context_bytes = context.as_bytes();
+        evaluate_typed_internal(
+            flag_key_bytes.as_ptr(),
+            flag_key_bytes.len() as u32,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+            evaluate_object_flag,
+        )
+    }
+
+    #[test]
+    fn test_evaluate_boolean_success() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "boolFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "on"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_boolean_internal("boolFlag", "{}");
+        assert_eq!(result.value, json!(true));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_boolean_type_mismatch() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "stringFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "on": "yes",
+                        "off": "no"
+                    },
+                    "defaultVariant": "on"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_boolean_internal("stringFlag", "{}");
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result.error_message.unwrap().contains("Expected boolean"));
+    }
+
+    #[test]
+    fn test_evaluate_string_success() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "stringFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "red": "crimson",
+                        "blue": "azure"
+                    },
+                    "defaultVariant": "red"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_string_internal("stringFlag", "{}");
+        assert_eq!(result.value, json!("crimson"));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_string_type_mismatch() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "intFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "small": 10,
+                        "large": 100
+                    },
+                    "defaultVariant": "small"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_string_internal("intFlag", "{}");
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result.error_message.unwrap().contains("Expected string"));
+    }
+
+    #[test]
+    fn test_evaluate_integer_success() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "intFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "small": 10,
+                        "large": 100
+                    },
+                    "defaultVariant": "small"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_integer_internal("intFlag", "{}");
+        assert_eq!(result.value, json!(10));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_integer_type_mismatch_float() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "floatFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "low": 1.5,
+                        "high": 9.99
+                    },
+                    "defaultVariant": "low"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_integer_internal("floatFlag", "{}");
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result.error_message.unwrap().contains("Expected integer"));
+    }
+
+    #[test]
+    fn test_evaluate_float_success() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "floatFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "low": 1.5,
+                        "high": 9.99
+                    },
+                    "defaultVariant": "low"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_float_internal("floatFlag", "{}");
+        assert_eq!(result.value, json!(1.5));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_float_accepts_integer() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "intFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "small": 10,
+                        "large": 100
+                    },
+                    "defaultVariant": "small"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_float_internal("intFlag", "{}");
+        assert_eq!(result.value, json!(10));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_float_type_mismatch() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "stringFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "red": "crimson"
+                    },
+                    "defaultVariant": "red"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_float_internal("stringFlag", "{}");
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result.error_message.unwrap().contains("Expected number"));
+    }
+
+    #[test]
+    fn test_evaluate_object_success() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "objectFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "config1": {"timeout": 30, "retries": 3},
+                        "config2": {"timeout": 60, "retries": 5}
+                    },
+                    "defaultVariant": "config1"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_object_internal("objectFlag", "{}");
+        assert_eq!(result.value, json!({"timeout": 30, "retries": 3}));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_object_type_mismatch() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "stringFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "red": "crimson"
+                    },
+                    "defaultVariant": "red"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let result = evaluate_object_internal("stringFlag", "{}");
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+        assert!(result.error_message.unwrap().contains("Expected object"));
+    }
+
+    #[test]
+    fn test_all_type_evaluators_flag_not_found() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "existingFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true},
+                    "defaultVariant": "on"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        // All type-specific evaluators should return FLAG_NOT_FOUND for missing flags
+        let bool_result = evaluate_boolean_internal("missingFlag", "{}");
+        assert_eq!(bool_result.reason, ResolutionReason::FlagNotFound);
+        assert_eq!(bool_result.error_code, Some(ErrorCode::FlagNotFound));
+
+        let string_result = evaluate_string_internal("missingFlag", "{}");
+        assert_eq!(string_result.reason, ResolutionReason::FlagNotFound);
+        assert_eq!(string_result.error_code, Some(ErrorCode::FlagNotFound));
+
+        let int_result = evaluate_integer_internal("missingFlag", "{}");
+        assert_eq!(int_result.reason, ResolutionReason::FlagNotFound);
+        assert_eq!(int_result.error_code, Some(ErrorCode::FlagNotFound));
+
+        let float_result = evaluate_float_internal("missingFlag", "{}");
+        assert_eq!(float_result.reason, ResolutionReason::FlagNotFound);
+        assert_eq!(float_result.error_code, Some(ErrorCode::FlagNotFound));
+
+        let object_result = evaluate_object_internal("missingFlag", "{}");
+        assert_eq!(object_result.reason, ResolutionReason::FlagNotFound);
+        assert_eq!(object_result.error_code, Some(ErrorCode::FlagNotFound));
+    }
+
+    #[test]
+    fn test_type_evaluators_with_targeting() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "boolFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "email"}, "admin@example.com"]},
+                            "on",
+                            "off"
+                        ]
+                    }
+                },
+                "intFlag": {
+                    "state": "ENABLED",
+                    "variants": {
+                        "small": 10,
+                        "large": 100
+                    },
+                    "defaultVariant": "small",
+                    "targeting": {
+                        "if": [
+                            {">": [{"var": "age"}, 18]},
+                            "large",
+                            "small"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        // Test boolean with targeting match
+        let bool_result =
+            evaluate_boolean_internal("boolFlag", r#"{"email": "admin@example.com"}"#);
+        assert_eq!(bool_result.value, json!(true));
+        assert_eq!(bool_result.reason, ResolutionReason::TargetingMatch);
+
+        // Test boolean with targeting no match
+        let bool_result = evaluate_boolean_internal("boolFlag", r#"{"email": "user@example.com"}"#);
+        assert_eq!(bool_result.value, json!(false));
+        assert_eq!(bool_result.reason, ResolutionReason::TargetingMatch);
+
+        // Test integer with targeting
+        let int_result = evaluate_integer_internal("intFlag", r#"{"age": 25}"#);
+        assert_eq!(int_result.value, json!(100));
+        assert_eq!(int_result.reason, ResolutionReason::TargetingMatch);
+    }
+
+    #[test]
+    fn test_type_evaluators_with_disabled_flags() {
+        clear_flag_state();
+
+        let config = r#"{
+            "flags": {
+                "disabledBool": {
+                    "state": "DISABLED",
+                    "variants": {
+                        "on": true,
+                        "off": false
+                    },
+                    "defaultVariant": "off"
+                },
+                "disabledString": {
+                    "state": "DISABLED",
+                    "variants": {
+                        "red": "crimson",
+                        "blue": "azure"
+                    },
+                    "defaultVariant": "blue"
+                }
+            }
+        }"#;
+
+        let config_bytes = config.as_bytes();
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+
+        let bool_result = evaluate_boolean_internal("disabledBool", "{}");
+        assert_eq!(bool_result.value, json!(false));
+        assert_eq!(bool_result.reason, ResolutionReason::Disabled);
+
+        let string_result = evaluate_string_internal("disabledString", "{}");
+        assert_eq!(string_result.value, json!("azure"));
+        assert_eq!(string_result.reason, ResolutionReason::Disabled);
     }
 }
