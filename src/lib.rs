@@ -41,6 +41,7 @@ pub mod memory;
 pub mod model;
 pub mod operators;
 pub mod storage;
+pub mod validation;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,7 +56,8 @@ pub use memory::{
 };
 pub use model::{FeatureFlag, ParsingResult};
 pub use operators::{create_evaluator, ends_with, fractional, sem_ver, starts_with};
-pub use storage::{clear_flag_state, get_flag_state, update_flag_state};
+pub use storage::{clear_flag_state, get_flag_state, update_flag_state, set_validation_mode, ValidationMode};
+pub use validation::{validate_flags_config, ValidationError, ValidationResult};
 
 /// The response format for evaluation results.
 ///
