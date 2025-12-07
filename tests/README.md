@@ -180,12 +180,43 @@ The following scenarios from the flagd test harness **cannot be reproduced** in 
 - **Tracing**: Distributed tracing integration
 - **Reason**: Observability is handled by the provider implementations
 
-#### 6. **Advanced Targeting**
+#### 6. **Advanced Targeting Features** (Currently Not Implemented)
+
+- **Nested JSON Logic in custom operators**: The fractional operator tests use nested `cat` operators which require recursive JSON Logic evaluation
+  - **Status**: Tests are marked as `#[ignore]` until this is implemented
+  - **Example**: `{"fractional": [{"cat": [...]}, ...]}`
+  
+- **$ref evaluator references**: Flags that reference shared evaluator definitions using `$ref`
+  - **Status**: Tests are marked as `#[ignore]` until this is implemented
+  - **Example**: `{"$ref": "is_ballmer"}` in targeting rules
+  
+- **Context enrichment**: Special variables like `$flagd.timestamp` and `$flagd.flagKey`
+  - **Status**: Tests for `$flagd.timestamp` are marked as `#[ignore]`
+  - **Note**: `$flagd.flagKey` is supported, but `$flagd.timestamp` requires runtime injection
 
 - **Regex patterns**: Full regular expression support in targeting
-  - Limitation: datalogic-rs doesn't include regex operator by default
+  - **Limitation**: datalogic-rs doesn't include regex operator by default
+  
 - **Geographic targeting**: IP-based or geolocation targeting
-  - Limitation: Would require external data sources
+  - **Limitation**: Would require external data sources
+
+### Test Results Summary
+
+As of the current implementation:
+
+- **Total flagd spec tests**: 39 tests
+- **Passing tests**: 32 tests ✅
+- **Ignored tests (not yet implemented)**: 7 tests ⏸️
+  - 4 fractional operator tests (nested JSON Logic)
+  - 1 evaluator reuse test ($ref references)
+  - 2 timestamp tests ($flagd.timestamp enrichment)
+
+The passing tests provide comprehensive coverage of:
+- All basic flag types (boolean, string, int, float, object)
+- Context-aware targeting
+- Custom operators that don't require nested evaluation (starts_with, ends_with, sem_ver)
+- Error handling and edge cases
+- Complex targeting scenarios
 
 ## Test Conventions
 
