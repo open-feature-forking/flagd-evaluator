@@ -379,6 +379,61 @@ dealloc.apply(contextPtr, contextBytes.length);
 dealloc.apply(resultPtr, resultLen);
 ```
 
+### Context Enrichment
+
+The evaluator automatically enriches the evaluation context with standard `$flagd` properties according to the [flagd provider specification](https://flagd.dev/reference/specifications/providers/#in-process-resolver). These properties are available in targeting rules via JSON Logic's `var` operator.
+
+**Injected Properties:**
+
+| Property | Type | Description | Example Access |
+|----------|------|-------------|----------------|
+| `$flagd.flagKey` | string | The key of the flag being evaluated | `{"var": "$flagd.flagKey"}` |
+| `$flagd.timestamp` | number | Unix timestamp in seconds at evaluation time | `{"var": "$flagd.timestamp"}` |
+| `targetingKey` | string | Key for consistent hashing (from context or empty string) | `{"var": "targetingKey"}` |
+
+**Example - Time-based Feature Flag:**
+```json
+{
+  "flags": {
+    "limitedTimeOffer": {
+      "state": "ENABLED",
+      "variants": {
+        "active": true,
+        "expired": false
+      },
+      "defaultVariant": "expired",
+      "targeting": {
+        "if": [
+          {
+            "and": [
+              {">=": [{"var": "$flagd.timestamp"}, 1704067200]},
+              {"<": [{"var": "$flagd.timestamp"}, 1735689600]}
+            ]
+          },
+          "active",
+          "expired"
+        ]
+      }
+    }
+  }
+}
+```
+
+**Example - Flag-specific Logic:**
+```json
+{
+  "targeting": {
+    "if": [
+      {"==": [{"var": "$flagd.flagKey"}, "debugMode"]},
+      "enabled",
+      "disabled"
+    ]
+  }
+}
+```
+
+**Note:** The `$flagd` properties are stored as a nested object in the evaluation context: `{"$flagd": {"flagKey": "...", "timestamp": ...}}`. This allows JSON Logic to access them using dot notation (e.g., `{"var": "$flagd.timestamp"}`).
+
 ## JSON Schema Validation
 
 The evaluator automatically validates flag configurations against the official [flagd-schemas](https://github.com/open-feature/flagd-schemas) before storing them. This ensures that your flag configurations match the expected structure and catches errors early.
