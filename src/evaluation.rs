@@ -202,14 +202,18 @@ fn enrich_context(flag_key: &str, context: &Value) -> Value {
     };
 
     // Get current Unix timestamp (seconds since epoch)
+    // Note: SystemTime::now() is available in WASM runtimes that support WASI.
+    // If system time is unavailable, we default to 0 (Unix epoch).
+    // This allows targeting rules to detect the error condition by checking for timestamp == 0.
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_secs())
         .unwrap_or(0); // Default to 0 if system time is not available
 
     // Create $flagd object with nested properties
     let mut flagd_props = Map::new();
     flagd_props.insert("flagKey".to_string(), Value::String(flag_key.to_string()));
+    // Store timestamp as u64 to avoid overflow issues. JSON can represent large numbers.
     flagd_props.insert("timestamp".to_string(), Value::Number(timestamp.into()));
 
     // Add $flagd object to context
