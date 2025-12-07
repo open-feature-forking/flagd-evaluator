@@ -420,11 +420,18 @@ fn evaluate_internal(
 
     let flag = match flag_state.flags.get(&flag_key) {
         Some(f) => f.clone(),
-        None => return EvaluationResult::flag_not_found(&flag_key),
+        None => {
+            // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
+            let mut result = EvaluationResult::flag_not_found(&flag_key);
+            if !flag_state.flag_set_metadata.is_empty() {
+                result = result.with_metadata(flag_state.flag_set_metadata.clone());
+            }
+            return result;
+        }
     };
 
-    // Evaluate the flag
-    evaluate_flag(&flag, &context)
+    // Evaluate the flag with merged metadata (flag-set + flag metadata)
+    evaluate_flag(&flag, &context, &flag_state.flag_set_metadata)
 }
 
 /// Evaluates a boolean feature flag against the provided context.
@@ -636,7 +643,7 @@ fn evaluate_typed_internal<F>(
     evaluator: F,
 ) -> EvaluationResult
 where
-    F: Fn(&FeatureFlag, &Value) -> EvaluationResult,
+    F: Fn(&FeatureFlag, &Value, &std::collections::HashMap<String, Value>) -> EvaluationResult,
 {
     // SAFETY: The caller guarantees valid memory regions
     let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
@@ -683,11 +690,18 @@ where
 
     let flag = match flag_state.flags.get(&flag_key) {
         Some(f) => f.clone(),
-        None => return EvaluationResult::flag_not_found(&flag_key),
+        None => {
+            // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
+            let mut result = EvaluationResult::flag_not_found(&flag_key);
+            if !flag_state.flag_set_metadata.is_empty() {
+                result = result.with_metadata(flag_state.flag_set_metadata.clone());
+            }
+            return result;
+        }
     };
 
-    // Use the type-specific evaluator
-    evaluator(&flag, &context)
+    // Use the type-specific evaluator with merged metadata
+    evaluator(&flag, &context, &flag_state.flag_set_metadata)
 }
 
 #[cfg(test)]

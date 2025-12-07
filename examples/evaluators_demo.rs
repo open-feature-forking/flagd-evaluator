@@ -63,7 +63,7 @@ fn main() {
 
     // Test 1: Admin user
     let context = json!({"email": "admin@company.com", "tier": "basic"});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     println!("1️⃣  Admin user (admin@company.com, tier=basic):");
     println!(
         "   → Result: {}, Variant: {}",
@@ -73,7 +73,7 @@ fn main() {
 
     // Test 2: Premium user
     let context = json!({"email": "user@company.com", "tier": "premium"});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     println!("\n2️⃣  Premium user (user@company.com, tier=premium):");
     println!(
         "   → Result: {}, Variant: {}",
@@ -83,7 +83,7 @@ fn main() {
 
     // Test 3: Regular user
     let context = json!({"email": "user@company.com", "tier": "basic"});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     println!("\n3️⃣  Regular user (user@company.com, tier=basic):");
     println!(
         "   → Result: {}, Variant: {}",

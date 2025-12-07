@@ -1144,13 +1144,13 @@ fn test_evaluators_simple_ref_evaluation() {
 
     // Test with admin email - should return true
     let context = json!({"email": "admin@example.com"});
-    let eval_result = evaluate_flag(flag, &context);
+    let eval_result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(eval_result.value, json!(true));
     assert_eq!(eval_result.variant, Some("on".to_string()));
 
     // Test with non-admin email - should return false
     let context = json!({"email": "user@example.com"});
-    let eval_result = evaluate_flag(flag, &context);
+    let eval_result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(eval_result.value, json!(false));
     assert_eq!(eval_result.variant, Some("off".to_string()));
 }
@@ -1203,19 +1203,19 @@ fn test_evaluators_nested_ref_evaluation() {
 
     // Test with active admin - should return premium
     let context = json!({"email": "admin@company.com", "status": "active"});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.value, json!("premium"));
     assert_eq!(result.variant, Some("enabled".to_string()));
 
     // Test with non-admin - should return free
     let context = json!({"email": "user@company.com", "status": "active"});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.value, json!("free"));
     assert_eq!(result.variant, Some("disabled".to_string()));
 
     // Test with admin but inactive - should return free
     let context = json!({"email": "admin@company.com", "status": "inactive"});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.value, json!("free"));
     assert_eq!(result.variant, Some("disabled".to_string()));
 }
@@ -1264,8 +1264,8 @@ fn test_evaluators_with_fractional_operator() {
 
     // Test with specific user ID - should consistently return same variant
     let context = json!({"userId": "user-123"});
-    let result1 = evaluate_flag(flag, &context);
-    let result2 = evaluate_flag(flag, &context);
+    let result1 = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result2 = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result1.value, result2.value);
     assert!(
         result1.value == json!("control-experience")
@@ -1326,22 +1326,22 @@ fn test_evaluators_complex_targeting() {
 
     // Premium + active - should get VIP
     let context = json!({"tier": "premium", "lifetime_value": 500, "active": true});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.variant, Some("vip".to_string()));
 
     // High value + active - should get VIP
     let context = json!({"tier": "basic", "lifetime_value": 1500, "active": true});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.variant, Some("vip".to_string()));
 
     // Premium but inactive - should get standard
     let context = json!({"tier": "premium", "lifetime_value": 500, "active": false});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.variant, Some("standard".to_string()));
 
     // Neither premium nor high value - should get standard
     let context = json!({"tier": "basic", "lifetime_value": 100, "active": true});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.variant, Some("standard".to_string()));
 }
 
@@ -1425,17 +1425,17 @@ fn test_evaluators_multiple_refs_in_single_flag() {
 
     // Admin gets full access
     let context = json!({"email": "admin@company.com"});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.value, json!("full-access"));
 
     // Manager gets limited access
     let context = json!({"email": "manager@company.com"});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.value, json!("limited-access"));
 
     // Regular user gets no access
     let context = json!({"email": "user@company.com"});
-    let result = evaluate_flag(flag, &context);
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
     assert_eq!(result.value, json!("no-access"));
 }
 
