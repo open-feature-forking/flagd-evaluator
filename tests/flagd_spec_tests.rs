@@ -558,7 +558,6 @@ fn test_empty_targeting_flag() {
 // =============================================================================
 
 #[test]
-#[ignore = "Requires $ref evaluator references - not yet implemented"]
 fn test_evaluator_reuse_email_targeted_flags() {
     setup_flags(&load_evaluator_refs_flags());
 
