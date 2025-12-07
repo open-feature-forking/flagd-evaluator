@@ -438,7 +438,7 @@ pub fn evaluate_float_flag(flag: &FeatureFlag, context: &Value) -> EvaluationRes
         EvaluationResult::error(
             ErrorCode::TypeMismatch,
             format!(
-                "Flag value has incorrect type. Expected number, got {}",
+                "Flag value has incorrect type. Expected float, got {}",
                 type_name(&result.value)
             ),
         )
@@ -479,6 +479,10 @@ pub fn evaluate_object_flag(flag: &FeatureFlag, context: &Value) -> EvaluationRe
 }
 
 /// Helper function to get a human-readable type name from a JSON value.
+///
+/// Note: In JSON, integers like 10 are typically stored as i64, while numbers
+/// with decimal points like 10.0 or 3.14 are stored as f64. This function
+/// distinguishes between these to provide accurate error messages.
 fn type_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -487,7 +491,7 @@ fn type_name(value: &Value) -> &'static str {
             if n.is_i64() || n.is_u64() {
                 "integer"
             } else {
-                "number"
+                "float"
             }
         }
         Value::String(_) => "string",
@@ -1087,7 +1091,7 @@ mod tests {
         assert!(result
             .error_message
             .unwrap()
-            .contains("Expected integer, got number"));
+            .contains("Expected integer, got float"));
     }
 
     #[test]
@@ -1178,7 +1182,7 @@ mod tests {
         assert!(result
             .error_message
             .unwrap()
-            .contains("Expected number, got string"));
+            .contains("Expected float, got string"));
     }
 
     #[test]
@@ -1295,7 +1299,7 @@ mod tests {
         assert_eq!(type_name(&json!(true)), "boolean");
         assert_eq!(type_name(&json!(false)), "boolean");
         assert_eq!(type_name(&json!(42)), "integer");
-        assert_eq!(type_name(&json!(3.14)), "number");
+        assert_eq!(type_name(&json!(3.14)), "float");
         assert_eq!(type_name(&json!("hello")), "string");
         assert_eq!(type_name(&json!([1, 2, 3])), "array");
         assert_eq!(type_name(&json!({"key": "value"})), "object");

@@ -1949,7 +1949,7 @@ mod tests {
         let result = evaluate_float_internal("stringFlag", "{}");
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
-        assert!(result.error_message.unwrap().contains("Expected number"));
+        assert!(result.error_message.unwrap().contains("Expected float"));
     }
 
     #[test]
