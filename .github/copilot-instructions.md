@@ -194,6 +194,46 @@ cargo fmt
 cargo clippy -- -D warnings
 ```
 
+### Pull Request Title Conventions
+
+This repository uses **squash and merge** for all PRs, which means the PR title becomes the commit message in the main branch. PR titles must follow the [Conventional Commits](https://www.conventionalcommits.org/) format to enable automated changelog generation and semantic versioning via Release Please.
+
+**Format:**
+```
+<type>(<optional-scope>): <description>
+```
+
+**Allowed Types:**
+- `feat` - New feature (triggers minor version bump)
+- `fix` - Bug fix (triggers patch version bump)
+- `perf` - Performance improvement (triggers patch version bump)
+- `docs` - Documentation changes
+- `chore` - Maintenance tasks
+- `refactor` - Code refactoring
+- `test` - Test updates
+- `ci` - CI/CD changes
+- `build` - Build system changes
+- `style` - Code style/formatting
+
+**Examples:**
+```
+feat(operators): add string comparison operator
+fix(wasm): correct memory allocation bug
+docs: update API examples in README
+chore(deps): update rust dependencies
+feat(api)!: redesign evaluation API (breaking change)
+```
+
+**Automatic Validation:**
+
+A GitHub Actions workflow (`.github/workflows/pr-title.yml`) automatically validates PR titles when opened, edited, or synchronized. Invalid titles will fail the check with a clear error message.
+
+**Breaking Changes:**
+
+Use `!` after the type/scope or include `BREAKING CHANGE:` in the PR body for breaking changes, which trigger a major version bump.
+
+For more details, see the [PR template](../.github/pull_request_template.md) and [Contributing Guide](../CONTRIBUTING.md).
+
 ### CLI Tool
 
 A CLI tool (`flagd-eval`) is available for testing rules without WASM:
