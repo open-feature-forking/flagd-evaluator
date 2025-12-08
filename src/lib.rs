@@ -43,6 +43,9 @@ pub mod operators;
 pub mod storage;
 pub mod validation;
 
+#[cfg(feature = "js")]
+pub mod js;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
