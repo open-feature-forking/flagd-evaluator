@@ -140,7 +140,7 @@ jobs:
 
       - name: Optimize WASM
         run: |
-          wasm-opt -Oz --enable-bulk-memory --enable-simd --enable-nontrapping-float-to-int \
+          wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
             -o target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
             target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
           mv target/wasm32-unknown-unknown/release/flagd_evaluator.optimized.wasm \
