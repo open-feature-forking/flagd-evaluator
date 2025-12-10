@@ -1,0 +1,11 @@
+# Cargo configuration for WASM builds
+# This ensures compatibility with WASM runtimes that don't support SIMD (like Chicory)
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+    # Disable SIMD128 instructions for maximum compatibility
+    # Even though our code doesn't explicitly use SIMD, Rust's optimizer may
+    # introduce SIMD instructions when optimizing dependencies like serde_json.
+    # This flag prevents that auto-vectorization.
+    "-C", "target-feature=-simd128",
+]
