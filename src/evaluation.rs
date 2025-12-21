@@ -27,6 +27,7 @@ pub enum ResolutionReason {
     Error,
     /// The flag was not found in the configuration.
     FlagNotFound,
+    Fallback,
 }
 
 /// Error codes matching the flagd provider specification.
@@ -162,6 +163,18 @@ impl EvaluationResult {
         }
     }
 
+    /// Creates a fallback result.
+    pub fn fallback() -> Self {
+        Self {
+            value: Value::Null,
+            variant: None,
+            reason: ResolutionReason::Fallback,
+            error_code: None,
+            error_message: Some("No defaultVariant set, using code fallback".to_string()),
+            flag_metadata: None,
+        }
+    }
+
     /// Sets the flag metadata for this result.
     pub fn with_metadata(mut self, metadata: std::collections::HashMap<String, Value>) -> Self {
         self.flag_metadata = Some(metadata);
@@ -293,7 +306,7 @@ pub fn evaluate_flag(
     if flag.state == "DISABLED" {
         // Return the default variant value
         return match flag.default_variant.as_ref() {
-            None => EvaluationResult::flag_not_found(flag_key),
+            None => EvaluationResult::fallback(),
             Some(default_variant) => match flag.variants.get(default_variant) {
                 Some(value) => {
                     let result = EvaluationResult::disabled(value.clone(), default_variant.clone());
@@ -313,7 +326,7 @@ pub fn evaluate_flag(
     // If there's no targeting rule, return the default variant
     if flag.targeting.is_none() {
         return match flag.default_variant.as_ref() {
-            None => EvaluationResult::flag_not_found(flag_key),
+            None => EvaluationResult::fallback(),
             Some(default_variant) => match flag.variants.get(default_variant) {
                 Some(value) => {
                     let result =
@@ -367,7 +380,7 @@ pub fn evaluate_flag(
                 None => {
                     // Variant not found in targeting result, use default
                     match flag.default_variant.as_ref() {
-                        None => EvaluationResult::flag_not_found(flag_key),
+                        None => EvaluationResult::fallback(),
                         Some(default_variant) => match flag.variants.get(default_variant) {
                             Some(value) => {
                                 let result =

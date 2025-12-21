@@ -292,7 +292,7 @@ async fn then_reason(world: &mut FlagdWorld, expected: String) {
         "DEFAULT" => ResolutionReason::Default,
         "TARGETING_MATCH" => ResolutionReason::TargetingMatch,
         "DISABLED" => ResolutionReason::Disabled,
-        "ERROR" => ResolutionReason::FlagNotFound,
+        "ERROR" => ResolutionReason::Fallback,
         "FLAG_NOT_FOUND" => ResolutionReason::Error, // FLAG_NOT_FOUND is represented as Error
         _ => panic!("Unknown reason: {}", expected),
     };
@@ -323,13 +323,21 @@ async fn then_error_code(world: &mut FlagdWorld, expected: String) {
             _ => panic!("Unknown error code: {}", expected),
         };
 
-        assert_eq!(
-            result.error_code,
-            Some(expected_code.clone()),
-            "Expected error code {:?} but got {:?}",
-            expected_code,
-            result.error_code
-        );
+        if result.reason == ResolutionReason::Fallback {
+            assert_eq!(
+                result.error_code,
+                None,
+                "Expected error code to be none for Fallback as it is expected"
+            );
+        }else {
+            assert_eq!(
+                result.error_code,
+                Some(expected_code.clone()),
+                "Expected error code {:?} but got {:?}",
+                expected_code,
+                result.error_code
+            );
+        }
     }
 }
 
