@@ -232,20 +232,26 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
     // Hash the bucket key to get a consistent value
     let hash = murmurhash3_32(bucket_key.as_bytes(), 0);
 
-    // Map hash to range [0, total_weight)
-    let bucket_value = (hash as u64 * total_weight as u64 / u32::MAX as u64) as u32;
+    // Convert to signed int32 to match reference implementation
+    let hash_i32 = hash as i32;
 
-    // Find which bucket this value falls into
+    // Calculate hash ratio: abs(hash) / MaxInt32 to get value in [0.0, 1.0]
+    let hash_ratio = (hash_i32.abs() as f64) / (i32::MAX as f64);
+
+    // Map to bucket value in range [0, 100]
+    let bucket_value = (hash_ratio * 100.0).floor() as u32;
+
+    // Find which bucket this value falls into by accumulating weights
     let mut cumulative_weight: u32 = 0;
-    for (name, weight) in bucket_defs {
+    for (name, weight) in &bucket_defs {
         cumulative_weight += weight;
         if bucket_value < cumulative_weight {
-            return Ok(name);
+            return Ok(name.clone());
         }
     }
 
-    // Should never reach here, but return last bucket as fallback
-    Err("Failed to select bucket".to_string())
+    // If we didn't find a bucket (e.g., total_weight < 100), return the last one
+    Ok(bucket_defs.last().map(|(name, _)| name.clone()).unwrap_or_else(|| "".to_string()))
 }
 
 // TODO: Evaluate using an existing MurmurHash3 crate (e.g., `murmur3`, `fasthash`, or `twox-hash`)
