@@ -6,7 +6,7 @@
 use datalogic_rs::{ContextStack, Error as DataLogicError, Evaluator, Operator};
 use serde_json::Value;
 
-use super::common::{resolve_string_from_context, OperatorResult};
+use super::common::OperatorResult;
 
 /// Custom operator for fractional/percentage-based bucket assignment.
 ///
@@ -19,28 +19,76 @@ impl Operator for FractionalOperator {
         &self,
         args: &[Value],
         context: &mut ContextStack,
-        _evaluator: &dyn Evaluator,
+        evaluator: &dyn Evaluator,
     ) -> OperatorResult<Value> {
-        if args.len() < 2 {
+        if args.is_empty() {
             return Err(DataLogicError::InvalidArguments(
-                "fractional operator requires an array with at least 2 elements".into(),
+                "fractional operator requires at least one bucket definition".into(),
             ));
         }
 
-        // First argument is the bucket key (can be a value or a var reference)
-        let bucket_key = resolve_string_from_context(&args[0], context)?;
+        // Check if first arg is a bucket definition (array) or a bucket key
+        let evaluated_first = evaluator.evaluate(&args[0], context)?;
+        let (bucket_key, start_index) = if evaluated_first.is_array() {
+            // Shorthand format: [["bucket1"], ["bucket2", weight]]
+            // Use targetingKey from context
+            let root_ref = context.root();
+            let data = root_ref.data();
+            let targeting_key = data
+                .get("targetingKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            (targeting_key.to_string(), 0)
+        } else {
+            // Explicit key format: [key, ["bucket1", 50], ["bucket2", 50]]
+            let key = match evaluated_first {
+                Value::String(s) => s,
+                Value::Number(n) => n.to_string(),
+                Value::Null => String::new(),
+                _ => return Err(DataLogicError::TypeError(
+                    "Bucket key must evaluate to a string or number".into(),
+                )),
+            };
+            (key, 1)
+        };
 
-        // Second argument is the buckets array
-        let buckets = args[1]
-            .as_array()
-            .ok_or_else(|| {
-                DataLogicError::InvalidArguments(
+        // Parse bucket definitions from remaining arguments
+        let mut bucket_values: Vec<Value> = Vec::new();
+
+        if start_index == 1 && args.len() == 2 {
+            // Single array format: ["key", ["bucket1", 50, "bucket2", 50]]
+            let evaluated_buckets = evaluator.evaluate(&args[1], context)?;
+            if let Some(arr) = evaluated_buckets.as_array() {
+                bucket_values.extend_from_slice(arr);
+            } else {
+                return Err(DataLogicError::InvalidArguments(
                     "Second argument must be an array of bucket definitions".into(),
-                )
-            })?
-            .as_slice();
+                ));
+            }
+        } else {
+            // Multiple array format: ["key", ["bucket1", 50], ["bucket2", 50]]
+            // or shorthand: [["bucket1"], ["bucket2", weight]]
+            for arg in &args[start_index..] {
+                let evaluated = evaluator.evaluate(arg, context)?;
+                if let Some(bucket_def) = evaluated.as_array() {
+                    // Each bucket is [name, weight] or [name] (weight=1)
+                    if bucket_def.len() >= 2 {
+                        bucket_values.push(bucket_def[0].clone());
+                        bucket_values.push(bucket_def[1].clone());
+                    } else if bucket_def.len() == 1 {
+                        // Shorthand: [name] implies weight of 1
+                        bucket_values.push(bucket_def[0].clone());
+                        bucket_values.push(Value::Number(1.into()));
+                    }
+                } else {
+                    return Err(DataLogicError::InvalidArguments(
+                        format!("Bucket definition must be an array, got: {:?}", evaluated),
+                    ));
+                }
+            }
+        }
 
-        match fractional(&bucket_key, buckets) {
+        match fractional(&bucket_key, &bucket_values) {
             Ok(bucket_name) => Ok(Value::String(bucket_name)),
             Err(e) => Err(DataLogicError::Custom(e)),
         }

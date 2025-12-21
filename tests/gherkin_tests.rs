@@ -3,6 +3,7 @@
 //! This test suite runs the official flagd testbed Gherkin feature files
 //! to ensure compatibility with the flagd specification.
 
+use std::arch::x86_64::_kadd_mask8;
 use cucumber::{given, then, when, World};
 use flagd_evaluator::{
     evaluation::{evaluate_flag, ErrorCode, ResolutionReason},
@@ -30,6 +31,7 @@ pub struct FlagdWorld {
     current_flag_type: Option<String>,
     /// Default value for current flag
     current_default: Option<Value>,
+    file: Option<String>
 }
 
 impl FlagdWorld {
@@ -86,14 +88,21 @@ async fn given_stable_provider(world: &mut FlagdWorld) {
     let mut merged_flags = json!({"flags": {}});
     let mut merged_metadata = serde_json::Map::new();
 
-    let config_files = vec![
-        "testing-flags.json",
-        "zero-flags.json",
-        "custom-ops.json",
-        "evaluator-refs.json",
-        "edge-case-flags.json",
-        "metadata-flags.json",
-    ];
+    let config_files = match &world.file {
+        Some(file) => {
+            vec![file.as_str()]
+        }
+        _ => {
+            vec![
+                "testing-flags.json",
+                "zero-flags.json",
+                "custom-ops.json",
+                "evaluator-refs.json",
+                "edge-case-flags.json",
+                "metadata-flags.json",
+            ]
+        }
+    };
 
     for filename in config_files {
         if let Some(config_str) = world.flag_configs.get(filename) {
@@ -208,6 +217,9 @@ async fn given_context_targeting_key(world: &mut FlagdWorld, value: String) {
 async fn given_option(_world: &mut FlagdWorld, _key: String, _type: String, _value: String) {
     // Options like cache settings are not applicable for the evaluator
     // Skip this step
+    if _key == "selector" {
+        _world.file = Some(_value);
+    }
 }
 
 // ============================================================================
