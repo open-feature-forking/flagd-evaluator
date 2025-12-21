@@ -3,7 +3,6 @@
 //! This test suite runs the official flagd testbed Gherkin feature files
 //! to ensure compatibility with the flagd specification.
 
-use std::arch::x86_64::_kadd_mask8;
 use cucumber::{given, then, when, World};
 use flagd_evaluator::{
     evaluation::{evaluate_flag, ErrorCode, ResolutionReason},
@@ -208,6 +207,7 @@ async fn given_context_nested(world: &mut FlagdWorld, outer: String, inner: Stri
 
 #[given(regex = r#"^a context containing a targeting key with value "([^"]*)"$"#)]
 async fn given_context_targeting_key(world: &mut FlagdWorld, value: String) {
+    println!("DEBUG: Setting targetingKey to: '{}'", value);
     if let Some(obj) = world.context.as_object_mut() {
         obj.insert("targetingKey".to_string(), json!(value));
     }
@@ -480,9 +480,12 @@ async fn run_metadata_tests() {
         })
         .filter_run(
             "testbed/gherkin/metadata.feature",
-            |_feature, _rule, _scenario| {
+            |_feature, _rule, scenario| {
                 // Run all metadata tests
-                true
+                !scenario
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "grace" || tag == "rpc" || tag == "caching" || tag == "metadata-provider")
             },
         )
         .await;

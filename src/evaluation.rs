@@ -258,13 +258,20 @@ fn merge_metadata(
     flag_set_metadata: &std::collections::HashMap<String, Value>,
     flag_metadata: &std::collections::HashMap<String, Value>,
 ) -> Option<std::collections::HashMap<String, Value>> {
-    // If both are empty, return None
-    if flag_set_metadata.is_empty() && flag_metadata.is_empty() {
+    // Filter out internal fields (those starting with $) from flag-set metadata
+    let filtered_flag_set: HashMap<String, Value> = flag_set_metadata
+        .iter()
+        .filter(|(key, _)| !key.starts_with('$'))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // If both are empty after filtering, return None
+    if filtered_flag_set.is_empty() && flag_metadata.is_empty() {
         return None;
     }
 
-    // Start with flag-set metadata as the base
-    let mut merged = flag_set_metadata.clone();
+    // Start with filtered flag-set metadata as the base
+    let mut merged = filtered_flag_set;
 
     // Override with flag-level metadata (flag metadata takes priority)
     for (key, value) in flag_metadata {
