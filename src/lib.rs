@@ -9,8 +9,9 @@
 //! ## Features
 //!
 //! - **JSON Logic Evaluation**: Full support for standard JSON Logic operations via `datalogic-rs`
-//! - **Custom Operators**: Support for feature-flag specific operators like `fractional`, `starts_with`,
-//!   `ends_with`, and `sem_ver` - all registered via the `datalogic_rs::Operator` trait
+//! - **Custom Operators**: Support for feature-flag specific operators like `fractional` and
+//!   `sem_ver` - all registered via the `datalogic_rs::Operator` trait. Additional operators
+//!   like `starts_with` and `ends_with` are provided by datalogic-rs.
 //! - **Feature Flag Evaluation**: State-based flag evaluation following the flagd provider specification
 //! - **Memory Safe**: Clean memory management with explicit alloc/dealloc functions
 //! - **Zero JNI**: Works with pure Java WASM runtimes like Chicory
@@ -55,7 +56,7 @@ pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
 pub use model::{FeatureFlag, ParsingResult, UpdateStateResponse};
-pub use operators::{create_evaluator, ends_with, fractional, sem_ver, starts_with};
+pub use operators::{create_evaluator, fractional, sem_ver};
 pub use storage::{
     clear_flag_state, get_flag_state, set_validation_mode, update_flag_state, ValidationMode,
 };
@@ -846,82 +847,6 @@ mod tests {
         assert!(!response.success);
         assert_eq!(response.error, Some("test error".to_string()));
         assert_eq!(response.result, None);
-    }
-
-    // ============================================================================
-    // starts_with operator tests
-    // ============================================================================
-
-    #[test]
-    fn test_starts_with_operator_basic() {
-        let rule = r#"{"starts_with": [{"var": "email"}, "admin@"]}"#;
-        let data = r#"{"email": "admin@example.com"}"#;
-        let result = evaluate_json(rule, data);
-        assert!(result.success);
-        assert_eq!(result.result, Some(json!(true)));
-    }
-
-    #[test]
-    fn test_starts_with_operator_false() {
-        let rule = r#"{"starts_with": [{"var": "email"}, "admin@"]}"#;
-        let data = r#"{"email": "user@example.com"}"#;
-        let result = evaluate_json(rule, data);
-        assert!(result.success);
-        assert_eq!(result.result, Some(json!(false)));
-    }
-
-    #[test]
-    fn test_starts_with_operator_literal_values() {
-        let rule = r#"{"starts_with": ["/api/users", "/api/"]}"#;
-        let result = evaluate_json(rule, "{}");
-        assert!(result.success);
-        assert_eq!(result.result, Some(json!(true)));
-    }
-
-    #[test]
-    fn test_starts_with_operator_empty_prefix() {
-        let rule = r#"{"starts_with": ["hello", ""]}"#;
-        let result = evaluate_json(rule, "{}");
-        assert!(result.success);
-        assert_eq!(result.result, Some(json!(true)));
-    }
-
-    // ============================================================================
-    // ends_with operator tests
-    // ============================================================================
-
-    #[test]
-    fn test_ends_with_operator_basic() {
-        let rule = r#"{"ends_with": [{"var": "filename"}, ".pdf"]}"#;
-        let data = r#"{"filename": "document.pdf"}"#;
-        let result = evaluate_json(rule, data);
-        assert!(result.success);
-        assert_eq!(result.result, Some(json!(true)));
-    }
-
-    #[test]
-    fn test_ends_with_operator_false() {
-        let rule = r#"{"ends_with": [{"var": "filename"}, ".pdf"]}"#;
-        let data = r#"{"filename": "document.docx"}"#;
-        let result = evaluate_json(rule, data);
-        assert!(result.success);
-        assert_eq!(result.result, Some(json!(false)));
-    }
-
-    #[test]
-    fn test_ends_with_operator_literal_values() {
-        let rule = r#"{"ends_with": ["https://example.com", ".com"]}"#;
-        let result = evaluate_json(rule, "{}");
-        assert!(result.success);
-        assert_eq!(result.result, Some(json!(true)));
-    }
-
-    #[test]
-    fn test_ends_with_operator_empty_suffix() {
-        let rule = r#"{"ends_with": ["hello", ""]}"#;
-        let result = evaluate_json(rule, "{}");
-        assert!(result.success);
-        assert_eq!(result.result, Some(json!(true)));
     }
 
     // ============================================================================

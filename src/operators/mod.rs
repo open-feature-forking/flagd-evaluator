@@ -11,8 +11,6 @@
 //! ## Available Operators
 //!
 //! - `FractionalOperator`: Percentage-based bucket assignment for A/B testing
-//! - `StartsWithOperator`: String prefix matching
-//! - `EndsWithOperator`: String suffix matching
 //! - `SemVerOperator`: Semantic version comparison
 //!
 //! ## Module Organization
@@ -20,20 +18,14 @@
 //! Each operator is implemented in its own file for easier maintenance:
 //! - `common.rs`: Shared utilities and helper functions
 //! - `fractional.rs`: Fractional/percentage-based bucket assignment
-//! - `starts_with.rs`: String prefix matching
-//! - `ends_with.rs`: String suffix matching
 //! - `sem_ver.rs`: Semantic version comparison
 
 mod common;
-mod ends_with;
 mod fractional;
 mod sem_ver;
-mod starts_with;
 
-pub use ends_with::{ends_with, EndsWithOperator};
 pub use fractional::{fractional, FractionalOperator};
 pub use sem_ver::{sem_ver, SemVer, SemVerOperator};
-pub use starts_with::{starts_with, StartsWithOperator};
 
 use datalogic_rs::DataLogic;
 
@@ -47,9 +39,10 @@ use datalogic_rs::DataLogic;
 ///
 /// A configured DataLogic instance with the following operators registered:
 /// - `fractional`: For A/B testing bucket assignment
-/// - `starts_with`: For string prefix matching
-/// - `ends_with`: For string suffix matching
 /// - `sem_ver`: For semantic version comparison
+///
+/// Note: The `starts_with` and `ends_with` operators are provided by datalogic-rs
+/// and are available by default without custom registration.
 ///
 /// # Example
 ///
@@ -63,8 +56,6 @@ pub fn create_evaluator() -> DataLogic {
     let mut logic = DataLogic::new();
 
     logic.add_operator("fractional".to_string(), Box::new(FractionalOperator));
-    logic.add_operator("starts_with".to_string(), Box::new(StartsWithOperator));
-    logic.add_operator("ends_with".to_string(), Box::new(EndsWithOperator));
     logic.add_operator("sem_ver".to_string(), Box::new(SemVerOperator));
 
     logic

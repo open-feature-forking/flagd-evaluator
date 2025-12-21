@@ -36,13 +36,6 @@ wasm-bindgen-test = "0.3"
 assert_cmd = "2.0"
 predicates = "3.0"
 
-# Patch chrono to disable wasm-bindgen/js-sys for pure WASM runtimes like Chicory.
-# The patched chrono removes "wasmbind" from default features, preventing js-sys and
-# wasm-bindgen imports that aren't available in non-browser WASM environments.
-# See: https://github.com/chronotope/chrono/blob/main/Cargo.toml for original features.
-[patch.crates-io]
-chrono = { path = "third-party/chrono" }
-
 [profile.release]
 opt-level = "z"
 lto = true
