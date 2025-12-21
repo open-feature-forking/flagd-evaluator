@@ -29,7 +29,7 @@ use std::collections::HashMap;
 ///
 /// let flag: FeatureFlag = serde_json::from_value(flag_json).unwrap();
 /// assert_eq!(flag.state, "ENABLED");
-/// assert_eq!(flag.default_variant, "on");
+/// assert_eq!(flag.default_variant, Some("on".to_string()));
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -42,7 +42,8 @@ pub struct FeatureFlag {
     pub state: String,
 
     /// The default variant to use when no targeting rule matches
-    pub default_variant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_variant: Option<String>,
 
     /// Map of variant names to their values (can be any JSON value)
     pub variants: HashMap<String, serde_json::Value>,
@@ -71,7 +72,7 @@ impl FeatureFlag {
     /// let mut flag = FeatureFlag {
     ///     key: Some("my_flag".to_string()),
     ///     state: "ENABLED".to_string(),
-    ///     default_variant: "on".to_string(),
+    ///     default_variant: Option::from("on".to_string()),
     ///     variants: HashMap::new(),
     ///     targeting: Some(json!({"==": [1, 1]})),
     ///     metadata: HashMap::new(),
@@ -106,14 +107,14 @@ impl FeatureFlag {
     /// let flag1 = FeatureFlag {
     ///     key: Some("test".to_string()),
     ///     state: "ENABLED".to_string(),
-    ///     default_variant: "on".to_string(),
+    ///     default_variant: Option::from("on".to_string()),
     ///     variants: HashMap::new(),
     ///     targeting: Some(json!({"==": [1, 1]})),
     ///     metadata: HashMap::new(),
     /// };
     ///
     /// let mut flag2 = flag1.clone();
-    /// flag2.default_variant = "off".to_string();
+    /// flag2.default_variant = Option::from("off".to_string());
     ///
     /// assert!(flag1.is_different_from(&flag2));
     /// ```
@@ -361,7 +362,7 @@ mod tests {
 
         let flag = result.flags.get("myBoolFlag").unwrap();
         assert_eq!(flag.state, "ENABLED");
-        assert_eq!(flag.default_variant, "on");
+        assert_eq!(flag.default_variant.clone().unwrap(), "on");
         assert_eq!(flag.variants.len(), 2);
         assert_eq!(flag.variants.get("on"), Some(&json!(true)));
         assert_eq!(flag.variants.get("off"), Some(&json!(false)));
@@ -534,7 +535,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants: HashMap::new(),
             targeting: Some(json!({"==": [1, 1]})),
             metadata: HashMap::new(),
@@ -550,7 +551,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants: HashMap::new(),
             targeting: None,
             metadata: HashMap::new(),
@@ -600,7 +601,7 @@ mod tests {
         let flag1 = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants: HashMap::new(),
             targeting: None,
             metadata: HashMap::new(),
@@ -609,7 +610,7 @@ mod tests {
         let flag2 = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants: HashMap::new(),
             targeting: None,
             metadata: HashMap::new(),
@@ -627,7 +628,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants,
             targeting: Some(json!({"==": [1, 1]})),
             metadata: HashMap::new(),
@@ -651,7 +652,7 @@ mod tests {
 
         let flag: FeatureFlag = serde_json::from_str(json).unwrap();
         assert_eq!(flag.state, "ENABLED");
-        assert_eq!(flag.default_variant, "on");
+        assert_eq!(flag.default_variant.clone().unwrap(), "on");
         assert!(flag.targeting.is_some());
         assert_eq!(flag.metadata.get("key"), Some(&json!("value")));
     }

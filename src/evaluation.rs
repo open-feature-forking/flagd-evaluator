@@ -3,6 +3,7 @@
 //! This module provides the data structures and functions for evaluating
 //! feature flags according to the flagd provider specification.
 
+use std::collections::HashMap;
 use crate::model::FeatureFlag;
 use crate::operators::create_evaluator;
 use serde::{Deserialize, Serialize};
@@ -291,43 +292,45 @@ pub fn evaluate_flag(
     // Check if flag is disabled
     if flag.state == "DISABLED" {
         // Return the default variant value
-        if let Some(value) = flag.variants.get(&flag.default_variant) {
-            let result = EvaluationResult::disabled(value.clone(), flag.default_variant.clone());
-            return if let Some(metadata) = merged_metadata {
-                result.with_metadata(metadata)
-            } else {
-                result
-            };
-        } else {
-            return EvaluationResult::error(
-                ErrorCode::General,
-                format!(
-                    "Default variant '{}' not found in flag variants",
-                    flag.default_variant
+        return match flag.default_variant.as_ref() {
+            None => EvaluationResult::flag_not_found(flag_key),
+            Some(default_variant) => match flag.variants.get(default_variant) {
+                Some(value) => {
+                    let result = EvaluationResult::disabled(value.clone(), default_variant.clone());
+                    with_metadata(merged_metadata, result)
+                }
+                None => EvaluationResult::error(
+                    ErrorCode::General,
+                    format!(
+                        "Default variant '{}' not found in flag variants",
+                        default_variant
+                    ),
                 ),
-            );
-        }
+            },
+        };
     }
 
     // If there's no targeting rule, return the default variant
     if flag.targeting.is_none() {
-        if let Some(value) = flag.variants.get(&flag.default_variant) {
-            let result =
-                EvaluationResult::static_result(value.clone(), flag.default_variant.clone());
-            return if let Some(metadata) = merged_metadata {
-                result.with_metadata(metadata)
-            } else {
-                result
-            };
-        } else {
-            return EvaluationResult::error(
-                ErrorCode::General,
-                format!(
-                    "Default variant '{}' not found in flag variants",
-                    flag.default_variant
-                ),
-            );
-        }
+        return match flag.default_variant.as_ref() {
+            None => EvaluationResult::flag_not_found(flag_key),
+            Some(default_variant) => match flag.variants.get(default_variant) {
+                Some(value) => {
+                    let result =
+                        EvaluationResult::static_result(value.clone(), default_variant.clone());
+                    with_metadata(merged_metadata, result)
+                }
+                None => {
+                    return EvaluationResult::error(
+                        ErrorCode::General,
+                        format!(
+                            "Default variant '{}' not found in flag variants",
+                            default_variant
+                        ),
+                    );
+                }
+            },
+        };
     }
 
     // Enrich the context with flagKey and targetingKey
@@ -356,35 +359,45 @@ pub fn evaluate_flag(
             };
 
             // Look up the variant value
-            if let Some(value) = flag.variants.get(&variant_name) {
-                let result = EvaluationResult::targeting_match(value.clone(), variant_name);
-                if let Some(metadata) = merged_metadata {
-                    result.with_metadata(metadata)
-                } else {
-                    result
+            match flag.variants.get(&variant_name) {
+                Some(value) => {
+                    let result = EvaluationResult::targeting_match(value.clone(), variant_name);
+                    with_metadata(merged_metadata, result)
                 }
-            } else {
-                // Variant not found in targeting result, use default
-                if let Some(value) = flag.variants.get(&flag.default_variant) {
-                    let result = EvaluationResult::default_result(
-                        value.clone(),
-                        flag.default_variant.clone(),
-                    );
-                    if let Some(metadata) = merged_metadata {
-                        result.with_metadata(metadata)
-                    } else {
-                        result
+                None => {
+                    // Variant not found in targeting result, use default
+                    match flag.default_variant.as_ref() {
+                        None => EvaluationResult::flag_not_found(flag_key),
+                        Some(default_variant) => match flag.variants.get(default_variant) {
+                            Some(value) => {
+                                let result =
+                                    EvaluationResult::default_result(value.clone(), default_variant.clone());
+                                with_metadata(merged_metadata, result)
+                            }
+                            None => {
+                                EvaluationResult::error(
+                                    ErrorCode::General,
+                                    format!("Variant '{}' not found in flag variants", variant_name),
+                                )
+                            }
+                        }
                     }
-                } else {
-                    EvaluationResult::error(
-                        ErrorCode::General,
-                        format!("Variant '{}' not found in flag variants", variant_name),
-                    )
                 }
             }
         }
         Err(e) => {
             EvaluationResult::error(ErrorCode::ParseError, format!("Evaluation error: {}", e))
+        }
+    }
+}
+
+fn with_metadata(merged_metadata: Option<HashMap<String, Value>>, result: EvaluationResult) -> EvaluationResult {
+    match merged_metadata {
+        Some(metadata) => {
+            result.with_metadata(metadata)
+        }
+        None => {
+            result
         }
     }
 }
@@ -617,7 +630,7 @@ mod tests {
         FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "off".to_string(),
+            default_variant: Option::from("off".to_string()),
             variants,
             targeting,
             metadata: HashMap::new(),
@@ -722,7 +735,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "string_variant".to_string(),
+            default_variant: Option::from("string_variant".to_string()),
             variants,
             targeting: Some(targeting),
             metadata: HashMap::new(),
@@ -852,7 +865,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "timestamp".to_string(),
+            default_variant: Option::from("timestamp".to_string()),
             variants,
             targeting: Some(targeting),
             metadata: HashMap::new(),
@@ -889,7 +902,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "failure".to_string(),
+            default_variant: Option::from("failure".to_string()),
             variants,
             targeting: Some(targeting),
             metadata: HashMap::new(),
@@ -925,7 +938,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants: {
                 let mut v = HashMap::new();
                 v.insert("on".to_string(), json!(true));
@@ -965,7 +978,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "off".to_string(),
+            default_variant: Option::from("off".to_string()),
             variants: {
                 let mut v = HashMap::new();
                 v.insert("on".to_string(), json!(true));
@@ -1182,7 +1195,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("bool_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1203,7 +1216,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("bool_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1227,7 +1240,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("string_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "red".to_string(),
+            default_variant: Option::from("red".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1248,7 +1261,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("string_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "red".to_string(),
+            default_variant: Option::from("red".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1272,7 +1285,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "small".to_string(),
+            default_variant: Option::from("small".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1293,7 +1306,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "small".to_string(),
+            default_variant: Option::from("small".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1317,7 +1330,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "small".to_string(),
+            default_variant: Option::from("small".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1341,7 +1354,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("float_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "low".to_string(),
+            default_variant: Option::from("low".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1363,7 +1376,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("float_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "low".to_string(),
+            default_variant: Option::from("low".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1384,7 +1397,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("float_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "low".to_string(),
+            default_variant: Option::from("low".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1408,7 +1421,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("object_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "config1".to_string(),
+            default_variant: Option::from("config1".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1429,7 +1442,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("object_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "config1".to_string(),
+            default_variant: Option::from("config1".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1474,7 +1487,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("message_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "user".to_string(),
+            default_variant: Option::from("user".to_string()),
             variants,
             targeting: Some(targeting),
             metadata: HashMap::new(),
@@ -1496,7 +1509,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "DISABLED".to_string(),
-            default_variant: "small".to_string(),
+            default_variant: Option::from("small".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1529,7 +1542,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("object_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "config1".to_string(),
+            default_variant: Option::from("config1".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1558,7 +1571,7 @@ mod tests {
         let bool_flag = FeatureFlag {
             key: Some("bool_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "off".to_string(),
+            default_variant: Option::from("off".to_string()),
             variants: bool_variants,
             targeting: Some(bool_targeting),
             metadata: HashMap::new(),
@@ -1581,7 +1594,7 @@ mod tests {
         let string_flag = FeatureFlag {
             key: Some("string_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "silver".to_string(),
+            default_variant: Option::from("silver".to_string()),
             variants: string_variants,
             targeting: Some(string_targeting),
             metadata: HashMap::new(),
@@ -1604,7 +1617,7 @@ mod tests {
         let int_flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "adult".to_string(),
+            default_variant: Option::from("adult".to_string()),
             variants: int_variants,
             targeting: Some(int_targeting),
             metadata: HashMap::new(),

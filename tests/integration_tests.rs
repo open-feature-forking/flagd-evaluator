@@ -4,7 +4,6 @@
 //! JSON parsing, custom operators, and error handling.
 
 use flagd_evaluator::{alloc, dealloc, pack_ptr_len, unpack_ptr_len};
-use serde_json::json;
 
 
 // ============================================================================

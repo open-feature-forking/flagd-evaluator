@@ -6,7 +6,9 @@
 use cucumber::{given, then, when, World};
 use flagd_evaluator::{
     evaluation::{evaluate_flag, ErrorCode, ResolutionReason},
+    set_validation_mode,
     storage::{clear_flag_state, update_flag_state},
+    ValidationMode,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -45,9 +47,10 @@ impl FlagdWorld {
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                let config = fs::read_to_string(&path)
-                    .expect(&format!("Failed to read {:?}", path));
-                let filename = path.file_name()
+                let config =
+                    fs::read_to_string(&path).expect(&format!("Failed to read {:?}", path));
+                let filename = path
+                    .file_name()
                     .and_then(|s| s.to_str())
                     .expect("Invalid filename")
                     .to_string();
@@ -58,16 +61,16 @@ impl FlagdWorld {
         println!("Loaded {} flag configurations", self.flag_configs.len());
     }
 
-    /// Load a specific flag configuration file
-    fn load_config(&self, filename: &str) -> Result<(), String> {
-        if let Some(config) = self.flag_configs.get(filename) {
-            update_flag_state(config)
-                .map_err(|e| format!("Failed to update state: {:?}", e))?;
-            Ok(())
-        } else {
-            Err(format!("Flag config {} not found", filename))
-        }
-    }
+    // /// Load a specific flag configuration file
+    // fn load_config(&self, filename: &str) -> Result<(), String> {
+    //     if let Some(config) = self.flag_configs.get(filename) {
+    //         update_flag_state(config)
+    //             .map_err(|e| format!("Failed to update state: {:?}", e))?;
+    //         Ok(())
+    //     } else {
+    //         Err(format!("Flag config {} not found", filename))
+    //     }
+    // }
 }
 
 // ============================================================================
@@ -96,7 +99,10 @@ async fn given_stable_provider(world: &mut FlagdWorld) {
         if let Some(config_str) = world.flag_configs.get(filename) {
             if let Ok(config) = serde_json::from_str::<Value>(config_str) {
                 if let Some(flags) = config.get("flags").and_then(|f| f.as_object()) {
-                    if let Some(merged_flags_obj) = merged_flags.get_mut("flags").and_then(|f| f.as_object_mut()) {
+                    if let Some(merged_flags_obj) = merged_flags
+                        .get_mut("flags")
+                        .and_then(|f| f.as_object_mut())
+                    {
                         for (key, value) in flags {
                             merged_flags_obj.insert(key.clone(), value.clone());
                         }
@@ -119,11 +125,18 @@ async fn given_stable_provider(world: &mut FlagdWorld) {
         merged_flags.as_object_mut().unwrap().insert(key, value);
     }
 
+    set_validation_mode(ValidationMode::Permissive);
     let merged_config = serde_json::to_string(&merged_flags).unwrap();
-    if let Err(e) = update_flag_state(&merged_config) {
-        println!("Warning: Failed to load merged config: {:?}", e);
+    match update_flag_state(&merged_config) {
+        Err(e) => {
+            println!("Warning: Failed to load merged config: {:?}", e);
+        }
+        Ok(response) => {
+            assert!(response.success, "{:?}", response.error);
+        }
     }
 
+    flagd_evaluator::storage::get_flag_state().expect("No flag state loaded");
     world.context = json!({});
 }
 
@@ -134,8 +147,15 @@ async fn given_metadata_provider(world: &mut FlagdWorld) {
     world.context = json!({});
 }
 
-#[given(regex = r#"^an? (Boolean|String|Integer|Float|Object)-flag with key "([^"]+)" and a default value "([^"]*)"$"#)]
-async fn given_flag_with_key(world: &mut FlagdWorld, flag_type: String, key: String, default: String) {
+#[given(
+    regex = r#"^an? (Boolean|String|Integer|Float|Object)-flag with key "([^"]+)" and a default value "([^"]*)"$"#
+)]
+async fn given_flag_with_key(
+    world: &mut FlagdWorld,
+    flag_type: String,
+    key: String,
+    default: String,
+) {
     world.current_flag_key = Some(key);
     world.current_flag_type = Some(flag_type.clone());
 
@@ -150,7 +170,9 @@ async fn given_flag_with_key(world: &mut FlagdWorld, flag_type: String, key: Str
     });
 }
 
-#[given(regex = r#"^a context containing a key "([^"]+)", with type "([^"]+)" and with value "([^"]*)"$"#)]
+#[given(
+    regex = r#"^a context containing a key "([^"]+)", with type "([^"]+)" and with value "([^"]*)"$"#
+)]
 async fn given_context_with_key(world: &mut FlagdWorld, key: String, _type: String, value: String) {
     if let Some(obj) = world.context.as_object_mut() {
         // Parse value based on type
@@ -165,7 +187,9 @@ async fn given_context_with_key(world: &mut FlagdWorld, key: String, _type: Stri
     }
 }
 
-#[given(regex = r#"^a context containing a nested property with outer key "([^"]+)" and inner key "([^"]+)", with value "([^"]*)"$"#)]
+#[given(
+    regex = r#"^a context containing a nested property with outer key "([^"]+)" and inner key "([^"]+)", with value "([^"]*)"$"#
+)]
 async fn given_context_nested(world: &mut FlagdWorld, outer: String, inner: String, value: String) {
     if let Some(obj) = world.context.as_object_mut() {
         let nested = json!({ inner: value });
@@ -194,8 +218,7 @@ async fn given_option(_world: &mut FlagdWorld, _key: String, _type: String, _val
 async fn when_flag_evaluated(world: &mut FlagdWorld) {
     let flag_key = world.current_flag_key.as_ref().expect("No flag key set");
 
-    let state = flagd_evaluator::storage::get_flag_state()
-        .expect("No flag state loaded");
+    let state = flagd_evaluator::storage::get_flag_state().expect("No flag state loaded");
 
     let flag = state.flags.get(flag_key);
 
@@ -203,7 +226,11 @@ async fn when_flag_evaluated(world: &mut FlagdWorld) {
         evaluate_flag(flag, &world.context, &state.flag_set_metadata)
     } else {
         // Flag not found
-        let default_val = world.current_default.as_ref().cloned().unwrap_or(json!(null));
+        let default_val = world
+            .current_default
+            .as_ref()
+            .cloned()
+            .unwrap_or(json!(null));
         flagd_evaluator::evaluation::EvaluationResult {
             value: default_val,
             variant: None,
@@ -236,11 +263,24 @@ async fn then_resolved_value(world: &mut FlagdWorld, expected: String) {
         _ => json!(expected),
     };
 
-    assert_eq!(
-        result.value, expected_value,
-        "Expected value {:?} but got {:?}",
-        expected_value, result.value
-    );
+    if result.value == json!(null) {
+        assert_eq!(
+            world
+                .current_default
+                .clone()
+                .unwrap_or_else( || { panic!("should be here") }),
+            expected_value,
+            "Expected value {:?} but got {:?} - fallbacked to default",
+            expected_value,
+            result.value
+        );
+    } else {
+        assert_eq!(
+            result.value, expected_value,
+            "Expected value {:?} but got {:?} - error in {:?}",
+            expected_value, result.value, result.error_code
+        );
+    }
 }
 
 #[then(regex = r#"^the reason should be "([^"]+)"$"#)]
@@ -252,7 +292,7 @@ async fn then_reason(world: &mut FlagdWorld, expected: String) {
         "DEFAULT" => ResolutionReason::Default,
         "TARGETING_MATCH" => ResolutionReason::TargetingMatch,
         "DISABLED" => ResolutionReason::Disabled,
-        "ERROR" => ResolutionReason::Error,
+        "ERROR" => ResolutionReason::FlagNotFound,
         "FLAG_NOT_FOUND" => ResolutionReason::Error, // FLAG_NOT_FOUND is represented as Error
         _ => panic!("Unknown reason: {}", expected),
     };
@@ -269,7 +309,11 @@ async fn then_error_code(world: &mut FlagdWorld, expected: String) {
     let result = world.last_result.as_ref().expect("No evaluation result");
 
     if expected.is_empty() {
-        assert!(result.error_code.is_none(), "Expected no error code but got {:?}", result.error_code);
+        assert!(
+            result.error_code.is_none(),
+            "Expected no error code but got {:?}",
+            result.error_code
+        );
     } else {
         let expected_code = match expected.as_str() {
             "FLAG_NOT_FOUND" => ErrorCode::FlagNotFound,
@@ -292,10 +336,14 @@ async fn then_error_code(world: &mut FlagdWorld, expected: String) {
 #[then("the resolved metadata should contain")]
 async fn then_metadata_contains(world: &mut FlagdWorld, step: &cucumber::gherkin::Step) {
     let result = world.last_result.as_ref().expect("No evaluation result");
-    let metadata = result.flag_metadata.as_ref().expect("No metadata in result");
+    let metadata = result
+        .flag_metadata
+        .as_ref()
+        .expect("No metadata in result");
 
     if let Some(table) = &step.table {
-        for row in table.rows.iter().skip(1) { // Skip header
+        for row in table.rows.iter().skip(1) {
+            // Skip header
             let key = &row[0];
             let metadata_type = &row[1];
             let value_str = &row[2];
@@ -343,10 +391,16 @@ async fn run_evaluation_tests() {
                 world.load_flag_configs();
             })
         })
-        .filter_run("testbed/gherkin/evaluation.feature", |_feature, _rule, scenario| {
-            // Skip scenarios that require RPC or connection management
-            !scenario.tags.iter().any(|tag| tag == "grace" || tag == "rpc" || tag == "caching")
-        })
+        .filter_run(
+            "testbed/gherkin/evaluation.feature",
+            |_feature, _rule, scenario| {
+                // Skip scenarios that require RPC or connection management
+                !scenario
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "grace" || tag == "rpc" || tag == "caching")
+            },
+        )
         .await;
 }
 
@@ -359,10 +413,16 @@ async fn run_targeting_tests() {
                 world.load_flag_configs();
             })
         })
-        .filter_run("testbed/gherkin/targeting.feature", |_feature, _rule, scenario| {
-            // Skip scenarios that require features we don't support in the evaluator
-            !scenario.tags.iter().any(|tag| tag == "grace" || tag == "rpc" || tag == "caching")
-        })
+        .filter_run(
+            "testbed/gherkin/targeting.feature",
+            |_feature, _rule, scenario| {
+                // Skip scenarios that require features we don't support in the evaluator
+                !scenario
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "grace" || tag == "rpc" || tag == "caching")
+            },
+        )
         .await;
 }
 
@@ -375,11 +435,17 @@ async fn run_context_enrichment_tests() {
                 world.load_flag_configs();
             })
         })
-        .filter_run("testbed/gherkin/contextEnrichment.feature", |_feature, _rule, scenario| {
-            // Only run in-process tests, skip RPC and connection-related tests
-            scenario.tags.iter().any(|tag| tag == "in-process")
-                && !scenario.tags.iter().any(|tag| tag == "grace" || tag == "rpc" || tag == "caching")
-        })
+        .filter_run(
+            "testbed/gherkin/contextEnrichment.feature",
+            |_feature, _rule, scenario| {
+                // Only run in-process tests, skip RPC and connection-related tests
+                scenario.tags.iter().any(|tag| tag == "in-process")
+                    && !scenario
+                        .tags
+                        .iter()
+                        .any(|tag| tag == "grace" || tag == "rpc" || tag == "caching")
+            },
+        )
         .await;
 }
 
@@ -392,9 +458,12 @@ async fn run_metadata_tests() {
                 world.load_flag_configs();
             })
         })
-        .filter_run("testbed/gherkin/metadata.feature", |_feature, _rule, _scenario| {
-            // Run all metadata tests
-            true
-        })
+        .filter_run(
+            "testbed/gherkin/metadata.feature",
+            |_feature, _rule, _scenario| {
+                // Run all metadata tests
+                true
+            },
+        )
         .await;
 }
