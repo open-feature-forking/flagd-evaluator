@@ -34,7 +34,9 @@ impl Operator for SemVerOperator {
 
         match sem_ver(&version, operator, &target) {
             Ok(result) => Ok(Value::Bool(result)),
-            Err(e) => Err(DataLogicError::Custom(e)),
+            // For invalid versions, return false instead of error
+            // This allows if statements to continue to the next branch
+            Err(_) => Ok(Value::Bool(false)),
         }
     }
 }

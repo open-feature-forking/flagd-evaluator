@@ -207,7 +207,6 @@ async fn given_context_nested(world: &mut FlagdWorld, outer: String, inner: Stri
 
 #[given(regex = r#"^a context containing a targeting key with value "([^"]*)"$"#)]
 async fn given_context_targeting_key(world: &mut FlagdWorld, value: String) {
-    println!("DEBUG: Setting targetingKey to: '{}'", value);
     if let Some(obj) = world.context.as_object_mut() {
         obj.insert("targetingKey".to_string(), json!(value));
     }

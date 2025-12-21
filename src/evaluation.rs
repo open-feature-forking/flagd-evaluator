@@ -385,23 +385,15 @@ pub fn evaluate_flag(
                     with_metadata(merged_metadata, result)
                 }
                 None => {
-                    // Variant not found in targeting result, use default
-                    match flag.default_variant.as_ref() {
-                        None => EvaluationResult::fallback(),
-                        Some(default_variant) => match flag.variants.get(default_variant) {
-                            Some(value) => {
-                                let result =
-                                    EvaluationResult::default_result(value.clone(), default_variant.clone());
-                                with_metadata(merged_metadata, result)
-                            }
-                            None => {
-                                EvaluationResult::error(
-                                    ErrorCode::General,
-                                    format!("Variant '{}' not found in flag variants", variant_name),
-                                )
-                            }
-                        }
-                    }
+                    // Variant name returned by targeting doesn't exist in variants map
+                    // This is an error condition according to flagd spec
+                    EvaluationResult::error(
+                        ErrorCode::General,
+                        format!(
+                            "Targeting rule returned variant '{}' which is not defined in flag variants",
+                            variant_name
+                        ),
+                    )
                 }
             }
         }
