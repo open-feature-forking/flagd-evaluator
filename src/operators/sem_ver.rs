@@ -34,8 +34,9 @@ impl Operator for SemVerOperator {
 
         match sem_ver(&version, operator, &target) {
             Ok(result) => Ok(Value::Bool(result)),
-            // For invalid versions, return false instead of error
-            // This allows if statements to continue to the next branch
+            // For invalid versions, return false instead of error (matching Java behavior).
+            // This allows if statements to gracefully fall through to the next branch
+            // rather than failing the entire flag evaluation.
             Err(_) => Ok(Value::Bool(false)),
         }
     }

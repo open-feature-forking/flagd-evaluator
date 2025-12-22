@@ -925,11 +925,13 @@ mod tests {
 
     #[test]
     fn test_sem_ver_operator_invalid_version() {
+        // Invalid versions should return false (matching Java behavior)
+        // This allows graceful fallthrough in if statements
         let rule = r#"{"sem_ver": [{"var": "version"}, "=", "1.2.3"]}"#;
         let data = r#"{"version": "not.a.version"}"#;
         let result = evaluate_json(rule, data);
-        assert!(!result.success);
-        assert!(result.error.is_some());
+        assert!(result.success);
+        assert_eq!(result.result, Some(json!(false)));
     }
 
     // ============================================================================
