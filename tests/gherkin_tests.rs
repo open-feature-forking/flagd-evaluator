@@ -252,7 +252,33 @@ async fn when_flag_evaluated(world: &mut FlagdWorld) {
         }
     };
 
-    world.last_result = Some(result);
+    // Apply mapping layer for backward compatibility with Gherkin tests
+    // The WASM module now uses semantic reasons (Fallback, Disabled) with error codes
+    // for better future compatibility, but tests expect the old non-semantic behavior
+    let mapped_result = map_semantic_result_for_tests(result);
+
+    world.last_result = Some(mapped_result);
+}
+
+// ============================================================================
+// Mapping Layer for Test Compatibility
+// ============================================================================
+
+/// Maps semantic evaluation results to test-expected format.
+///
+/// The evaluator now returns semantic reasons with appropriate error codes
+/// for future compatibility. The Gherkin tests have their own mapping where:
+/// - Test string "ERROR" maps to ResolutionReason::Fallback (line 341)
+/// - Test string "FLAG_NOT_FOUND" maps to ResolutionReason::Error (line 342)
+///
+/// Currently, no transformation is needed as the test mappings already align
+/// with our semantic reasons. This function exists as a hook for future
+/// compatibility mappings if needed.
+fn map_semantic_result_for_tests(
+    result: flagd_evaluator::evaluation::EvaluationResult,
+) -> flagd_evaluator::evaluation::EvaluationResult {
+    // No mapping needed - tests already use the correct semantic reasons
+    result
 }
 
 // ============================================================================
@@ -334,21 +360,13 @@ async fn then_error_code(world: &mut FlagdWorld, expected: String) {
             _ => panic!("Unknown error code: {}", expected),
         };
 
-        if result.reason == ResolutionReason::Fallback {
-            assert_eq!(
-                result.error_code,
-                None,
-                "Expected error code to be none for Fallback as it is expected"
-            );
-        }else {
-            assert_eq!(
-                result.error_code,
-                Some(expected_code.clone()),
-                "Expected error code {:?} but got {:?}",
-                expected_code,
-                result.error_code
-            );
-        }
+        assert_eq!(
+            result.error_code,
+            Some(expected_code.clone()),
+            "Expected error code {:?} but got {:?}",
+            expected_code,
+            result.error_code
+        );
     }
 }
 
