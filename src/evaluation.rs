@@ -164,13 +164,21 @@ impl EvaluationResult {
     }
 
     /// Creates a fallback result.
-    pub fn fallback() -> Self {
+    ///
+    /// This is used when no defaultVariant is set, signaling the client
+    /// to use its code-defined default value. The FALLBACK reason provides
+    /// more semantic information than ERROR, though consumers may map this
+    /// to FLAG_NOT_FOUND for compatibility.
+    pub fn fallback(flag_key: &str) -> Self {
         Self {
             value: Value::Null,
             variant: None,
             reason: ResolutionReason::Fallback,
-            error_code: None,
-            error_message: Some("No defaultVariant set, using code fallback".to_string()),
+            error_code: Some(ErrorCode::FlagNotFound),
+            error_message: Some(format!(
+                "Flag '{}' has no default variant defined, will use code default",
+                flag_key
+            )),
             flag_metadata: None,
         }
     }
@@ -310,30 +318,32 @@ pub fn evaluate_flag(
     let merged_metadata = merge_metadata(flag_set_metadata, &flag.metadata);
 
     // Check if flag is disabled
+    // Return Disabled reason with FLAG_NOT_FOUND error code to signal the client
+    // to use its code-defined default value. The Disabled reason provides better
+    // semantic information for future use, while FLAG_NOT_FOUND maintains compatibility.
     if flag.state == "DISABLED" {
-        // Return the default variant value
-        return match flag.default_variant.as_ref() {
-            None => EvaluationResult::fallback(),
-            Some(default_variant) => match flag.variants.get(default_variant) {
-                Some(value) => {
-                    let result = EvaluationResult::disabled(value.clone(), default_variant.clone());
-                    with_metadata(merged_metadata, result)
-                }
-                None => EvaluationResult::error(
-                    ErrorCode::General,
-                    format!(
-                        "Default variant '{}' not found in flag variants",
-                        default_variant
-                    ),
-                ),
-            },
+        return EvaluationResult {
+            value: Value::Null,
+            variant: None,
+            reason: ResolutionReason::Disabled,
+            error_code: Some(ErrorCode::FlagNotFound),
+            error_message: Some(format!("flag: {} is disabled", flag_key)),
+            flag_metadata: merged_metadata,
         };
     }
 
-    // If there's no targeting rule, return the default variant
-    if flag.targeting.is_none() {
+    // Check if there's no targeting rule or if it's an empty object "{}"
+    // According to Java implementation (InProcessResolver.java:200-203),
+    // an empty targeting string "{}" should be treated as STATIC (no targeting)
+    let is_empty_targeting = match &flag.targeting {
+        None => true,
+        Some(Value::Object(map)) if map.is_empty() => true,
+        _ => false,
+    };
+
+    if is_empty_targeting {
         return match flag.default_variant.as_ref() {
-            None => EvaluationResult::fallback(),
+            None => EvaluationResult::fallback(flag_key),
             Some(default_variant) => match flag.variants.get(default_variant) {
                 Some(value) => {
                     let result =
@@ -366,6 +376,27 @@ pub fn evaluate_flag(
 
     match logic.evaluate_json(&rule_str, &context_str) {
         Ok(result) => {
+            // Check if targeting returned null - this means use default variant
+            // This matches the Java implementation behavior
+            if result.is_null() {
+                return match flag.default_variant.as_ref() {
+                    None => EvaluationResult::fallback(flag_key),
+                    Some(default_variant) => match flag.variants.get(default_variant) {
+                        Some(value) => {
+                            let result = EvaluationResult::default_result(value.clone(), default_variant.clone());
+                            with_metadata(merged_metadata, result)
+                        }
+                        None => EvaluationResult::error(
+                            ErrorCode::General,
+                            format!(
+                                "Default variant '{}' not found in flag variants",
+                                default_variant
+                            ),
+                        ),
+                    },
+                };
+            }
+
             // The result should be a variant name (string)
             let variant_name = match &result {
                 Value::String(s) => s.clone(),
@@ -377,6 +408,28 @@ pub fn evaluate_flag(
                     }
                 }
             };
+
+            // Check for empty variant name - if both resolvedVariant and defaultVariant are empty,
+            // return FALLBACK to signal "use code default" (Java implementation lines 223-229)
+            if variant_name.is_empty() {
+                return match flag.default_variant.as_ref() {
+                    None => {
+                        // Both are empty - return FALLBACK (use code default)
+                        EvaluationResult::fallback(flag_key)
+                    }
+                    Some(default_variant) if default_variant.is_empty() => {
+                        // Default variant is also empty - return FALLBACK (use code default)
+                        EvaluationResult::fallback(flag_key)
+                    }
+                    Some(_) => {
+                        // Resolved variant is empty but default is not - this is an error
+                        EvaluationResult::error(
+                            ErrorCode::General,
+                            format!("Targeting rule returned empty variant name for flag '{}'", flag_key),
+                        )
+                    }
+                };
+            }
 
             // Look up the variant value
             match flag.variants.get(&variant_name) {
@@ -433,8 +486,11 @@ pub fn evaluate_bool_flag(
 ) -> EvaluationResult {
     let result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled {
         return result;
     }
 
@@ -471,8 +527,11 @@ pub fn evaluate_string_flag(
 ) -> EvaluationResult {
     let result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled {
         return result;
     }
 
@@ -494,7 +553,7 @@ pub fn evaluate_string_flag(
 ///
 /// This function evaluates the flag and ensures the result is an integer value.
 /// If the value is not an integer (i64), it returns a TYPE_MISMATCH error.
-/// Note: Floating point numbers are not considered valid integers.
+/// Note: Floating point numbers are coerced to integers (matching Java behavior).
 ///
 /// # Arguments
 /// * `flag` - The feature flag to evaluate
@@ -508,11 +567,23 @@ pub fn evaluate_int_flag(
     context: &Value,
     flag_set_metadata: &std::collections::HashMap<String, Value>,
 ) -> EvaluationResult {
-    let result = evaluate_flag(flag, context, flag_set_metadata);
+    let mut result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled {
         return result;
+    }
+
+    // Type coercion: if this is a double and we are trying to resolve an integer, convert
+    // This matches the Java implementation behavior (InProcessResolver.java:239-241)
+    if result.value.is_f64() {
+        if let Some(f) = result.value.as_f64() {
+            result.value = Value::Number(serde_json::Number::from(f as i64));
+            return result;
+        }
     }
 
     // Check if the value is an integer (i64)
@@ -534,6 +605,7 @@ pub fn evaluate_int_flag(
 ///
 /// This function evaluates the flag and ensures the result is a numeric value.
 /// Both integers and floating point numbers are accepted as valid float values.
+/// Integers are automatically coerced to doubles (matching Java behavior).
 ///
 /// # Arguments
 /// * `flag` - The feature flag to evaluate
@@ -547,10 +619,30 @@ pub fn evaluate_float_flag(
     context: &Value,
     flag_set_metadata: &std::collections::HashMap<String, Value>,
 ) -> EvaluationResult {
-    let result = evaluate_flag(flag, context, flag_set_metadata);
+    let mut result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled {
+        return result;
+    }
+
+    // Type coercion: if this is an integer and we are trying to resolve a double, convert
+    // This matches the Java implementation behavior (InProcessResolver.java:236-238)
+    if result.value.is_i64() || result.value.is_u64() {
+        if let Some(i) = result.value.as_i64() {
+            // Convert integer to float
+            if let Some(num) = serde_json::Number::from_f64(i as f64) {
+                result.value = Value::Number(num);
+            }
+        } else if let Some(u) = result.value.as_u64() {
+            // Convert unsigned integer to float
+            if let Some(num) = serde_json::Number::from_f64(u as f64) {
+                result.value = Value::Number(num);
+            }
+        }
         return result;
     }
 
@@ -587,8 +679,11 @@ pub fn evaluate_object_flag(
 ) -> EvaluationResult {
     let result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled {
         return result;
     }
 
@@ -673,9 +768,13 @@ mod tests {
         let context = json!({});
 
         let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
-        assert_eq!(result.value, json!(false));
-        assert_eq!(result.variant, Some("off".to_string()));
+        // Disabled flags return Disabled reason with FLAG_NOT_FOUND error code
+        // Value is null to signal "use code default"
+        assert_eq!(result.value, Value::Null);
+        assert_eq!(result.variant, None);
         assert_eq!(result.reason, ResolutionReason::Disabled);
+        assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
+        assert!(result.error_message.is_some());
     }
 
     #[test]
@@ -803,9 +902,11 @@ mod tests {
         let context = json!({});
 
         let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
-        // The targeting rule returns the $flagd.flagKey variant name, which should be looked up
-        // Since "test_flag" is not a valid variant, it should fall back to default
-        assert_eq!(result.variant, Some("off".to_string()));
+        // The targeting rule returns the $flagd.flagKey variant name ("test_flag")
+        // Since "test_flag" is not a valid variant, it should return an error (Java-compatible behavior)
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::General));
+        assert!(result.error_message.is_some());
     }
 
     #[test]
@@ -886,9 +987,10 @@ mod tests {
         let context = json!({});
         let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
 
-        // The result should fall back to default because timestamp number
-        // won't match "timestamp" string variant name
-        assert_eq!(result.reason, ResolutionReason::Default);
+        // The targeting returns a numeric timestamp which gets converted to a string
+        // but won't match "timestamp" variant name, so it should return an error (Java-compatible behavior)
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::General));
     }
 
     #[test]
@@ -1146,10 +1248,13 @@ mod tests {
 
         let result = evaluate_flag(&flag, &json!({}), &empty_flag_set_metadata());
 
+        // Disabled flags return Disabled reason with FLAG_NOT_FOUND error code
         assert_eq!(result.reason, ResolutionReason::Disabled);
+        assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
+        // Metadata should still be included
         assert!(result.flag_metadata.is_some());
         assert_eq!(
-            result.flag_metadata.unwrap().get("reason"),
+            result.flag_metadata.as_ref().unwrap().get("reason"),
             Some(&json!("deprecated"))
         );
     }
@@ -1325,12 +1430,11 @@ mod tests {
         };
 
         let result = evaluate_int_flag(&flag, &json!({}), &empty_flag_set_metadata());
-        assert_eq!(result.reason, ResolutionReason::Error);
-        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
-        assert!(result
-            .error_message
-            .unwrap()
-            .contains("Expected integer, got float"));
+        // Float is coerced to integer (Java-compatible behavior)
+        // 3.14 becomes 3
+        assert_eq!(result.value, json!(3));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
     }
 
     #[test]
@@ -1380,7 +1484,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_float_flag_success_with_int() {
-        // Float evaluation should accept integers as valid floats
+        // Float evaluation should accept integers and coerce them to floats
         let mut variants = HashMap::new();
         variants.insert("low".to_string(), json!(1));
         variants.insert("high".to_string(), json!(10));
@@ -1395,7 +1499,8 @@ mod tests {
         };
 
         let result = evaluate_float_flag(&flag, &json!({}), &empty_flag_set_metadata());
-        assert_eq!(result.value, json!(1));
+        // Integer is coerced to float (Java-compatible behavior)
+        assert_eq!(result.value, json!(1.0));
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
     }
@@ -1528,9 +1633,10 @@ mod tests {
         };
 
         let result = evaluate_int_flag(&flag, &json!({}), &empty_flag_set_metadata());
-        assert_eq!(result.value, json!(10));
+        // Disabled flags return Disabled reason with FLAG_NOT_FOUND error code
+        assert_eq!(result.value, Value::Null);
         assert_eq!(result.reason, ResolutionReason::Disabled);
-        assert!(result.error_code.is_none());
+        assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
     }
 
     #[test]

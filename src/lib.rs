@@ -1212,8 +1212,10 @@ mod tests {
             context_bytes.len() as u32,
         );
 
-        assert_eq!(result.value, json!(false));
+        // Disabled flags return null value with Disabled reason to signal "use code default"
+        assert_eq!(result.value, Value::Null);
         assert_eq!(result.reason, ResolutionReason::Disabled);
+        assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
     }
 
     #[test]
@@ -1452,10 +1454,10 @@ mod tests {
             context_bytes.len() as u32,
         );
 
-        // Should fall back to default variant when unknown variant is returned
-        assert_eq!(result.reason, ResolutionReason::Default);
-        assert_eq!(result.value, json!(false));
-        assert_eq!(result.variant, Some("off".to_string()));
+        // Unknown variant should return an error (Java-compatible behavior)
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::General));
+        assert!(result.error_message.is_some());
     }
 
     #[test]
@@ -1998,9 +2000,11 @@ mod tests {
         update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
 
         let result = evaluate_integer_internal("floatFlag", "{}");
-        assert_eq!(result.reason, ResolutionReason::Error);
-        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
-        assert!(result.error_message.unwrap().contains("Expected integer"));
+        // Float is coerced to integer (Java-compatible behavior)
+        // 1.5 becomes 1
+        assert_eq!(result.value, json!(1));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
     }
 
     #[test]
@@ -2050,7 +2054,8 @@ mod tests {
         update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
 
         let result = evaluate_float_internal("intFlag", "{}");
-        assert_eq!(result.value, json!(10));
+        // Integer is coerced to float (Java-compatible behavior)
+        assert_eq!(result.value, json!(10.0));
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
     }
@@ -2258,11 +2263,15 @@ mod tests {
         update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
 
         let bool_result = evaluate_boolean_internal("disabledBool", "{}");
-        assert_eq!(bool_result.value, json!(false));
+        // Disabled flags return null value with Disabled reason to signal "use code default"
+        assert_eq!(bool_result.value, Value::Null);
         assert_eq!(bool_result.reason, ResolutionReason::Disabled);
+        assert_eq!(bool_result.error_code, Some(ErrorCode::FlagNotFound));
 
         let string_result = evaluate_string_internal("disabledString", "{}");
-        assert_eq!(string_result.value, json!("azure"));
+        // Disabled flags return null value with Disabled reason to signal "use code default"
+        assert_eq!(string_result.value, Value::Null);
         assert_eq!(string_result.reason, ResolutionReason::Disabled);
+        assert_eq!(string_result.error_code, Some(ErrorCode::FlagNotFound));
     }
 }
