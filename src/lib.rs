@@ -56,7 +56,7 @@ pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
 pub use model::{FeatureFlag, ParsingResult, UpdateStateResponse};
-pub use operators::{create_evaluator, fractional, sem_ver};
+pub use operators::{create_evaluator};
 pub use storage::{
     clear_flag_state, get_flag_state, set_validation_mode, update_flag_state, ValidationMode,
 };

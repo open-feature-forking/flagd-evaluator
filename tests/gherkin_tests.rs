@@ -236,20 +236,7 @@ async fn when_flag_evaluated(world: &mut FlagdWorld) {
     let result = if let Some(flag) = flag {
         evaluate_flag(flag, &world.context, &state.flag_set_metadata)
     } else {
-        // Flag not found
-        let default_val = world
-            .current_default
-            .as_ref()
-            .cloned()
-            .unwrap_or(json!(null));
-        flagd_evaluator::evaluation::EvaluationResult {
-            value: default_val,
-            variant: None,
-            reason: ResolutionReason::Error,
-            error_code: Some(ErrorCode::FlagNotFound),
-            error_message: Some(format!("Flag '{}' not found", flag_key)),
-            flag_metadata: None,
-        }
+        panic!()
     };
 
     // Apply mapping layer for backward compatibility with Gherkin tests

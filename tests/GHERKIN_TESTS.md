@@ -119,6 +119,5 @@ Feature: flagd evaluations
 
 - [ ] Fix thread-local storage issues for async tests
 - [ ] Add more detailed error reporting
-- [ ] Support for additional feature files (config.feature, events.feature)
 - [ ] Performance benchmarking using Gherkin scenarios
 - [ ] CI integration for continuous spec compliance checking
