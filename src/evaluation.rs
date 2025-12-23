@@ -340,7 +340,7 @@ pub fn evaluate_flag(
     if is_empty_targeting {
         return match flag.default_variant.as_ref() {
             None => EvaluationResult::fallback(flag_key),
-            Some(ref value) if value.is_empty() => EvaluationResult::fallback(flag_key),
+            Some(value) if value.is_empty() => EvaluationResult::fallback(flag_key),
             Some(default_variant) => match flag.variants.get(default_variant) {
                 Some(value) => {
                     let result =
@@ -378,7 +378,7 @@ pub fn evaluate_flag(
             if result.is_null() {
                 return match flag.default_variant.as_ref() {
                     None => EvaluationResult::fallback(flag_key),
-                    Some(ref value) if value.is_empty() => EvaluationResult::fallback(flag_key),
+                    Some(value) if value.is_empty() => EvaluationResult::fallback(flag_key),
                     Some(default_variant) => match flag.variants.get(default_variant) {
                         Some(value) => {
                             let result = EvaluationResult::default_result(

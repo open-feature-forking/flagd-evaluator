@@ -488,7 +488,10 @@ mod tests {
         assert!(!result.flag_set_metadata.contains_key("$evaluators"));
 
         // Metadata fields should be flattened
-        assert_eq!(result.flag_set_metadata.get("environment"), Some(&json!("production")));
+        assert_eq!(
+            result.flag_set_metadata.get("environment"),
+            Some(&json!("production"))
+        );
         assert_eq!(result.flag_set_metadata.get("version"), Some(&json!(2)));
     }
 

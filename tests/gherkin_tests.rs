@@ -4,6 +4,7 @@
 //! to ensure compatibility with the flagd specification.
 
 use cucumber::{given, then, when, World};
+use flagd_evaluator::ResolutionReason::Fallback;
 use flagd_evaluator::{
     evaluation::{evaluate_flag, ErrorCode, ResolutionReason},
     set_validation_mode,
@@ -14,7 +15,6 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use flagd_evaluator::ResolutionReason::Fallback;
 
 /// World state for Gherkin tests
 #[derive(Debug, Default, World)]
@@ -31,7 +31,7 @@ pub struct FlagdWorld {
     current_flag_type: Option<String>,
     /// Default value for current flag
     current_default: Option<Value>,
-    file: Option<String>
+    file: Option<String>,
 }
 
 impl FlagdWorld {
@@ -296,7 +296,7 @@ async fn then_resolved_value(world: &mut FlagdWorld, expected: String) {
             world
                 .current_default
                 .clone()
-                .unwrap_or_else( || { panic!("should be here") }),
+                .unwrap_or_else(|| { panic!("should be here") }),
             expected_value,
             "Expected value {:?} but got {:?} - fallbacked to default",
             expected_value,
@@ -426,7 +426,7 @@ async fn run_evaluation_tests() {
                 !scenario
                     .tags
                     .iter()
-                    .any(|tag| tag == "grace"  || tag == "caching")
+                    .any(|tag| tag == "grace" || tag == "caching")
             },
         )
         .await;

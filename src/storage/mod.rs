@@ -388,7 +388,10 @@ mod tests {
         // $schema should NOT be in flag_set_metadata
         assert!(!state.flag_set_metadata.contains_key("$schema"));
         // But the flattened metadata should be there
-        assert_eq!(state.flag_set_metadata.get("environment"), Some(&json!("test")));
+        assert_eq!(
+            state.flag_set_metadata.get("environment"),
+            Some(&json!("test"))
+        );
         assert_eq!(state.flag_set_metadata.get("version"), Some(&json!(1)));
     }
 

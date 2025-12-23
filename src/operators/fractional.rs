@@ -162,8 +162,8 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
     // Using murmurhash3_x86_32 to match Apache Commons MurmurHash3.hash32x86
     // Java code: Math.abs(mmrHash) * 1.0f / Integer.MAX_VALUE * 100
     let hash: u32 = murmurhash3_x86_32(bucket_key.as_bytes(), 0);
-    let hash_i32 = hash as i32;  // Cast to signed integer (may be negative)
-    let abs_hash = hash_i32.abs();  // Take absolute value like Java does
+    let hash_i32 = hash as i32; // Cast to signed integer (may be negative)
+    let abs_hash = hash_i32.abs(); // Take absolute value like Java does
     let bucket_value = (abs_hash as f64 / i32::MAX as f64) * 100.0;
 
     // Find which bucket this value falls into by accumulating weights
@@ -179,9 +179,8 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
     Ok(bucket_defs
         .last()
         .map(|(name, _)| name.clone())
-        .unwrap_or_else(|| "".to_string()))
+        .unwrap_or_default())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -272,25 +271,25 @@ mod tests {
 #[cfg(test)]
 mod hash_debug {
     use super::*;
-    
+
     #[test]
     fn debug_hash_calculations() {
         let test_keys = vec![
             "fractional-flag-shorthandjon@company.com",
             "fractional-flag-shorthandjane@company.com",
         ];
-        
+
         for key in test_keys {
             let hash_u32 = murmurhash3_x86_32(key.as_bytes(), 0);
             let hash_i32 = hash_u32 as i32;
             let abs_hash = hash_i32.abs();
-            
+
             // Current method
             let bucket_current = (hash_u32 as f64 / u32::MAX as f64) * 100.0;
-            
+
             // Java-style method
             let bucket_java = (abs_hash as f64 / i32::MAX as f64) * 100.0;
-            
+
             println!("\nKey: {}", key);
             println!("  Hash (u32): {}", hash_u32);
             println!("  Hash (i32): {}", hash_i32);
@@ -301,33 +300,37 @@ mod hash_debug {
     }
 }
 
-    #[test]
-    fn debug_shorthand_keys() {
-        let flag_key = "fractional-flag-shorthand";
-        let test_cases = vec![
-            ("jon@company.com", "heads"),   // Expected
-            ("jane@company.com", "tails"),  // Expected
-        ];
-        
-        for (targeting_key, expected) in test_cases {
-            let bucket_key = format!("{}{}", flag_key, targeting_key);
-            let hash: u32 = murmurhash3_x86_32(bucket_key.as_bytes(), 0);
-            let hash_i32 = hash as i32;
-            let abs_hash = hash_i32.abs();
-            let bucket_value = (abs_hash as f64 / i32::MAX as f64) * 100.0;
-            
-            println!("\nTargeting Key: {}", targeting_key);
-            println!("  Bucket Key: {}", bucket_key);
-            println!("  Hash (u32): {}", hash);
-            println!("  Hash (i32): {}", hash_i32);
-            println!("  Abs: {}", abs_hash);
-            println!("  Bucket Value: {:.6}", bucket_value);
-            println!("  Expected: {}", expected);
-            
-            // Buckets: [("heads", 1), ("tails", 1)] total=2
-            // cumulative: heads=50%, tails=100%
-            let result = if bucket_value < 50.0 { "heads" } else { "tails" };
-            println!("  Result: {}", result);
-            println!("  Match: {}", result == expected);
-        }
+#[test]
+fn debug_shorthand_keys() {
+    let flag_key = "fractional-flag-shorthand";
+    let test_cases = vec![
+        ("jon@company.com", "heads"),  // Expected
+        ("jane@company.com", "tails"), // Expected
+    ];
+
+    for (targeting_key, expected) in test_cases {
+        let bucket_key = format!("{}{}", flag_key, targeting_key);
+        let hash: u32 = murmurhash3_x86_32(bucket_key.as_bytes(), 0);
+        let hash_i32 = hash as i32;
+        let abs_hash = hash_i32.abs();
+        let bucket_value = (abs_hash as f64 / i32::MAX as f64) * 100.0;
+
+        println!("\nTargeting Key: {}", targeting_key);
+        println!("  Bucket Key: {}", bucket_key);
+        println!("  Hash (u32): {}", hash);
+        println!("  Hash (i32): {}", hash_i32);
+        println!("  Abs: {}", abs_hash);
+        println!("  Bucket Value: {:.6}", bucket_value);
+        println!("  Expected: {}", expected);
+
+        // Buckets: [("heads", 1), ("tails", 1)] total=2
+        // cumulative: heads=50%, tails=100%
+        let result = if bucket_value < 50.0 {
+            "heads"
+        } else {
+            "tails"
+        };
+        println!("  Result: {}", result);
+        println!("  Match: {}", result == expected);
     }
+}
