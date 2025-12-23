@@ -242,13 +242,13 @@ impl ParsingResult {
             flags.insert(flag_name.clone(), flag);
         }
 
-        // Extract optional metadata (from root level or other sources)
+        // Extract flag-set metadata from top-level "metadata" object
         let mut flag_set_metadata = HashMap::new();
 
-        // Check for $schema, $evaluators, or other top-level metadata
-        if let Some(obj) = config.as_object() {
-            for (key, value) in obj {
-                if key != "flags" {
+        // Flatten top-level "metadata" object into flag_set_metadata
+        if let Some(metadata_value) = config.get("metadata") {
+            if let Some(metadata_obj) = metadata_value.as_object() {
+                for (key, value) in metadata_obj {
                     flag_set_metadata.insert(key.clone(), value.clone());
                 }
             }
@@ -468,6 +468,10 @@ mod tests {
                     "defaultVariant": "on"
                 }
             },
+            "metadata": {
+                "environment": "production",
+                "version": 2
+            },
             "$evaluators": {
                 "emailWithFaas": {
                     "in": ["@faas.com", {"var": ["email"]}]
@@ -478,9 +482,14 @@ mod tests {
         let result = ParsingResult::parse(config).unwrap();
         assert_eq!(result.flags.len(), 1);
 
-        // Check that metadata includes $schema and $evaluators
-        assert!(result.flag_set_metadata.contains_key("$schema"));
-        assert!(result.flag_set_metadata.contains_key("$evaluators"));
+        // Check that flag_set_metadata contains only the flattened "metadata" object
+        // $schema and $evaluators should NOT be in flag_set_metadata
+        assert!(!result.flag_set_metadata.contains_key("$schema"));
+        assert!(!result.flag_set_metadata.contains_key("$evaluators"));
+
+        // Metadata fields should be flattened
+        assert_eq!(result.flag_set_metadata.get("environment"), Some(&json!("production")));
+        assert_eq!(result.flag_set_metadata.get("version"), Some(&json!(2)));
     }
 
     #[test]
@@ -714,8 +723,8 @@ mod tests {
         let result = ParsingResult::parse(config).unwrap();
         assert_eq!(result.flags.len(), 1);
 
-        // Verify $evaluators is stored in metadata
-        assert!(result.flag_set_metadata.contains_key("$evaluators"));
+        // Verify evaluators are used for $ref resolution (not stored in flag_set_metadata)
+        assert!(!result.flag_set_metadata.contains_key("$evaluators"));
 
         // Verify the $ref was resolved in the targeting rule
         let flag = result.flags.get("adminFlag").unwrap();

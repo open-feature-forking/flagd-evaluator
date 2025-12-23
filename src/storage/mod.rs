@@ -255,6 +255,7 @@ pub fn clear_flag_state() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_update_flag_state_success() {
@@ -369,6 +370,10 @@ mod tests {
     fn test_update_flag_state_with_metadata() {
         let config = r#"{
             "$schema": "https://flagd.dev/schema/v0/flags.json",
+            "metadata": {
+                "environment": "test",
+                "version": 1
+            },
             "flags": {
                 "myFlag": {
                     "state": "ENABLED",
@@ -380,7 +385,11 @@ mod tests {
 
         update_flag_state(config).unwrap();
         let state = get_flag_state().unwrap();
-        assert!(state.flag_set_metadata.contains_key("$schema"));
+        // $schema should NOT be in flag_set_metadata
+        assert!(!state.flag_set_metadata.contains_key("$schema"));
+        // But the flattened metadata should be there
+        assert_eq!(state.flag_set_metadata.get("environment"), Some(&json!("test")));
+        assert_eq!(state.flag_set_metadata.get("version"), Some(&json!(1)));
     }
 
     #[test]
