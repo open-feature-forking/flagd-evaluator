@@ -36,6 +36,51 @@
 //! // 6. Free allocated memory
 //! ```
 
+use std::panic;
+use std::sync::Once;
+
+static PANIC_HOOK_INIT: Once = Once::new();
+
+// Import optional host function for getting current time
+// If the host doesn't provide this, we'll fall back to a default value
+#[cfg(target_family = "wasm")]
+#[link(wasm_import_module = "host")]
+extern "C" {
+    /// Gets the current Unix timestamp in seconds from the host environment.
+    ///
+    /// This function should be provided by the host (e.g., Java/Chicory) to supply
+    /// the current time for $flagd.timestamp context enrichment.
+    ///
+    /// # Returns
+    /// Unix timestamp in seconds since epoch (1970-01-01 00:00:00 UTC)
+    #[link_name = "get_current_time_unix_seconds"]
+    fn host_get_current_time() -> u64;
+}
+
+/// Initialize panic hook to prevent unreachable instructions in WASM
+fn init_panic_hook() {
+    PANIC_HOOK_INIT.call_once(|| {
+        panic::set_hook(Box::new(|panic_info| {
+            let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+                *s
+            } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+                s.as_str()
+            } else {
+                "Unknown panic"
+            };
+
+            let location = if let Some(location) = panic_info.location() {
+                format!(" at {}:{}:{}", location.file(), location.line(), location.column())
+            } else {
+                String::new()
+            };
+
+            // This will be visible in Chicory's error output
+            eprintln!("PANIC in WASM module: {}{}", msg, location);
+        }));
+    });
+}
+
 pub mod error;
 pub mod evaluation;
 pub mod memory;
@@ -43,6 +88,31 @@ pub mod model;
 pub mod operators;
 pub mod storage;
 pub mod validation;
+
+/// Gets the current Unix timestamp in seconds.
+///
+/// This function attempts to call the host-provided `get_current_time_unix_seconds` function.
+/// If the host doesn't provide this function (linking error), or if calling it fails,
+/// it defaults to returning 0.
+///
+/// # Returns
+/// Unix timestamp in seconds, or 0 if unavailable
+pub fn get_current_time() -> u64 {
+    #[cfg(target_family = "wasm")]
+    {
+        // In WASM, try to call the host function
+        // If it's not provided, this will cause a link error that we catch
+        std::panic::catch_unwind(|| unsafe { host_get_current_time() }).unwrap_or(0)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        // In native code (tests, CLI), use SystemTime
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+}
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -157,22 +227,42 @@ fn evaluate_logic_internal(
     data_ptr: *const u8,
     data_len: u32,
 ) -> EvaluationResponse {
-    // SAFETY: The caller guarantees valid memory regions
-    let rule_str = match unsafe { string_from_memory(rule_ptr, rule_len) } {
-        Ok(s) => s,
-        Err(e) => return EvaluationResponse::error(format!("Failed to read rule: {}", e)),
-    };
+    // Initialize panic hook for better error messages
+    init_panic_hook();
 
-    let data_str = match unsafe { string_from_memory(data_ptr, data_len) } {
-        Ok(s) => s,
-        Err(e) => return EvaluationResponse::error(format!("Failed to read data: {}", e)),
-    };
+    // Catch any panics and convert them to error responses
+    let result = std::panic::catch_unwind(|| {
+        // SAFETY: The caller guarantees valid memory regions
+        let rule_str = match unsafe { string_from_memory(rule_ptr, rule_len) } {
+            Ok(s) => s,
+            Err(e) => return EvaluationResponse::error(format!("Failed to read rule: {}", e)),
+        };
 
-    // Use datalogic-rs with custom operators registered
-    let logic = create_evaluator();
-    match logic.evaluate_json(&rule_str, &data_str) {
-        Ok(result) => EvaluationResponse::success(result),
-        Err(e) => EvaluationResponse::error(format!("{}", e)),
+        let data_str = match unsafe { string_from_memory(data_ptr, data_len) } {
+            Ok(s) => s,
+            Err(e) => return EvaluationResponse::error(format!("Failed to read data: {}", e)),
+        };
+
+        // Use datalogic-rs with custom operators registered
+        let logic = create_evaluator();
+        match logic.evaluate_json(&rule_str, &data_str) {
+            Ok(result) => EvaluationResponse::success(result),
+            Err(e) => EvaluationResponse::error(format!("{}", e)),
+        }
+    });
+
+    match result {
+        Ok(response) => response,
+        Err(panic_err) => {
+            let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                format!("Evaluation panic: {}", s)
+            } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                format!("Evaluation panic: {}", s)
+            } else {
+                "Evaluation panic: unknown error".to_string()
+            };
+            EvaluationResponse::error(msg)
+        }
     }
 }
 
@@ -291,6 +381,9 @@ pub extern "C" fn update_state(config_ptr: *const u8, config_len: u32) -> u64 {
 
 /// Internal implementation of update_state.
 fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
+    // Initialize panic hook for better error messages
+    init_panic_hook();
+
     // SAFETY: The caller guarantees valid memory regions
     let config_str = match unsafe { string_from_memory(config_ptr, config_len) } {
         Ok(s) => s,
@@ -376,63 +469,83 @@ fn evaluate_internal(
     context_ptr: *const u8,
     context_len: u32,
 ) -> EvaluationResult {
-    // SAFETY: The caller guarantees valid memory regions
-    let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
-        Ok(s) => s,
-        Err(e) => {
-            return EvaluationResult::error(
-                ErrorCode::ParseError,
-                format!("Failed to read flag key: {}", e),
-            )
-        }
-    };
+    // Initialize panic hook for better error messages
+    init_panic_hook();
 
-    let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
-        Ok(s) => s,
-        Err(e) => {
-            return EvaluationResult::error(
-                ErrorCode::ParseError,
-                format!("Failed to read context: {}", e),
-            )
-        }
-    };
-
-    // Parse the context JSON
-    let context: Value = match serde_json::from_str(&context_str) {
-        Ok(v) => v,
-        Err(e) => {
-            return EvaluationResult::error(
-                ErrorCode::ParseError,
-                format!("Failed to parse context JSON: {}", e),
-            )
-        }
-    };
-
-    // Retrieve the flag from state
-    let flag_state = match get_flag_state() {
-        Some(state) => state,
-        None => {
-            return EvaluationResult::error(
-                ErrorCode::General,
-                "Flag state not initialized. Call update_state first.",
-            )
-        }
-    };
-
-    let flag = match flag_state.flags.get(&flag_key) {
-        Some(f) => f.clone(),
-        None => {
-            // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
-            let mut result = EvaluationResult::flag_not_found(&flag_key);
-            if !flag_state.flag_set_metadata.is_empty() {
-                result = result.with_metadata(flag_state.flag_set_metadata.clone());
+    // Catch any panics and convert them to error responses
+    let result = std::panic::catch_unwind(|| {
+        // SAFETY: The caller guarantees valid memory regions
+        let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
+            Ok(s) => s,
+            Err(e) => {
+                return EvaluationResult::error(
+                    ErrorCode::ParseError,
+                    format!("Failed to read flag key: {}", e),
+                )
             }
-            return result;
-        }
-    };
+        };
 
-    // Evaluate the flag with merged metadata (flag-set + flag metadata)
-    evaluate_flag(&flag, &context, &flag_state.flag_set_metadata)
+        let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
+            Ok(s) => s,
+            Err(e) => {
+                return EvaluationResult::error(
+                    ErrorCode::ParseError,
+                    format!("Failed to read context: {}", e),
+                )
+            }
+        };
+
+        // Parse the context JSON
+        let context: Value = match serde_json::from_str(&context_str) {
+            Ok(v) => v,
+            Err(e) => {
+                return EvaluationResult::error(
+                    ErrorCode::ParseError,
+                    format!("Failed to parse context JSON: {}", e),
+                )
+            }
+        };
+
+        // Retrieve the flag from state
+        let flag_state = match get_flag_state() {
+            Some(state) => state,
+            None => {
+                return EvaluationResult::error(
+                    ErrorCode::FlagNotFound,
+                    "Flag state not initialized. Call update_state first.",
+                )
+            }
+        };
+
+        let flag = match flag_state.flags.get(&flag_key) {
+            Some(f) => f.clone(),
+            None => {
+                // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
+                let mut result = EvaluationResult::flag_not_found(&flag_key);
+                if !flag_state.flag_set_metadata.is_empty() {
+                    result = result.with_metadata(flag_state.flag_set_metadata.clone());
+                }
+                return result;
+            }
+        };
+
+        // Evaluate the flag with merged metadata (flag-set + flag metadata)
+        evaluate_flag(&flag, &context, &flag_state.flag_set_metadata)
+    });
+
+    match result {
+        Ok(eval_result) => eval_result,
+        Err(panic_err) => {
+            let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                format!("Evaluation panic: {}", s)
+            } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                format!("Evaluation panic: {}", s)
+            } else {
+                "Evaluation panic: unknown error".to_string()
+            };
+            EvaluationResult::error(ErrorCode::General, msg)
+        }
+    }
 }
 
 /// Evaluates a boolean feature flag against the provided context.
@@ -646,63 +759,83 @@ fn evaluate_typed_internal<F>(
 where
     F: Fn(&FeatureFlag, &Value, &std::collections::HashMap<String, Value>) -> EvaluationResult,
 {
-    // SAFETY: The caller guarantees valid memory regions
-    let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
-        Ok(s) => s,
-        Err(e) => {
-            return EvaluationResult::error(
-                ErrorCode::ParseError,
-                format!("Failed to read flag key: {}", e),
-            )
-        }
-    };
+    // Initialize panic hook for better error messages
+    init_panic_hook();
 
-    let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
-        Ok(s) => s,
-        Err(e) => {
-            return EvaluationResult::error(
-                ErrorCode::ParseError,
-                format!("Failed to read context: {}", e),
-            )
-        }
-    };
-
-    // Parse the context JSON
-    let context: Value = match serde_json::from_str(&context_str) {
-        Ok(v) => v,
-        Err(e) => {
-            return EvaluationResult::error(
-                ErrorCode::ParseError,
-                format!("Failed to parse context JSON: {}", e),
-            )
-        }
-    };
-
-    // Retrieve the flag from state
-    let flag_state = match get_flag_state() {
-        Some(state) => state,
-        None => {
-            return EvaluationResult::error(
-                ErrorCode::General,
-                "Flag state not initialized. Call update_state first.",
-            )
-        }
-    };
-
-    let flag = match flag_state.flags.get(&flag_key) {
-        Some(f) => f.clone(),
-        None => {
-            // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
-            let mut result = EvaluationResult::flag_not_found(&flag_key);
-            if !flag_state.flag_set_metadata.is_empty() {
-                result = result.with_metadata(flag_state.flag_set_metadata.clone());
+    // Catch any panics and convert them to error responses
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: The caller guarantees valid memory regions
+        let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
+            Ok(s) => s,
+            Err(e) => {
+                return EvaluationResult::error(
+                    ErrorCode::ParseError,
+                    format!("Failed to read flag key: {}", e),
+                )
             }
-            return result;
-        }
-    };
+        };
 
-    // Use the type-specific evaluator with merged metadata
-    evaluator(&flag, &context, &flag_state.flag_set_metadata)
+        let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
+            Ok(s) => s,
+            Err(e) => {
+                return EvaluationResult::error(
+                    ErrorCode::ParseError,
+                    format!("Failed to read context: {}", e),
+                )
+            }
+        };
+
+        // Parse the context JSON
+        let context: Value = match serde_json::from_str(&context_str) {
+            Ok(v) => v,
+            Err(e) => {
+                return EvaluationResult::error(
+                    ErrorCode::ParseError,
+                    format!("Failed to parse context JSON: {}", e),
+                )
+            }
+        };
+
+        // Retrieve the flag from state
+        let flag_state = match get_flag_state() {
+            Some(state) => state,
+            None => {
+                return EvaluationResult::error(
+                    ErrorCode::General,
+                    "Flag state not initialized. Call update_state first.",
+                )
+            }
+        };
+
+        let flag = match flag_state.flags.get(&flag_key) {
+            Some(f) => f.clone(),
+            None => {
+                // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
+                let mut result = EvaluationResult::flag_not_found(&flag_key);
+                if !flag_state.flag_set_metadata.is_empty() {
+                    result = result.with_metadata(flag_state.flag_set_metadata.clone());
+                }
+                return result;
+            }
+        };
+
+        // Use the type-specific evaluator with merged metadata
+        evaluator(&flag, &context, &flag_state.flag_set_metadata)
+    }));
+
+    match result {
+        Ok(eval_result) => eval_result,
+        Err(panic_err) => {
+            let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                format!("Evaluation panic: {}", s)
+            } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                format!("Evaluation panic: {}", s)
+            } else {
+                "Evaluation panic: unknown error".to_string()
+            };
+            EvaluationResult::error(ErrorCode::General, msg)
+        }
+    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@
 //! This module provides validation of flag configurations against the official
 //! flagd JSON schema from https://github.com/open-feature/flagd-schemas.
 
+use boon::{Compiler, SchemaIndex, Schemas};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -21,12 +22,18 @@ const TARGETING_SCHEMA: &str = include_str!("../schemas/targeting.json");
 const VALIDATION_RESULT_FALLBACK: &str =
     r#"{"valid":false,"errors":[{"path":"","message":"Failed to serialize validation result"}]}"#;
 
+/// Cached compiled schema data for boon
+struct CompiledSchema {
+    schemas: Schemas,
+    schema_index: SchemaIndex,
+}
+
 thread_local! {
     /// Thread-local cached compiled schema.
     ///
     /// In WASM environments, there's a single thread, so we use RefCell for
     /// interior mutability without the overhead of multi-threading primitives.
-    static COMPILED_SCHEMA: RefCell<Option<jsonschema::Validator>> = const { RefCell::new(None) };
+    static COMPILED_SCHEMA: RefCell<Option<CompiledSchema>> = const { RefCell::new(None) };
 }
 
 /// Represents a validation error with location and message information.
@@ -100,16 +107,30 @@ fn get_compiled_schema() -> Result<(), String> {
         let targeting_schema_value: Value = serde_json::from_str(TARGETING_SCHEMA)
             .map_err(|e| format!("Failed to parse targeting schema: {}", e))?;
 
-        // Create a schema with external resources registered
-        let targeting_resource = jsonschema::Resource::from_contents(targeting_schema_value);
+        // Create schemas storage and compiler
+        let mut schemas = Schemas::new();
+        let mut compiler = Compiler::new();
 
-        let validator = jsonschema::options()
-            .with_draft(jsonschema::Draft::Draft7)
-            .with_resource("./targeting.json", targeting_resource)
-            .build(&schema_value)
-            .map_err(|e| format!("Failed to compile schema: {}", e))?;
+        // Add targeting schema as a resource
+        // The flags schema references "./targeting.json", which relative to
+        // "http://example.com/schema" becomes "http://example.com/targeting.json"
+        compiler
+            .add_resource("http://example.com/targeting.json", targeting_schema_value)
+            .map_err(|e| format!("Failed to add targeting schema resource: {}", e))?;
 
-        *schema_ref = Some(validator);
+        // Add and compile the main flags schema
+        compiler
+            .add_resource("http://example.com/schema", schema_value.clone())
+            .map_err(|e| format!("Failed to add flags schema resource: {}", e))?;
+
+        let schema_index = compiler
+            .compile("http://example.com/schema", &mut schemas)
+            .map_err(|e| format!("Failed to compile flags schema: {}", e))?;
+
+        *schema_ref = Some(CompiledSchema {
+            schemas,
+            schema_index,
+        });
         Ok(())
     })
 }
@@ -118,18 +139,35 @@ fn get_compiled_schema() -> Result<(), String> {
 fn validate_with_schema(config: &Value) -> Result<(), Vec<ValidationError>> {
     COMPILED_SCHEMA.with(|schema| {
         let schema_ref = schema.borrow();
-        let validator = schema_ref
+        let compiled = schema_ref
             .as_ref()
             .ok_or_else(|| vec![ValidationError::new("", "Schema not initialized")])?;
 
-        if validator.is_valid(config) {
-            Ok(())
-        } else {
-            let errors: Vec<ValidationError> = validator
-                .iter_errors(config)
-                .map(|e| ValidationError::new(e.instance_path().to_string(), e.to_string()))
-                .collect();
-            Err(errors)
+        // Validate the instance against the compiled schema
+        // Note: boon's API is schemas.validate(instance, schema_index)
+        match compiled.schemas.validate(config, compiled.schema_index) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // Convert boon ValidationError to our ValidationError format
+                // Boon returns a single ValidationError that may contain nested causes
+                let mut errors = Vec::new();
+
+                // Add the main error
+                errors.push(ValidationError::new(
+                    e.instance_location.to_string(),
+                    format!("{}", e.kind),
+                ));
+
+                // Add any nested causes
+                for cause in &e.causes {
+                    errors.push(ValidationError::new(
+                        cause.instance_location.to_string(),
+                        format!("{}", cause.kind),
+                    ));
+                }
+
+                Err(errors)
+            }
         }
     })
 }
@@ -164,25 +202,44 @@ fn validate_with_schema(config: &Value) -> Result<(), Vec<ValidationError>> {
 /// assert!(result.is_ok());
 /// ```
 pub fn validate_flags_config(json_str: &str) -> Result<(), ValidationResult> {
-    // First, try to parse the JSON
-    let config: Value = match serde_json::from_str(json_str) {
-        Ok(v) => v,
-        Err(e) => {
-            let error = ValidationError::new("", format!("Invalid JSON: {}", e));
+    // Catch any panics in validation and convert to errors
+    let result = std::panic::catch_unwind(|| {
+        // First, try to parse the JSON
+        let config: Value = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(e) => {
+                let error = ValidationError::new("", format!("Invalid JSON: {}", e));
+                return Err(ValidationResult::failure(vec![error]));
+            }
+        };
+
+        // Ensure the schema is compiled (cached after first use)
+        if let Err(e) = get_compiled_schema() {
+            let error = ValidationError::new("", e);
             return Err(ValidationResult::failure(vec![error]));
         }
-    };
 
-    // Ensure the schema is compiled (cached after first use)
-    if let Err(e) = get_compiled_schema() {
-        let error = ValidationError::new("", e);
-        return Err(ValidationResult::failure(vec![error]));
-    }
+        // Validate the configuration using the cached schema
+        match validate_with_schema(&config) {
+            Ok(()) => Ok(()),
+            Err(errors) => Err(ValidationResult::failure(errors)),
+        }
+    });
 
-    // Validate the configuration using the cached schema
-    match validate_with_schema(&config) {
-        Ok(()) => Ok(()),
-        Err(errors) => Err(ValidationResult::failure(errors)),
+    match result {
+        Ok(validation_result) => validation_result,
+        Err(panic_err) => {
+            // A panic occurred during validation
+            let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                format!("Validation panic: {}", s)
+            } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                format!("Validation panic: {}", s)
+            } else {
+                "Validation panic: unknown error".to_string()
+            };
+            let error = ValidationError::new("", msg);
+            Err(ValidationResult::failure(vec![error]))
+        }
     }
 }
 

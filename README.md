@@ -521,6 +521,54 @@ The evaluator automatically enriches the evaluation context with standard `$flag
 
 **Note:** The `$flagd` properties are stored as a nested object in the evaluation context: `{"$flagd": {"flagKey": "...", "timestamp": ...}}`. This allows JSON Logic to access them using dot notation (e.g., `{"var": "$flagd.timestamp"}`).
 
+## Host Functions (Required for WASM)
+
+The WASM module requires the host environment to provide the current timestamp for context enrichment.
+
+### Required: `get_current_time_unix_seconds`
+
+**Module:** `host`
+**Function:** `get_current_time_unix_seconds() -> u64`
+
+Returns the current Unix timestamp in seconds since epoch (1970-01-01 00:00:00 UTC).
+
+#### Why is this needed?
+
+The WASM sandbox cannot access system time without WASI support. Since Chicory and other pure WASM runtimes don't provide WASI, the host must supply the current time for the `$flagd.timestamp` property used in targeting rules.
+
+#### Java Implementation Example (Chicory)
+
+```java
+import com.dylibso.chicory.runtime.HostFunction;
+import com.dylibso.chicory.wasm.types.Value;
+import com.dylibso.chicory.wasm.types.ValueType;
+
+HostFunction getCurrentTime = new HostFunction(
+    "host",                              // Module name
+    "get_current_time_unix_seconds",    // Function name
+    List.of(),                           // No parameters
+    List.of(ValueType.I64),             // Returns i64
+    (Instance instance, Value... args) -> {
+        long currentTimeSeconds = System.currentTimeMillis() / 1000;
+        return new Value[] { Value.i64(currentTimeSeconds) };
+    }
+);
+
+// Add to module when loading WASM
+Module module = Module.builder(wasmBytes)
+    .withHostFunction(getCurrentTime)
+    .build();
+```
+
+**📝 See [HOST_FUNCTIONS.md](./HOST_FUNCTIONS.md) for complete implementation examples in Java, JavaScript, and Go.**
+
+#### Behavior Without Host Function
+
+If the host function is not provided:
+- `$flagd.timestamp` defaults to `0`
+- Evaluation continues without errors
+- Time-based targeting rules will not work correctly
+
 ## JSON Schema Validation
 
 The evaluator automatically validates flag configurations against the official [flagd-schemas](https://github.com/open-feature/flagd-schemas) before storing them. This ensures that your flag configurations match the expected structure and catches errors early.

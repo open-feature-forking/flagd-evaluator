@@ -3,11 +3,11 @@
 //! This module provides the data structures and functions for evaluating
 //! feature flags according to the flagd provider specification.
 
-use std::collections::HashMap;
 use crate::model::FeatureFlag;
 use crate::operators::create_evaluator;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 
 /// The reason for the evaluation result.
 ///
@@ -225,13 +225,9 @@ fn enrich_context(flag_key: &str, context: &Value) -> Value {
     };
 
     // Get current Unix timestamp (seconds since epoch)
-    // Note: SystemTime::now() is available in WASM runtimes that support WASI.
-    // If system time is unavailable, we default to 0 (Unix epoch).
-    // This allows targeting rules to detect the error condition by checking for timestamp == 0.
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0); // Default to 0 if system time is not available
+    // Try to use the host-provided time function if available, otherwise default to 0.
+    // Defaulting to 0 signals to targeting rules that time is unavailable.
+    let timestamp = crate::get_current_time();
 
     // Create $flagd object with nested properties
     let mut flagd_props = Map::new();
@@ -344,6 +340,7 @@ pub fn evaluate_flag(
     if is_empty_targeting {
         return match flag.default_variant.as_ref() {
             None => EvaluationResult::fallback(flag_key),
+            Some(ref value) if value.is_empty() => EvaluationResult::fallback(flag_key),
             Some(default_variant) => match flag.variants.get(default_variant) {
                 Some(value) => {
                     let result =
@@ -381,9 +378,13 @@ pub fn evaluate_flag(
             if result.is_null() {
                 return match flag.default_variant.as_ref() {
                     None => EvaluationResult::fallback(flag_key),
+                    Some(ref value) if value.is_empty() => EvaluationResult::fallback(flag_key),
                     Some(default_variant) => match flag.variants.get(default_variant) {
                         Some(value) => {
-                            let result = EvaluationResult::default_result(value.clone(), default_variant.clone());
+                            let result = EvaluationResult::default_result(
+                                value.clone(),
+                                default_variant.clone(),
+                            );
                             with_metadata(merged_metadata, result)
                         }
                         None => EvaluationResult::error(
@@ -425,7 +426,10 @@ pub fn evaluate_flag(
                         // Resolved variant is empty but default is not - this is an error
                         EvaluationResult::error(
                             ErrorCode::General,
-                            format!("Targeting rule returned empty variant name for flag '{}'", flag_key),
+                            format!(
+                                "Targeting rule returned empty variant name for flag '{}'",
+                                flag_key
+                            ),
                         )
                     }
                 };
@@ -456,14 +460,13 @@ pub fn evaluate_flag(
     }
 }
 
-fn with_metadata(merged_metadata: Option<HashMap<String, Value>>, result: EvaluationResult) -> EvaluationResult {
+fn with_metadata(
+    merged_metadata: Option<HashMap<String, Value>>,
+    result: EvaluationResult,
+) -> EvaluationResult {
     match merged_metadata {
-        Some(metadata) => {
-            result.with_metadata(metadata)
-        }
-        None => {
-            result
-        }
+        Some(metadata) => result.with_metadata(metadata),
+        None => result,
     }
 }
 
@@ -490,7 +493,8 @@ pub fn evaluate_bool_flag(
     if result.reason == ResolutionReason::Error
         || result.reason == ResolutionReason::FlagNotFound
         || result.reason == ResolutionReason::Fallback
-        || result.reason == ResolutionReason::Disabled {
+        || result.reason == ResolutionReason::Disabled
+    {
         return result;
     }
 
@@ -531,7 +535,8 @@ pub fn evaluate_string_flag(
     if result.reason == ResolutionReason::Error
         || result.reason == ResolutionReason::FlagNotFound
         || result.reason == ResolutionReason::Fallback
-        || result.reason == ResolutionReason::Disabled {
+        || result.reason == ResolutionReason::Disabled
+    {
         return result;
     }
 
@@ -573,7 +578,8 @@ pub fn evaluate_int_flag(
     if result.reason == ResolutionReason::Error
         || result.reason == ResolutionReason::FlagNotFound
         || result.reason == ResolutionReason::Fallback
-        || result.reason == ResolutionReason::Disabled {
+        || result.reason == ResolutionReason::Disabled
+    {
         return result;
     }
 
@@ -625,7 +631,8 @@ pub fn evaluate_float_flag(
     if result.reason == ResolutionReason::Error
         || result.reason == ResolutionReason::FlagNotFound
         || result.reason == ResolutionReason::Fallback
-        || result.reason == ResolutionReason::Disabled {
+        || result.reason == ResolutionReason::Disabled
+    {
         return result;
     }
 
@@ -683,7 +690,8 @@ pub fn evaluate_object_flag(
     if result.reason == ResolutionReason::Error
         || result.reason == ResolutionReason::FlagNotFound
         || result.reason == ResolutionReason::Fallback
-        || result.reason == ResolutionReason::Disabled {
+        || result.reason == ResolutionReason::Disabled
+    {
         return result;
     }
 

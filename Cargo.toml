@@ -21,8 +21,14 @@ path = "src/bin/flagd-eval.rs"
 datalogic-rs = "4.0"
 serde = { version = "1.0", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1.0", features = ["alloc"], default-features = false }
-jsonschema = { version = "0.37", default-features = false }
+boon = "0.6"
 murmurhash3 = "0.0.5"
+# Override ahash to avoid SIMD/AES-NI instructions that break Chicory WASM compatibility
+# ahash is pulled in by boon and uses AES-NI by default
+# We disable default features and use compile-time-rng to avoid runtime randomness
+ahash = { version = "0.8.12", default-features = false, features = ["compile-time-rng"] }
+# Enable wasm_js feature for getrandom in WASM builds (required for wasm32-unknown-unknown)
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 # CLI-only dependencies (used by the binary, not the WASM lib)
 clap = { version = "4.5", features = ["derive", "cargo"], optional = true }
