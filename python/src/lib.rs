@@ -1,8 +1,10 @@
+use ::flagd_evaluator::evaluation::{
+    evaluate_bool_flag, evaluate_flag, evaluate_float_flag, evaluate_int_flag, evaluate_string_flag,
+};
+use ::flagd_evaluator::model::ParsingResult;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde_json::Value;
-use ::flagd_evaluator::model::ParsingResult;
-use ::flagd_evaluator::evaluation::{evaluate_flag, evaluate_bool_flag, evaluate_string_flag, evaluate_int_flag, evaluate_float_flag};
 
 /// FlagEvaluator - Stateful feature flag evaluator
 ///
@@ -48,16 +50,20 @@ impl FlagEvaluator {
         let config_value: Value = pythonize::depythonize(config)?;
 
         // Convert to JSON string for parsing
-        let config_str = serde_json::to_string(&config_value)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Failed to serialize config: {}", e)
-            ))?;
+        let config_str = serde_json::to_string(&config_value).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Failed to serialize config: {}",
+                e
+            ))
+        })?;
 
         // Parse the configuration
-        let parsing_result = ParsingResult::parse(&config_str)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Failed to parse config: {}", e)
-            ))?;
+        let parsing_result = ParsingResult::parse(&config_str).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Failed to parse config: {}",
+                e
+            ))
+        })?;
 
         // Store the state
         self.state = Some(parsing_result.clone());
@@ -77,16 +83,16 @@ impl FlagEvaluator {
     /// Returns:
     ///     dict: Evaluation result with value, variant, reason, and metadata
     fn evaluate(&self, py: Python, flag_key: String, context: &PyDict) -> PyResult<PyObject> {
-        let state = self.state.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "No state loaded. Call update_state() first."
-            ))?;
+        let state = self.state.as_ref().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "No state loaded. Call update_state() first.",
+            )
+        })?;
 
         // Look up the flag
-        let flag = state.flags.get(&flag_key)
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>(
-                format!("Flag not found: {}", flag_key)
-            ))?;
+        let flag = state.flags.get(&flag_key).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("Flag not found: {}", flag_key))
+        })?;
 
         // Convert context to JSON Value
         let context_value: Value = pythonize::depythonize(context)?;
@@ -95,8 +101,12 @@ impl FlagEvaluator {
         let result = evaluate_flag(flag, &context_value, &state.flag_set_metadata);
 
         // Convert result to Python dict
-        pythonize::pythonize(py, &result)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Failed to convert result: {}", e)))
+        pythonize::pythonize(py, &result).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Failed to convert result: {}",
+                e
+            ))
+        })
     }
 
     /// Evaluate a boolean flag
@@ -108,16 +118,21 @@ impl FlagEvaluator {
     ///
     /// Returns:
     ///     bool: The evaluated boolean value
-    fn evaluate_bool(&self, flag_key: String, context: &PyDict, default_value: bool) -> PyResult<bool> {
-        let state = self.state.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "No state loaded. Call update_state() first."
-            ))?;
+    fn evaluate_bool(
+        &self,
+        flag_key: String,
+        context: &PyDict,
+        default_value: bool,
+    ) -> PyResult<bool> {
+        let state = self.state.as_ref().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "No state loaded. Call update_state() first.",
+            )
+        })?;
 
-        let flag = state.flags.get(&flag_key)
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>(
-                format!("Flag not found: {}", flag_key)
-            ))?;
+        let flag = state.flags.get(&flag_key).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("Flag not found: {}", flag_key))
+        })?;
 
         let context_value: Value = pythonize::depythonize(context)?;
         let result = evaluate_bool_flag(flag, &context_value, &state.flag_set_metadata);
@@ -137,16 +152,21 @@ impl FlagEvaluator {
     ///
     /// Returns:
     ///     str: The evaluated string value
-    fn evaluate_string(&self, flag_key: String, context: &PyDict, default_value: String) -> PyResult<String> {
-        let state = self.state.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "No state loaded. Call update_state() first."
-            ))?;
+    fn evaluate_string(
+        &self,
+        flag_key: String,
+        context: &PyDict,
+        default_value: String,
+    ) -> PyResult<String> {
+        let state = self.state.as_ref().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "No state loaded. Call update_state() first.",
+            )
+        })?;
 
-        let flag = state.flags.get(&flag_key)
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>(
-                format!("Flag not found: {}", flag_key)
-            ))?;
+        let flag = state.flags.get(&flag_key).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("Flag not found: {}", flag_key))
+        })?;
 
         let context_value: Value = pythonize::depythonize(context)?;
         let result = evaluate_string_flag(flag, &context_value, &state.flag_set_metadata);
@@ -166,16 +186,21 @@ impl FlagEvaluator {
     ///
     /// Returns:
     ///     int: The evaluated integer value
-    fn evaluate_int(&self, flag_key: String, context: &PyDict, default_value: i64) -> PyResult<i64> {
-        let state = self.state.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "No state loaded. Call update_state() first."
-            ))?;
+    fn evaluate_int(
+        &self,
+        flag_key: String,
+        context: &PyDict,
+        default_value: i64,
+    ) -> PyResult<i64> {
+        let state = self.state.as_ref().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "No state loaded. Call update_state() first.",
+            )
+        })?;
 
-        let flag = state.flags.get(&flag_key)
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>(
-                format!("Flag not found: {}", flag_key)
-            ))?;
+        let flag = state.flags.get(&flag_key).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("Flag not found: {}", flag_key))
+        })?;
 
         let context_value: Value = pythonize::depythonize(context)?;
         let result = evaluate_int_flag(flag, &context_value, &state.flag_set_metadata);
@@ -195,16 +220,21 @@ impl FlagEvaluator {
     ///
     /// Returns:
     ///     float: The evaluated float value
-    fn evaluate_float(&self, flag_key: String, context: &PyDict, default_value: f64) -> PyResult<f64> {
-        let state = self.state.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "No state loaded. Call update_state() first."
-            ))?;
+    fn evaluate_float(
+        &self,
+        flag_key: String,
+        context: &PyDict,
+        default_value: f64,
+    ) -> PyResult<f64> {
+        let state = self.state.as_ref().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "No state loaded. Call update_state() first.",
+            )
+        })?;
 
-        let flag = state.flags.get(&flag_key)
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>(
-                format!("Flag not found: {}", flag_key)
-            ))?;
+        let flag = state.flags.get(&flag_key).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("Flag not found: {}", flag_key))
+        })?;
 
         let context_value: Value = pythonize::depythonize(context)?;
         let result = evaluate_float_flag(flag, &context_value, &state.flag_set_metadata);
