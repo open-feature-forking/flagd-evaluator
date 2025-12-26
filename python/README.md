@@ -19,24 +19,6 @@ pip install flagd-evaluator
 
 ## Quick Start
 
-### Basic JSON Logic Evaluation
-
-```python
-from flagd_evaluator import evaluate_logic
-
-# Simple evaluation
-result = evaluate_logic({"==": [1, 1]}, {})
-print(result)
-# {'success': True, 'result': True, 'error': None}
-
-# Evaluation with context data
-result = evaluate_logic(
-    {">": [{"var": "age"}, 18]},
-    {"age": 25}
-)
-print(result["result"])  # True
-```
-
 ### Stateful Flag Evaluation
 
 ```python
@@ -62,20 +44,6 @@ print(result)  # True
 ```
 
 ## API Reference
-
-### evaluate_logic(rule, data)
-
-Evaluate a JSON Logic rule against data.
-
-**Parameters:**
-- `rule` (dict): The JSON Logic rule to evaluate
-- `data` (dict): The data context for evaluation
-
-**Returns:**
-- dict with keys:
-  - `success` (bool): Whether evaluation succeeded
-  - `result` (Any): The evaluation result (if success=True)
-  - `error` (str): Error message (if success=False)
 
 ### FlagEvaluator
 
@@ -173,9 +141,7 @@ print(result["result"])  # True
 ## Examples
 
 See the [examples/](examples/) directory for more examples:
-- `basic_usage.py` - Simple evaluation examples
-- `flag_evaluation.py` - Stateful flag evaluation
-- `custom_operators.py` - Using custom operators
+- `flag_evaluation.py` - Stateful flag evaluation with various scenarios
 
 ## Performance
 

@@ -32,69 +32,14 @@ def main():
     print("=" * 60)
 
     try:
-        from flagd_evaluator import evaluate_logic, FlagEvaluator
+        from flagd_evaluator import FlagEvaluator
     except ImportError:
         print("\nError: flagd_evaluator not installed")
         print("Run: cd python && maturin develop")
         return
 
-    # Test 1: Simple evaluation
-    print("\n[Test 1] Simple equality evaluation")
-    print("-" * 60)
-
-    def test_simple():
-        result = evaluate_logic({"==": [1, 1]}, {})
-        assert result["success"] is True
-
-    benchmark("Native PyO3", test_simple, iterations=50000)
-
-    # Test 2: Variable lookup
-    print("\n[Test 2] Variable lookup evaluation")
-    print("-" * 60)
-
-    def test_var_lookup():
-        result = evaluate_logic(
-            {">": [{"var": "age"}, 18]},
-            {"age": 25}
-        )
-        assert result["success"] is True
-
-    benchmark("Native PyO3", test_var_lookup, iterations=50000)
-
-    # Test 3: Complex nested conditions
-    print("\n[Test 3] Complex nested conditions")
-    print("-" * 60)
-
-    def test_complex():
-        result = evaluate_logic(
-            {
-                "and": [
-                    {">": [{"var": "age"}, 18]},
-                    {"<": [{"var": "age"}, 65]},
-                    {"in": [{"var": "role"}, ["admin", "moderator"]]}
-                ]
-            },
-            {"age": 30, "role": "admin"}
-        )
-        assert result["success"] is True
-
-    benchmark("Native PyO3", test_complex, iterations=30000)
-
-    # Test 4: Fractional operator
-    print("\n[Test 4] Fractional operator (A/B testing)")
-    print("-" * 60)
-
-    def test_fractional():
-        result = evaluate_logic(
-            {"fractional": [{"var": "userId"}, ["A", 50], ["B", 50]]},
-            {"userId": "user123"}
-        )
-        assert result["success"] is True
-
-    benchmark("Native PyO3", test_fractional, iterations=30000)
-
-    # Test 5: Flag evaluator
-    print("\n[Test 5] Stateful flag evaluation")
+    # Test 1: Simple flag evaluation
+    print("\n[Test 1] Simple boolean flag evaluation")
     print("-" * 60)
 
     evaluator = FlagEvaluator()

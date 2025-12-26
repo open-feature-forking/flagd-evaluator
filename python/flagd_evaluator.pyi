@@ -3,13 +3,6 @@
 from typing import Any, Dict, Optional, TypedDict
 
 
-class EvaluationResponse(TypedDict):
-    """Response from evaluate_logic function."""
-    success: bool
-    result: Optional[Any]
-    error: Optional[str]
-
-
 class EvaluationResult(TypedDict):
     """Result from flag evaluation."""
     value: Any
@@ -18,28 +11,6 @@ class EvaluationResult(TypedDict):
     errorCode: Optional[str]
     errorMessage: Optional[str]
     flagMetadata: Dict[str, Any]
-
-
-def evaluate_logic(rule: Dict[str, Any], data: Dict[str, Any]) -> EvaluationResponse:
-    """
-    Evaluate a JSON Logic rule against data.
-
-    Args:
-        rule: The JSON Logic rule to evaluate
-        data: The data context for evaluation
-
-    Returns:
-        A result dictionary with keys:
-        - success (bool): Whether evaluation succeeded
-        - result (Any): The evaluation result (if success=True)
-        - error (str): Error message (if success=False)
-
-    Example:
-        >>> result = evaluate_logic({"==": [1, 1]}, {})
-        >>> print(result)
-        {'success': True, 'result': True, 'error': None}
-    """
-    ...
 
 
 class FlagEvaluator:

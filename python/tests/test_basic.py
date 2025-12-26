@@ -3,43 +3,6 @@
 import pytest
 
 
-def test_evaluate_logic_simple():
-    """Test simple equality evaluation."""
-    from flagd_evaluator import evaluate_logic
-
-    result = evaluate_logic({"==": [1, 1]}, {})
-    assert result["success"] is True
-    assert result["result"] is True
-    assert result["error"] is None
-
-
-def test_evaluate_logic_with_var():
-    """Test evaluation with variable lookup."""
-    from flagd_evaluator import evaluate_logic
-
-    result = evaluate_logic(
-        {">": [{"var": "age"}, 18]},
-        {"age": 25}
-    )
-    assert result["success"] is True
-    assert result["result"] is True
-
-
-def test_evaluate_logic_error():
-    """Test evaluation with invalid rule."""
-    from flagd_evaluator import evaluate_logic
-
-    # Invalid rule should still return a response
-    result = evaluate_logic(
-        {"invalid_operator": [1, 2]},
-        {}
-    )
-    # The result might be success=False or the operator might be unknown
-    # Either way, we should get a valid response
-    assert "success" in result
-    assert "result" in result or "error" in result
-
-
 def test_flag_evaluator_init():
     """Test FlagEvaluator initialization."""
     from flagd_evaluator import FlagEvaluator

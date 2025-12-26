@@ -89,37 +89,61 @@ Instance instance = Instance.builder(module).build();
 Memory memory = instance.memory();
 ExportFunction alloc = instance.export("alloc");
 ExportFunction dealloc = instance.export("dealloc");
-ExportFunction evaluateLogic = instance.export("evaluate_logic");
+ExportFunction updateState = instance.export("update_state");
+ExportFunction evaluate = instance.export("evaluate");
 
-// Prepare inputs
-String rule = "{\">\": [{\"var\": \"age\"}, 18]}";
-String data = "{\"age\": 25}";
-byte[] ruleBytes = rule.getBytes(StandardCharsets.UTF_8);
-byte[] dataBytes = data.getBytes(StandardCharsets.UTF_8);
+// Update flag configuration
+String config = """
+{
+  "flags": {
+    "myFlag": {
+      "state": "ENABLED",
+      "variants": {"on": true, "off": false},
+      "defaultVariant": "on"
+    }
+  }
+}
+""";
+byte[] configBytes = config.getBytes(StandardCharsets.UTF_8);
+long configPtr = alloc.apply(configBytes.length)[0];
+memory.write((int) configPtr, configBytes);
 
-// Allocate memory and write inputs
-long rulePtr = alloc.apply(ruleBytes.length)[0];
-long dataPtr = alloc.apply(dataBytes.length)[0];
-memory.write((int) rulePtr, ruleBytes);
-memory.write((int) dataPtr, dataBytes);
+// Call update_state
+long updateResult = updateState.apply(configPtr, configBytes.length)[0];
+int updateResPtr = (int) (updateResult >>> 32);
+int updateResLen = (int) (updateResult & 0xFFFFFFFFL);
 
-// Call evaluate_logic
-long packedResult = evaluateLogic.apply(rulePtr, ruleBytes.length, dataPtr, dataBytes.length)[0];
+// Read and free update response
+byte[] updateBytes = memory.readBytes(updateResPtr, updateResLen);
+System.out.println("State updated: " + new String(updateBytes, StandardCharsets.UTF_8));
+dealloc.apply(configPtr, configBytes.length);
+dealloc.apply(updateResPtr, updateResLen);
 
-// Unpack result (ptr in upper 32 bits, length in lower 32 bits)
-int resultPtr = (int) (packedResult >>> 32);
-int resultLen = (int) (packedResult & 0xFFFFFFFFL);
+// Evaluate flag
+String flagKey = "myFlag";
+String context = "{}";
+byte[] keyBytes = flagKey.getBytes(StandardCharsets.UTF_8);
+byte[] contextBytes = context.getBytes(StandardCharsets.UTF_8);
+
+long keyPtr = alloc.apply(keyBytes.length)[0];
+long contextPtr = alloc.apply(contextBytes.length)[0];
+memory.write((int) keyPtr, keyBytes);
+memory.write((int) contextPtr, contextBytes);
+
+// Call evaluate
+long evalResult = evaluate.apply(keyPtr, keyBytes.length, contextPtr, contextBytes.length)[0];
+int evalResPtr = (int) (evalResult >>> 32);
+int evalResLen = (int) (evalResult & 0xFFFFFFFFL);
 
 // Read result
-byte[] resultBytes = memory.readBytes(resultPtr, resultLen);
+byte[] resultBytes = memory.readBytes(evalResPtr, evalResLen);
 String result = new String(resultBytes, StandardCharsets.UTF_8);
 System.out.println(result);
-// Output: {"success":true,"result":true,"error":null}
 
 // Free memory
-dealloc.apply(rulePtr, ruleBytes.length);
-dealloc.apply(dataPtr, dataBytes.length);
-dealloc.apply(resultPtr, resultLen);
+dealloc.apply(keyPtr, keyBytes.length);
+dealloc.apply(contextPtr, contextBytes.length);
+dealloc.apply(evalResPtr, evalResLen);
 ```
 
 See [examples/java/FlagdEvaluatorExample.java](examples/java/FlagdEvaluatorExample.java) for a complete example.
@@ -135,11 +159,7 @@ pip install flagd-evaluator
 **Quick Example:**
 
 ```python
-from flagd_evaluator import evaluate_logic, FlagEvaluator
-
-# Simple evaluation
-result = evaluate_logic({"==": [1, 1]}, {})
-print(result["result"])  # True
+from flagd_evaluator import FlagEvaluator
 
 # Stateful flag evaluation
 evaluator = FlagEvaluator()
@@ -240,27 +260,54 @@ instance = Instance(store, module, imports)
 exports = instance.exports(store)
 alloc = exports["alloc"]
 dealloc = exports["dealloc"]
-evaluate_logic = exports["evaluate_logic"]
+update_state = exports["update_state"]
+evaluate = exports["evaluate"]
 memory = exports["memory"]
 
-def evaluate_rule(rule: dict, data: dict) -> dict:
-    """Evaluate a JSON Logic rule against data"""
-    # Serialize to JSON
-    rule_json = json.dumps(rule).encode('utf-8')
-    data_json = json.dumps(data).encode('utf-8')
+# Load flag configuration
+config = {
+    "flags": {
+        "myFlag": {
+            "state": "ENABLED",
+            "variants": {"on": True, "off": False},
+            "defaultVariant": "on",
+            "targeting": {
+                "if": [
+                    {"==": [{"var": "email"}, "admin@example.com"]},
+                    "on",
+                    "off"
+                ]
+            }
+        }
+    }
+}
+
+config_json = json.dumps(config).encode('utf-8')
+config_ptr = alloc(store, len(config_json))
+memory.write(store, config_ptr, config_json)
+
+# Update state
+result_packed = update_state(store, config_ptr, len(config_json))
+dealloc(store, config_ptr, len(config_json))
+
+# Evaluate flag
+def evaluate_flag(flag_key: str, context: dict) -> dict:
+    """Evaluate a feature flag"""
+    flag_key_bytes = flag_key.encode('utf-8')
+    context_json = json.dumps(context).encode('utf-8')
 
     # Allocate memory
-    rule_ptr = alloc(store, len(rule_json))
-    data_ptr = alloc(store, len(data_json))
+    key_ptr = alloc(store, len(flag_key_bytes))
+    context_ptr = alloc(store, len(context_json))
 
     # Write to WASM memory
-    memory.write(store, rule_ptr, rule_json)
-    memory.write(store, data_ptr, data_json)
+    memory.write(store, key_ptr, flag_key_bytes)
+    memory.write(store, context_ptr, context_json)
 
-    # Call evaluate_logic
-    result_packed = evaluate_logic(store, rule_ptr, len(rule_json), data_ptr, len(data_json))
+    # Call evaluate
+    result_packed = evaluate(store, key_ptr, len(flag_key_bytes), context_ptr, len(context_json))
 
-    # Unpack result (upper 32 bits = ptr, lower 32 bits = len)
+    # Unpack result
     result_ptr = result_packed >> 32
     result_len = result_packed & 0xFFFFFFFF
 
@@ -269,39 +316,30 @@ def evaluate_rule(rule: dict, data: dict) -> dict:
     result = json.loads(result_bytes.decode('utf-8'))
 
     # Free memory
-    dealloc(store, rule_ptr, len(rule_json))
-    dealloc(store, data_ptr, len(data_json))
+    dealloc(store, key_ptr, len(flag_key_bytes))
+    dealloc(store, context_ptr, len(context_json))
     dealloc(store, result_ptr, result_len)
 
     return result
 
 # Example usage
-result = evaluate_rule({"==": [1, 1]}, {})
-print(result)  # {'success': True, 'result': True, 'error': None}
+result = evaluate_flag("myFlag", {})
+print(result["value"])  # False (default variant, no context match)
 
-# Custom operator example
-result = evaluate_rule(
-    {"starts_with": [{"var": "email"}, "admin@"]},
-    {"email": "admin@example.com"}
-)
-print(result)  # {'success': True, 'result': True, 'error': None}
-
-# Semantic version comparison
-result = evaluate_rule(
-    {"sem_ver": [">=", "2.1.0", "2.0.0"]},
-    {}
-)
-print(result)  # {'success': True, 'result': True, 'error': None}
+# With matching context
+result = evaluate_flag("myFlag", {"email": "admin@example.com"})
+print(result["value"])  # True (targeting matched)
 ```
 
-**Alternative: Native Python Bindings with PyO3**
+**Recommended: Native Python Bindings with PyO3**
 
-For better performance and a more Pythonic API, native Python bindings could be created using [PyO3](https://github.com/PyO3/pyo3). This would:
-- Eliminate WASM overhead
+For better performance and a more Pythonic API, use the native Python bindings built with [PyO3](https://github.com/PyO3/pyo3) (see section above). Native bindings:
+- Eliminate WASM overhead (5-10x faster)
 - Provide direct Rust-to-Python compilation
 - Enable a simpler, more idiomatic Python API
+- Simple `pip install flagd-evaluator` - no WASM runtime needed
 
-See [GitHub issue #47](https://github.com/open-feature-forking/flagd-evaluator/issues/47) for discussion on adding native Python bindings.
+See [python/README.md](python/README.md) for complete documentation.
 
 ### Node.js/JavaScript with WASM
 
@@ -349,7 +387,8 @@ WebAssembly.instantiate(wasmBuffer, imports).then(result => {
   // Helper functions
   const alloc = instance.exports.alloc;
   const dealloc = instance.exports.dealloc;
-  const evaluateLogic = instance.exports.evaluate_logic;
+  const updateState = instance.exports.update_state;
+  const evaluate = instance.exports.evaluate;
   const memory = instance.exports.memory;
 
   function writeString(str) {
@@ -364,21 +403,35 @@ WebAssembly.instantiate(wasmBuffer, imports).then(result => {
     return Buffer.from(bytes).toString('utf8');
   }
 
-  // Evaluate a rule
-  const rule = writeString('{"==": [1, 1]}');
-  const data = writeString('{}');
+  // Load flag configuration
+  const config = writeString(JSON.stringify({
+    flags: {
+      myFlag: {
+        state: "ENABLED",
+        variants: { on: true, off: false },
+        defaultVariant: "on"
+      }
+    }
+  }));
 
-  const resultPacked = evaluateLogic(rule.ptr, rule.len, data.ptr, data.len);
+  const updateResult = updateState(config.ptr, config.len);
+  dealloc(config.ptr, config.len);
+
+  // Evaluate flag
+  const flagKey = writeString('myFlag');
+  const context = writeString('{}');
+
+  const resultPacked = evaluate(flagKey.ptr, flagKey.len, context.ptr, context.len);
   const resultPtr = Number(resultPacked >> 32n);
   const resultLen = Number(resultPacked & 0xFFFFFFFFn);
 
   const resultJson = readString(resultPtr, resultLen);
-  console.log(resultJson);
-  // Output: {"success":true,"result":true,"error":null}
+  console.log(JSON.parse(resultJson).value);
+  // Output: true
 
   // Clean up
-  dealloc(rule.ptr, rule.len);
-  dealloc(data.ptr, data.len);
+  dealloc(flagKey.ptr, flagKey.len);
+  dealloc(context.ptr, context.len);
   dealloc(resultPtr, resultLen);
 });
 ```
@@ -396,26 +449,31 @@ See [GitHub issue #48](https://github.com/open-feature-forking/flagd-evaluator/i
 ### Rust
 
 ```rust
-use flagd_evaluator::{evaluate_logic, wasm_alloc, wasm_dealloc, unpack_ptr_len, string_from_memory};
+use flagd_evaluator::evaluation::{evaluate_flag, EvaluationContext};
+use flagd_evaluator::model::FlagConfiguration;
+use serde_json::json;
 
-let rule = r#"{"==": [{"var": "enabled"}, true]}"#;
-let data = r#"{"enabled": true}"#;
+// Parse flag configuration
+let config_json = json!({
+    "flags": {
+        "myFlag": {
+            "state": "ENABLED",
+            "variants": {"on": true, "off": false},
+            "defaultVariant": "on"
+        }
+    }
+});
 
-let rule_bytes = rule.as_bytes();
-let data_bytes = data.as_bytes();
+let config: FlagConfiguration = serde_json::from_value(config_json).unwrap();
 
-// In a real WASM context, memory would be managed by the host
-let result_packed = evaluate_logic(
-    rule_bytes.as_ptr(),
-    rule_bytes.len() as u32,
-    data_bytes.as_ptr(),
-    data_bytes.len() as u32,
-);
+// Store the configuration (in real usage, use storage module)
+// For this example, we'll evaluate directly
+let flag = config.flags.get("myFlag").unwrap();
+let context = EvaluationContext::default();
 
-let (result_ptr, result_len) = unpack_ptr_len(result_packed);
-let result_str = unsafe { string_from_memory(result_ptr, result_len).unwrap() };
-println!("{}", result_str);
-// Output: {"success":true,"result":true,"error":null}
+let result = evaluate_flag("myFlag", flag, &context);
+println!("{:?}", result.value);
+// Output: true
 ```
 
 ## API Reference
@@ -424,40 +482,11 @@ println!("{}", result_str);
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `evaluate_logic` | `(rule_ptr, rule_len, data_ptr, data_len) -> u64` | Evaluates JSON Logic rule against data |
 | `update_state` | `(config_ptr, config_len) -> u64` | Updates the feature flag configuration state |
 | `evaluate` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a feature flag against context |
 | `set_validation_mode` | `(mode: u32) -> u64` | Sets validation mode (0=Strict, 1=Permissive) |
 | `alloc` | `(len: u32) -> *mut u8` | Allocates memory in WASM linear memory |
 | `dealloc` | `(ptr: *mut u8, len: u32)` | Frees previously allocated memory |
-
-### evaluate_logic
-
-**Parameters:**
-- `rule_ptr` (u32): Pointer to the rule JSON string in WASM memory
-- `rule_len` (u32): Length of the rule JSON string
-- `data_ptr` (u32): Pointer to the data JSON string in WASM memory
-- `data_len` (u32): Length of the data JSON string
-
-**Returns:**
-- `u64`: Packed pointer where upper 32 bits = result pointer, lower 32 bits = result length
-
-**Response Format (always JSON):**
-```json
-// Success
-{
-  "success": true,
-  "result": <evaluated_value>,
-  "error": null
-}
-
-// Error
-{
-  "success": false,
-  "result": null,
-  "error": "error message"
-}
-```
 
 ### update_state
 
@@ -1041,7 +1070,7 @@ The library uses a simple linear memory allocation model:
 3. **Deallocation**: Call `dealloc(ptr, len)` to free the memory.
 
 **Important:** The caller is responsible for:
-- Freeing input memory after `evaluate_logic` returns
+- Freeing input memory after WASM functions return
 - Freeing the result memory after reading it
 
 **Memory Management Flow:**
