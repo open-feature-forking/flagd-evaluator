@@ -17,11 +17,11 @@
 - [ ] Test state management (deferred to Day 3)
 
 ## Day 3: Python Tests + Type Stubs
-- [ ] Create python/tests/test_basic.py
-- [ ] Create python/tests/test_operators.py
-- [ ] Create python/tests/test_flag_evaluation.py
-- [ ] Add python/flagd_evaluator.pyi type stub file
-- [ ] Run all tests locally
+- [x] Create python/tests/test_basic.py
+- [x] Create python/tests/test_operators.py
+- [x] Create python/tests/test_flag_evaluation.py
+- [x] Add python/flagd_evaluator.pyi type stub file
+- [ ] Run all tests locally (requires maturin/pytest setup)
 
 ## Day 4: CI/CD Pipeline + Wheel Builds
 - [ ] Create .github/workflows/python-wheels.yml
@@ -39,6 +39,6 @@
 - [ ] Update CLAUDE.md
 
 ## Progress Tracking
-- Current Day: Day 3 (Python Tests + Type Stubs)
-- Last Completed: Day 2 (FlagEvaluator Class + State Management)
+- Current Day: Day 4 (CI/CD Pipeline + Wheel Builds)
+- Last Completed: Day 3 (Python Tests + Type Stubs)
 - Blocked On: None
