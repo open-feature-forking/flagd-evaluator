@@ -302,6 +302,84 @@ See `examples/java/FlagdEvaluatorExample.java` for complete working example.
 
 **Memory Lifecycle**: Host application owns all memory allocation/deallocation decisions. WASM module only allocates result memory internally.
 
+## Python Native Bindings
+
+In addition to WASM integration, this project provides **native Python bindings** using PyO3 for better performance and developer experience.
+
+### Structure
+
+```
+python/
+├── src/
+│   └── lib.rs           # PyO3 bindings (evaluate_logic, FlagEvaluator class)
+├── tests/               # Python test suite (pytest)
+├── examples/            # Usage examples
+├── benchmarks/          # Performance benchmarks
+├── Cargo.toml           # PyO3 dependencies
+├── pyproject.toml       # Maturin build config
+└── README.md            # Python-specific documentation
+```
+
+### Building Python Bindings
+
+```bash
+# Install maturin
+pip install maturin
+
+# Build and install locally
+cd python
+maturin develop
+
+# Run tests
+pytest tests/ -v
+
+# Build wheels for distribution
+maturin build --release
+```
+
+### Key Differences from WASM
+
+**API Design**: Pythonic dictionaries instead of JSON strings:
+```python
+# PyO3 API (native)
+result = evaluate_logic({"==": [1, 1]}, {})
+
+# vs WASM API (for comparison)
+result_json = evaluate_logic_wasm(json.dumps(rule), json.dumps(data))
+result = json.loads(result_json)
+```
+
+**State Management**: Python class with internal state instead of thread-local storage:
+```python
+evaluator = FlagEvaluator()  # Instance-based state
+evaluator.update_state(config)
+result = evaluator.evaluate_bool("myFlag", {}, False)
+```
+
+**Error Handling**: Native Python exceptions instead of JSON error responses:
+```python
+try:
+    result = evaluator.evaluate_bool("nonexistent", {}, False)
+except KeyError as e:
+    print(f"Flag not found: {e}")
+```
+
+### Performance
+
+Native bindings provide **5-10x better performance** than WASM:
+- No WASM instantiation overhead
+- Direct memory sharing (no serialization)
+- Native Python exceptions (no JSON parsing)
+
+### CI/CD
+
+Python wheels are built automatically for:
+- **Linux**: x86_64, aarch64 (manylinux)
+- **macOS**: x86_64, aarch64 (Apple Silicon)
+- **Windows**: x64
+
+See `.github/workflows/python-wheels.yml` for the build configuration.
+
 ## Related Documentation
 
 - **Flagd Provider Specification**: https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md

@@ -124,9 +124,51 @@ dealloc.apply(resultPtr, resultLen);
 
 See [examples/java/FlagdEvaluatorExample.java](examples/java/FlagdEvaluatorExample.java) for a complete example.
 
-### Python with Wasmtime
+### Python (Native Bindings) - Recommended
 
-Python can use the WASM evaluator through [wasmtime-py](https://github.com/bytecodealliance/wasmtime-py), providing the same consistent evaluation logic as other languages.
+**Native Python bindings** provide the best performance and most Pythonic API using PyO3:
+
+```bash
+pip install flagd-evaluator
+```
+
+**Quick Example:**
+
+```python
+from flagd_evaluator import evaluate_logic, FlagEvaluator
+
+# Simple evaluation
+result = evaluate_logic({"==": [1, 1]}, {})
+print(result["result"])  # True
+
+# Stateful flag evaluation
+evaluator = FlagEvaluator()
+evaluator.update_state({
+    "flags": {
+        "myFlag": {
+            "state": "ENABLED",
+            "variants": {"on": True, "off": False},
+            "defaultVariant": "on"
+        }
+    }
+})
+
+enabled = evaluator.evaluate_bool("myFlag", {}, False)
+print(enabled)  # True
+```
+
+**Benefits:**
+- ⚡ 5-10x faster than WASM
+- 🐍 Pythonic API with type hints
+- 📦 Simple `pip install` - no external dependencies
+- 🔧 Native Python exceptions
+- 💾 Efficient memory usage
+
+See [python/README.md](python/README.md) for complete documentation.
+
+### Python with Wasmtime (Alternative)
+
+For environments where native extensions cannot be used, Python can use the WASM evaluator through [wasmtime-py](https://github.com/bytecodealliance/wasmtime-py), providing the same consistent evaluation logic as other languages.
 
 **Installation:**
 
