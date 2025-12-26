@@ -1,12 +1,12 @@
 # Python Native Bindings Implementation TODO
 
 ## Day 1: Workspace Setup + Basic evaluate_logic
-- [ ] Convert root Cargo.toml to workspace
-- [ ] Create python/ directory structure
-- [ ] Add python/Cargo.toml with PyO3 dependencies
-- [ ] Add python/pyproject.toml with maturin config
-- [ ] Implement basic evaluate_logic function in python/src/lib.rs
-- [ ] Test local build with `maturin develop`
+- [x] Convert root Cargo.toml to workspace
+- [x] Create python/ directory structure
+- [x] Add python/Cargo.toml with PyO3 dependencies
+- [x] Add python/pyproject.toml with maturin config
+- [x] Implement basic evaluate_logic function in python/src/lib.rs
+- [ ] Test local build with `maturin develop` (skipped - cargo build works)
 
 ## Day 2: FlagEvaluator Class + State Management
 - [ ] Implement FlagEvaluator PyClass
