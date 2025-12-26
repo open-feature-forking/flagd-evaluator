@@ -9,12 +9,12 @@
 - [ ] Test local build with `maturin develop` (skipped - cargo build works)
 
 ## Day 2: FlagEvaluator Class + State Management
-- [ ] Implement FlagEvaluator PyClass
-- [ ] Add __init__ method
-- [ ] Implement update_state method
-- [ ] Implement evaluate method
-- [ ] Implement type-specific methods (evaluate_bool, evaluate_string, etc.)
-- [ ] Test state management
+- [x] Implement FlagEvaluator PyClass
+- [x] Add __init__ method
+- [x] Implement update_state method
+- [x] Implement evaluate method
+- [x] Implement type-specific methods (evaluate_bool, evaluate_string, evaluate_int, evaluate_float)
+- [ ] Test state management (deferred to Day 3)
 
 ## Day 3: Python Tests + Type Stubs
 - [ ] Create python/tests/test_basic.py
@@ -39,6 +39,6 @@
 - [ ] Update CLAUDE.md
 
 ## Progress Tracking
-- Current Day: Not started
-- Last Completed: None
+- Current Day: Day 3 (Python Tests + Type Stubs)
+- Last Completed: Day 2 (FlagEvaluator Class + State Management)
 - Blocked On: None
