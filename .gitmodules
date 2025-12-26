@@ -1,0 +1,3 @@
+[submodule "testbed"]
+	path = testbed
+	url = git@github.com:open-feature/flagd-testbed.git

@@ -22,8 +22,6 @@ cargo build --target wasm32-unknown-unknown --no-default-features --release --li
 # WASM output location
 # target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
 
-# Build CLI tool
-cargo build --release --bin flagd-eval
 ```
 
 ### Testing
@@ -34,7 +32,7 @@ cargo test
 
 # Run specific test file
 cargo test --test integration_tests
-cargo test --test cli_tests
+cargo test --test gherkin_tests
 
 # Run specific test by name
 cargo test test_fractional_operator
@@ -54,22 +52,6 @@ cargo fmt -- --check
 
 # Lint code (must pass with no warnings)
 cargo clippy -- -D warnings
-```
-
-### CLI Tool Usage
-
-```bash
-# Evaluate a JSON Logic rule
-cargo run --bin flagd-eval -- eval --rule '{"==": [1, 1]}' --data '{}'
-
-# Load rule/data from file (use @ prefix)
-cargo run --bin flagd-eval -- eval --rule @examples/rules/basic.json --data '{"age": 25}'
-
-# Run test suite
-cargo run --bin flagd-eval -- test examples/rules/test-suite.json
-
-# List available operators
-cargo run --bin flagd-eval -- operators
 ```
 
 ## Architecture
@@ -96,9 +78,7 @@ src/
 │   ├── starts_with.rs  # String prefix matching
 │   └── ends_with.rs    # String suffix matching
 ├── model/              # Flag configuration data structures
-├── validation.rs       # JSON Schema validation against flagd schemas
-└── bin/
-    └── flagd-eval.rs   # CLI tool for testing rules without WASM
+└── validation.rs       # JSON Schema validation against flagd schemas
 ```
 
 ### Key Architectural Concepts
@@ -142,7 +122,7 @@ strip = true         # Strip symbols
 panic = "abort"      # Remove panic unwinding infrastructure
 ```
 
-**No Default Features for WASM**: Always build with `--no-default-features` to exclude CLI dependencies (clap, colored) from WASM binary.
+**No Default Features for WASM**: Always build with `--no-default-features` to exclude unnecessary dependencies from WASM binary.
 
 ### Memory Safety Rules
 
@@ -171,7 +151,7 @@ Resolution reasons: `STATIC`, `DEFAULT`, `TARGETING_MATCH`, `DISABLED`, `ERROR`,
 
 ### Testing Philosophy
 
-**Integration Tests** (tests/integration_tests.rs): 72 comprehensive tests covering:
+**Integration Tests** (tests/integration_tests.rs): Comprehensive tests covering:
 - Basic JSON Logic operations
 - All custom operators (fractional, sem_ver, starts_with, ends_with)
 - Memory management
@@ -180,7 +160,7 @@ Resolution reasons: `STATIC`, `DEFAULT`, `TARGETING_MATCH`, `DISABLED`, `ERROR`,
 - Type-specific evaluation functions
 - Context enrichment ($flagd properties)
 
-**CLI Tests** (tests/cli_tests.rs): End-to-end tests for the flagd-eval binary.
+**Gherkin Tests** (tests/gherkin_tests.rs): Specification compliance tests using the official flagd testbed.
 
 **When to Run Tests**:
 - ✅ After making code changes that affect behavior
@@ -197,7 +177,6 @@ Resolution reasons: `STATIC`, `DEFAULT`, `TARGETING_MATCH`, `DISABLED`, `ERROR`,
 3. Register in `src/operators/mod.rs` via `create_evaluator()`
 4. Add tests in both unit tests and `tests/integration_tests.rs`
 5. Document in README.md under "Custom Operators" section
-6. Consider adding to CLI's `operators` command output
 
 **Modifying Flag Evaluation Logic**:
 1. Primary logic is in `src/evaluation.rs`
@@ -287,14 +266,14 @@ This project uses [Release Please](https://github.com/googleapis/release-please)
 **Core Production**:
 - `datalogic-rs` (4.0) - JSON Logic implementation
 - `serde`, `serde_json` - JSON serialization (no_std compatible with alloc)
-- `jsonschema` (0.37) - Flag configuration validation
-
-**CLI Only** (excluded from WASM):
-- `clap` - Command-line argument parsing
-- `colored` - Terminal colors
+- `boon` (0.6) - JSON Schema validation
+- `murmurhash3` - Hash function for fractional operator
+- `ahash` - Hash table implementation (SIMD-disabled for Chicory compatibility)
+- `getrandom` - Random number generation for WASM
 
 **Dev**:
-- `assert_cmd`, `predicates` - CLI integration testing
+- `cucumber` - Gherkin/BDD testing
+- `tokio` - Async runtime for tests
 
 ## Cross-Language Integration
 

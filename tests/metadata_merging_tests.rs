@@ -15,9 +15,11 @@ fn test_metadata_merging_flag_priority() {
     clear_flag_state();
 
     let config = r#"{
-        "version": "1.0",
-        "env": "production",
-        "owner": "flagset",
+        "metadata": {
+            "version": "1.0",
+            "env": "production",
+            "owner": "flagset"
+        },
         "flags": {
             "testFlag": {
                 "state": "ENABLED",
@@ -62,8 +64,10 @@ fn test_metadata_only_flag_set() {
     clear_flag_state();
 
     let config = r#"{
-        "version": "2.0",
-        "team": "platform",
+        "metadata": {
+            "version": "2.0",
+            "team": "platform"
+        },
         "flags": {
             "testFlag": {
                 "state": "ENABLED",
@@ -132,7 +136,9 @@ fn test_metadata_with_disabled_flag() {
     clear_flag_state();
 
     let config = r#"{
-        "version": "1.0",
+        "metadata": {
+            "version": "1.0"
+        },
         "flags": {
             "disabledFlag": {
                 "state": "DISABLED",
@@ -172,7 +178,9 @@ fn test_metadata_with_targeting_match() {
     clear_flag_state();
 
     let config = r#"{
-        "project": "feature-flags",
+        "metadata": {
+            "project": "feature-flags"
+        },
         "flags": {
             "targetedFlag": {
                 "state": "ENABLED",

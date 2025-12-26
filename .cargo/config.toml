@@ -1,0 +1,7 @@
+# Cargo configuration for flagd-evaluator
+
+# Disable SIMD for WASM target (Chicory doesn't support V128/SIMD128)
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "-C", "target-feature=-simd128"
+]

@@ -7,6 +7,7 @@ use crate::model::FeatureFlag;
 use crate::operators::create_evaluator;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 
 /// The reason for the evaluation result.
 ///
@@ -26,6 +27,7 @@ pub enum ResolutionReason {
     Error,
     /// The flag was not found in the configuration.
     FlagNotFound,
+    Fallback,
 }
 
 /// Error codes matching the flagd provider specification.
@@ -161,6 +163,26 @@ impl EvaluationResult {
         }
     }
 
+    /// Creates a fallback result.
+    ///
+    /// This is used when no defaultVariant is set, signaling the client
+    /// to use its code-defined default value. The FALLBACK reason provides
+    /// more semantic information than ERROR, though consumers may map this
+    /// to FLAG_NOT_FOUND for compatibility.
+    pub fn fallback(flag_key: &str) -> Self {
+        Self {
+            value: Value::Null,
+            variant: None,
+            reason: ResolutionReason::Fallback,
+            error_code: Some(ErrorCode::FlagNotFound),
+            error_message: Some(format!(
+                "Flag '{}' has no default variant defined, will use code default",
+                flag_key
+            )),
+            flag_metadata: None,
+        }
+    }
+
     /// Sets the flag metadata for this result.
     pub fn with_metadata(mut self, metadata: std::collections::HashMap<String, Value>) -> Self {
         self.flag_metadata = Some(metadata);
@@ -203,13 +225,9 @@ fn enrich_context(flag_key: &str, context: &Value) -> Value {
     };
 
     // Get current Unix timestamp (seconds since epoch)
-    // Note: SystemTime::now() is available in WASM runtimes that support WASI.
-    // If system time is unavailable, we default to 0 (Unix epoch).
-    // This allows targeting rules to detect the error condition by checking for timestamp == 0.
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0); // Default to 0 if system time is not available
+    // Try to use the host-provided time function if available, otherwise default to 0.
+    // Defaulting to 0 signals to targeting rules that time is unavailable.
+    let timestamp = crate::get_current_time();
 
     // Create $flagd object with nested properties
     let mut flagd_props = Map::new();
@@ -244,13 +262,20 @@ fn merge_metadata(
     flag_set_metadata: &std::collections::HashMap<String, Value>,
     flag_metadata: &std::collections::HashMap<String, Value>,
 ) -> Option<std::collections::HashMap<String, Value>> {
-    // If both are empty, return None
-    if flag_set_metadata.is_empty() && flag_metadata.is_empty() {
+    // Filter out internal fields (those starting with $) from flag-set metadata
+    let filtered_flag_set: HashMap<String, Value> = flag_set_metadata
+        .iter()
+        .filter(|(key, _)| !key.starts_with('$'))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // If both are empty after filtering, return None
+    if filtered_flag_set.is_empty() && flag_metadata.is_empty() {
         return None;
     }
 
-    // Start with flag-set metadata as the base
-    let mut merged = flag_set_metadata.clone();
+    // Start with filtered flag-set metadata as the base
+    let mut merged = filtered_flag_set;
 
     // Override with flag-level metadata (flag metadata takes priority)
     for (key, value) in flag_metadata {
@@ -289,45 +314,50 @@ pub fn evaluate_flag(
     let merged_metadata = merge_metadata(flag_set_metadata, &flag.metadata);
 
     // Check if flag is disabled
+    // Return Disabled reason with FLAG_NOT_FOUND error code to signal the client
+    // to use its code-defined default value. The Disabled reason provides better
+    // semantic information for future use, while FLAG_NOT_FOUND maintains compatibility.
     if flag.state == "DISABLED" {
-        // Return the default variant value
-        if let Some(value) = flag.variants.get(&flag.default_variant) {
-            let result = EvaluationResult::disabled(value.clone(), flag.default_variant.clone());
-            return if let Some(metadata) = merged_metadata {
-                result.with_metadata(metadata)
-            } else {
-                result
-            };
-        } else {
-            return EvaluationResult::error(
-                ErrorCode::General,
-                format!(
-                    "Default variant '{}' not found in flag variants",
-                    flag.default_variant
-                ),
-            );
-        }
+        return EvaluationResult {
+            value: Value::Null,
+            variant: None,
+            reason: ResolutionReason::Disabled,
+            error_code: Some(ErrorCode::FlagNotFound),
+            error_message: Some(format!("flag: {} is disabled", flag_key)),
+            flag_metadata: merged_metadata,
+        };
     }
 
-    // If there's no targeting rule, return the default variant
-    if flag.targeting.is_none() {
-        if let Some(value) = flag.variants.get(&flag.default_variant) {
-            let result =
-                EvaluationResult::static_result(value.clone(), flag.default_variant.clone());
-            return if let Some(metadata) = merged_metadata {
-                result.with_metadata(metadata)
-            } else {
-                result
-            };
-        } else {
-            return EvaluationResult::error(
-                ErrorCode::General,
-                format!(
-                    "Default variant '{}' not found in flag variants",
-                    flag.default_variant
-                ),
-            );
-        }
+    // Check if there's no targeting rule or if it's an empty object "{}"
+    // According to Java implementation (InProcessResolver.java:200-203),
+    // an empty targeting string "{}" should be treated as STATIC (no targeting)
+    let is_empty_targeting = match &flag.targeting {
+        None => true,
+        Some(Value::Object(map)) if map.is_empty() => true,
+        _ => false,
+    };
+
+    if is_empty_targeting {
+        return match flag.default_variant.as_ref() {
+            None => EvaluationResult::fallback(flag_key),
+            Some(value) if value.is_empty() => EvaluationResult::fallback(flag_key),
+            Some(default_variant) => match flag.variants.get(default_variant) {
+                Some(value) => {
+                    let result =
+                        EvaluationResult::static_result(value.clone(), default_variant.clone());
+                    with_metadata(merged_metadata, result)
+                }
+                None => {
+                    return EvaluationResult::error(
+                        ErrorCode::General,
+                        format!(
+                            "Default variant '{}' not found in flag variants",
+                            default_variant
+                        ),
+                    );
+                }
+            },
+        };
     }
 
     // Enrich the context with flagKey and targetingKey
@@ -343,6 +373,31 @@ pub fn evaluate_flag(
 
     match logic.evaluate_json(&rule_str, &context_str) {
         Ok(result) => {
+            // Check if targeting returned null - this means use default variant
+            // This matches the Java implementation behavior
+            if result.is_null() {
+                return match flag.default_variant.as_ref() {
+                    None => EvaluationResult::fallback(flag_key),
+                    Some(value) if value.is_empty() => EvaluationResult::fallback(flag_key),
+                    Some(default_variant) => match flag.variants.get(default_variant) {
+                        Some(value) => {
+                            let result = EvaluationResult::default_result(
+                                value.clone(),
+                                default_variant.clone(),
+                            );
+                            with_metadata(merged_metadata, result)
+                        }
+                        None => EvaluationResult::error(
+                            ErrorCode::General,
+                            format!(
+                                "Default variant '{}' not found in flag variants",
+                                default_variant
+                            ),
+                        ),
+                    },
+                };
+            }
+
             // The result should be a variant name (string)
             let variant_name = match &result {
                 Value::String(s) => s.clone(),
@@ -355,30 +410,46 @@ pub fn evaluate_flag(
                 }
             };
 
-            // Look up the variant value
-            if let Some(value) = flag.variants.get(&variant_name) {
-                let result = EvaluationResult::targeting_match(value.clone(), variant_name);
-                if let Some(metadata) = merged_metadata {
-                    result.with_metadata(metadata)
-                } else {
-                    result
-                }
-            } else {
-                // Variant not found in targeting result, use default
-                if let Some(value) = flag.variants.get(&flag.default_variant) {
-                    let result = EvaluationResult::default_result(
-                        value.clone(),
-                        flag.default_variant.clone(),
-                    );
-                    if let Some(metadata) = merged_metadata {
-                        result.with_metadata(metadata)
-                    } else {
-                        result
+            // Check for empty variant name - if both resolvedVariant and defaultVariant are empty,
+            // return FALLBACK to signal "use code default" (Java implementation lines 223-229)
+            if variant_name.is_empty() {
+                return match flag.default_variant.as_ref() {
+                    None => {
+                        // Both are empty - return FALLBACK (use code default)
+                        EvaluationResult::fallback(flag_key)
                     }
-                } else {
+                    Some(default_variant) if default_variant.is_empty() => {
+                        // Default variant is also empty - return FALLBACK (use code default)
+                        EvaluationResult::fallback(flag_key)
+                    }
+                    Some(_) => {
+                        // Resolved variant is empty but default is not - this is an error
+                        EvaluationResult::error(
+                            ErrorCode::General,
+                            format!(
+                                "Targeting rule returned empty variant name for flag '{}'",
+                                flag_key
+                            ),
+                        )
+                    }
+                };
+            }
+
+            // Look up the variant value
+            match flag.variants.get(&variant_name) {
+                Some(value) => {
+                    let result = EvaluationResult::targeting_match(value.clone(), variant_name);
+                    with_metadata(merged_metadata, result)
+                }
+                None => {
+                    // Variant name returned by targeting doesn't exist in variants map
+                    // This is an error condition according to flagd spec
                     EvaluationResult::error(
                         ErrorCode::General,
-                        format!("Variant '{}' not found in flag variants", variant_name),
+                        format!(
+                            "Targeting rule returned variant '{}' which is not defined in flag variants",
+                            variant_name
+                        ),
                     )
                 }
             }
@@ -386,6 +457,16 @@ pub fn evaluate_flag(
         Err(e) => {
             EvaluationResult::error(ErrorCode::ParseError, format!("Evaluation error: {}", e))
         }
+    }
+}
+
+fn with_metadata(
+    merged_metadata: Option<HashMap<String, Value>>,
+    result: EvaluationResult,
+) -> EvaluationResult {
+    match merged_metadata {
+        Some(metadata) => result.with_metadata(metadata),
+        None => result,
     }
 }
 
@@ -408,8 +489,12 @@ pub fn evaluate_bool_flag(
 ) -> EvaluationResult {
     let result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled
+    {
         return result;
     }
 
@@ -446,8 +531,12 @@ pub fn evaluate_string_flag(
 ) -> EvaluationResult {
     let result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled
+    {
         return result;
     }
 
@@ -469,7 +558,7 @@ pub fn evaluate_string_flag(
 ///
 /// This function evaluates the flag and ensures the result is an integer value.
 /// If the value is not an integer (i64), it returns a TYPE_MISMATCH error.
-/// Note: Floating point numbers are not considered valid integers.
+/// Note: Floating point numbers are coerced to integers (matching Java behavior).
 ///
 /// # Arguments
 /// * `flag` - The feature flag to evaluate
@@ -483,11 +572,24 @@ pub fn evaluate_int_flag(
     context: &Value,
     flag_set_metadata: &std::collections::HashMap<String, Value>,
 ) -> EvaluationResult {
-    let result = evaluate_flag(flag, context, flag_set_metadata);
+    let mut result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled
+    {
         return result;
+    }
+
+    // Type coercion: if this is a double and we are trying to resolve an integer, convert
+    // This matches the Java implementation behavior (InProcessResolver.java:239-241)
+    if result.value.is_f64() {
+        if let Some(f) = result.value.as_f64() {
+            result.value = Value::Number(serde_json::Number::from(f as i64));
+            return result;
+        }
     }
 
     // Check if the value is an integer (i64)
@@ -509,6 +611,7 @@ pub fn evaluate_int_flag(
 ///
 /// This function evaluates the flag and ensures the result is a numeric value.
 /// Both integers and floating point numbers are accepted as valid float values.
+/// Integers are automatically coerced to doubles (matching Java behavior).
 ///
 /// # Arguments
 /// * `flag` - The feature flag to evaluate
@@ -522,10 +625,31 @@ pub fn evaluate_float_flag(
     context: &Value,
     flag_set_metadata: &std::collections::HashMap<String, Value>,
 ) -> EvaluationResult {
-    let result = evaluate_flag(flag, context, flag_set_metadata);
+    let mut result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled
+    {
+        return result;
+    }
+
+    // Type coercion: if this is an integer and we are trying to resolve a double, convert
+    // This matches the Java implementation behavior (InProcessResolver.java:236-238)
+    if result.value.is_i64() || result.value.is_u64() {
+        if let Some(i) = result.value.as_i64() {
+            // Convert integer to float
+            if let Some(num) = serde_json::Number::from_f64(i as f64) {
+                result.value = Value::Number(num);
+            }
+        } else if let Some(u) = result.value.as_u64() {
+            // Convert unsigned integer to float
+            if let Some(num) = serde_json::Number::from_f64(u as f64) {
+                result.value = Value::Number(num);
+            }
+        }
         return result;
     }
 
@@ -562,8 +686,12 @@ pub fn evaluate_object_flag(
 ) -> EvaluationResult {
     let result = evaluate_flag(flag, context, flag_set_metadata);
 
-    // If there's already an error, return it as-is
-    if result.reason == ResolutionReason::Error || result.reason == ResolutionReason::FlagNotFound {
+    // If there's already an error or special status, return it as-is
+    if result.reason == ResolutionReason::Error
+        || result.reason == ResolutionReason::FlagNotFound
+        || result.reason == ResolutionReason::Fallback
+        || result.reason == ResolutionReason::Disabled
+    {
         return result;
     }
 
@@ -617,7 +745,7 @@ mod tests {
         FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "off".to_string(),
+            default_variant: Option::from("off".to_string()),
             variants,
             targeting,
             metadata: HashMap::new(),
@@ -648,9 +776,13 @@ mod tests {
         let context = json!({});
 
         let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
-        assert_eq!(result.value, json!(false));
-        assert_eq!(result.variant, Some("off".to_string()));
+        // Disabled flags return Disabled reason with FLAG_NOT_FOUND error code
+        // Value is null to signal "use code default"
+        assert_eq!(result.value, Value::Null);
+        assert_eq!(result.variant, None);
         assert_eq!(result.reason, ResolutionReason::Disabled);
+        assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
+        assert!(result.error_message.is_some());
     }
 
     #[test]
@@ -722,7 +854,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "string_variant".to_string(),
+            default_variant: Option::from("string_variant".to_string()),
             variants,
             targeting: Some(targeting),
             metadata: HashMap::new(),
@@ -778,9 +910,11 @@ mod tests {
         let context = json!({});
 
         let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
-        // The targeting rule returns the $flagd.flagKey variant name, which should be looked up
-        // Since "test_flag" is not a valid variant, it should fall back to default
-        assert_eq!(result.variant, Some("off".to_string()));
+        // The targeting rule returns the $flagd.flagKey variant name ("test_flag")
+        // Since "test_flag" is not a valid variant, it should return an error (Java-compatible behavior)
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::General));
+        assert!(result.error_message.is_some());
     }
 
     #[test]
@@ -852,7 +986,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "timestamp".to_string(),
+            default_variant: Option::from("timestamp".to_string()),
             variants,
             targeting: Some(targeting),
             metadata: HashMap::new(),
@@ -861,9 +995,10 @@ mod tests {
         let context = json!({});
         let result = evaluate_flag(&flag, &context, &empty_flag_set_metadata());
 
-        // The result should fall back to default because timestamp number
-        // won't match "timestamp" string variant name
-        assert_eq!(result.reason, ResolutionReason::Default);
+        // The targeting returns a numeric timestamp which gets converted to a string
+        // but won't match "timestamp" variant name, so it should return an error (Java-compatible behavior)
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::General));
     }
 
     #[test]
@@ -889,7 +1024,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "failure".to_string(),
+            default_variant: Option::from("failure".to_string()),
             variants,
             targeting: Some(targeting),
             metadata: HashMap::new(),
@@ -925,7 +1060,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants: {
                 let mut v = HashMap::new();
                 v.insert("on".to_string(), json!(true));
@@ -965,7 +1100,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("test_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "off".to_string(),
+            default_variant: Option::from("off".to_string()),
             variants: {
                 let mut v = HashMap::new();
                 v.insert("on".to_string(), json!(true));
@@ -1121,10 +1256,13 @@ mod tests {
 
         let result = evaluate_flag(&flag, &json!({}), &empty_flag_set_metadata());
 
+        // Disabled flags return Disabled reason with FLAG_NOT_FOUND error code
         assert_eq!(result.reason, ResolutionReason::Disabled);
+        assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
+        // Metadata should still be included
         assert!(result.flag_metadata.is_some());
         assert_eq!(
-            result.flag_metadata.unwrap().get("reason"),
+            result.flag_metadata.as_ref().unwrap().get("reason"),
             Some(&json!("deprecated"))
         );
     }
@@ -1182,7 +1320,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("bool_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1203,7 +1341,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("bool_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "on".to_string(),
+            default_variant: Option::from("on".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1227,7 +1365,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("string_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "red".to_string(),
+            default_variant: Option::from("red".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1248,7 +1386,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("string_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "red".to_string(),
+            default_variant: Option::from("red".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1272,7 +1410,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "small".to_string(),
+            default_variant: Option::from("small".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1293,19 +1431,18 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "small".to_string(),
+            default_variant: Option::from("small".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
         };
 
         let result = evaluate_int_flag(&flag, &json!({}), &empty_flag_set_metadata());
-        assert_eq!(result.reason, ResolutionReason::Error);
-        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
-        assert!(result
-            .error_message
-            .unwrap()
-            .contains("Expected integer, got float"));
+        // Float is coerced to integer (Java-compatible behavior)
+        // 3.14 becomes 3
+        assert_eq!(result.value, json!(3));
+        assert_eq!(result.reason, ResolutionReason::Static);
+        assert!(result.error_code.is_none());
     }
 
     #[test]
@@ -1317,7 +1454,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "small".to_string(),
+            default_variant: Option::from("small".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1341,7 +1478,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("float_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "low".to_string(),
+            default_variant: Option::from("low".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1355,7 +1492,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_float_flag_success_with_int() {
-        // Float evaluation should accept integers as valid floats
+        // Float evaluation should accept integers and coerce them to floats
         let mut variants = HashMap::new();
         variants.insert("low".to_string(), json!(1));
         variants.insert("high".to_string(), json!(10));
@@ -1363,14 +1500,15 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("float_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "low".to_string(),
+            default_variant: Option::from("low".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
         };
 
         let result = evaluate_float_flag(&flag, &json!({}), &empty_flag_set_metadata());
-        assert_eq!(result.value, json!(1));
+        // Integer is coerced to float (Java-compatible behavior)
+        assert_eq!(result.value, json!(1.0));
         assert_eq!(result.reason, ResolutionReason::Static);
         assert!(result.error_code.is_none());
     }
@@ -1384,7 +1522,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("float_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "low".to_string(),
+            default_variant: Option::from("low".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1408,7 +1546,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("object_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "config1".to_string(),
+            default_variant: Option::from("config1".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1429,7 +1567,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("object_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "config1".to_string(),
+            default_variant: Option::from("config1".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1474,7 +1612,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("message_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "user".to_string(),
+            default_variant: Option::from("user".to_string()),
             variants,
             targeting: Some(targeting),
             metadata: HashMap::new(),
@@ -1496,16 +1634,17 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "DISABLED".to_string(),
-            default_variant: "small".to_string(),
+            default_variant: Option::from("small".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
         };
 
         let result = evaluate_int_flag(&flag, &json!({}), &empty_flag_set_metadata());
-        assert_eq!(result.value, json!(10));
+        // Disabled flags return Disabled reason with FLAG_NOT_FOUND error code
+        assert_eq!(result.value, Value::Null);
         assert_eq!(result.reason, ResolutionReason::Disabled);
-        assert!(result.error_code.is_none());
+        assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
     }
 
     #[test]
@@ -1529,7 +1668,7 @@ mod tests {
         let flag = FeatureFlag {
             key: Some("object_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "config1".to_string(),
+            default_variant: Option::from("config1".to_string()),
             variants,
             targeting: None,
             metadata: HashMap::new(),
@@ -1558,7 +1697,7 @@ mod tests {
         let bool_flag = FeatureFlag {
             key: Some("bool_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "off".to_string(),
+            default_variant: Option::from("off".to_string()),
             variants: bool_variants,
             targeting: Some(bool_targeting),
             metadata: HashMap::new(),
@@ -1581,7 +1720,7 @@ mod tests {
         let string_flag = FeatureFlag {
             key: Some("string_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "silver".to_string(),
+            default_variant: Option::from("silver".to_string()),
             variants: string_variants,
             targeting: Some(string_targeting),
             metadata: HashMap::new(),
@@ -1604,7 +1743,7 @@ mod tests {
         let int_flag = FeatureFlag {
             key: Some("int_flag".to_string()),
             state: "ENABLED".to_string(),
-            default_variant: "adult".to_string(),
+            default_variant: Option::from("adult".to_string()),
             variants: int_variants,
             targeting: Some(int_targeting),
             metadata: HashMap::new(),

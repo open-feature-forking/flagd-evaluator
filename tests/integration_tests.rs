@@ -4,8 +4,6 @@
 //! JSON parsing, custom operators, and error handling.
 
 use flagd_evaluator::{alloc, dealloc, pack_ptr_len, unpack_ptr_len};
-use serde_json::json;
-
 
 // ============================================================================
 // Memory Management
@@ -50,7 +48,6 @@ fn test_pack_unpack_ptr_len() {
     assert_eq!(unpacked_ptr, original_ptr);
     assert_eq!(unpacked_len, original_len);
 }
-
 
 // ============================================================================
 // update_state integration tests
@@ -175,6 +172,10 @@ fn test_update_state_with_targeting() {
 fn test_update_state_with_metadata() {
     let config = r#"{
         "$schema": "https://flagd.dev/schema/v0/flags.json",
+        "metadata": {
+            "environment": "test",
+            "version": 1
+        },
         "$evaluators": {
             "emailWithFaas": {
                 "in": ["@faas.com", {"var": ["email"]}]
@@ -193,8 +194,18 @@ fn test_update_state_with_metadata() {
     assert!(response.success);
 
     let state = flagd_evaluator::storage::get_flag_state().unwrap();
-    assert!(state.flag_set_metadata.contains_key("$schema"));
-    assert!(state.flag_set_metadata.contains_key("$evaluators"));
+    // $schema and $evaluators should NOT be in flag_set_metadata
+    assert!(!state.flag_set_metadata.contains_key("$schema"));
+    assert!(!state.flag_set_metadata.contains_key("$evaluators"));
+    // But the flattened metadata should be there
+    assert_eq!(
+        state.flag_set_metadata.get("environment"),
+        Some(&serde_json::json!("test"))
+    );
+    assert_eq!(
+        state.flag_set_metadata.get("version"),
+        Some(&serde_json::json!(1))
+    );
 }
 
 #[test]
@@ -531,7 +542,9 @@ fn test_evaluators_missing_ref_in_storage() {
     let response = result.unwrap();
     assert!(!response.success);
     let err = response.error.unwrap();
-    assert!(err.contains("nonExistentRule"));
+    // The error is now a validation error from boon, not a parsing error
+    // It should contain either "validation failed" or reference to the error
+    assert!(err.contains("validation failed") || err.contains("nonExistentRule"));
 }
 
 #[test]

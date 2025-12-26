@@ -24,8 +24,8 @@ mod common;
 mod fractional;
 mod sem_ver;
 
-pub use fractional::{fractional, FractionalOperator};
-pub use sem_ver::{sem_ver, SemVer, SemVerOperator};
+pub use fractional::FractionalOperator;
+pub use sem_ver::{SemVer, SemVerOperator};
 
 use datalogic_rs::DataLogic;
 

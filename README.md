@@ -42,70 +42,6 @@ The WASM file will be at: `target/wasm32-unknown-unknown/release/flagd_evaluator
 cargo test
 ```
 
-## CLI Tool
-
-A command-line interface is available for testing and debugging JSON Logic rules without requiring WASM compilation or Java integration.
-
-### Installing the CLI
-
-```bash
-# Build from source
-cargo build --release
-
-# The binary will be at: target/release/flagd-eval
-# Or install directly:
-cargo install --path .
-```
-
-### CLI Commands
-
-#### Evaluate a Rule
-
-```bash
-# Inline JSON
-flagd-eval eval --rule '{"==": [1, 1]}' --data '{}'
-
-# File-based (use @ prefix)
-flagd-eval eval --rule @examples/rules/basic.json --data '{"age": 25}'
-
-# With pretty output
-flagd-eval eval --rule '{"var": "user"}' --data '{"user": {"name": "Alice"}}' --pretty
-```
-
-#### Run Test Suites
-
-```bash
-# Run a test suite
-flagd-eval test examples/rules/test-suite.json
-
-# With verbose output
-flagd-eval test examples/rules/test-suite.json --verbose
-```
-
-#### List Operators
-
-```bash
-flagd-eval operators
-```
-
-### Test Suite Format
-
-Create JSON test suites to validate your rules:
-
-```json
-{
-  "name": "My Test Suite",
-  "tests": [
-    {
-      "description": "Check adult age",
-      "rule": {">=": [{"var": "age"}, 18]},
-      "data": {"age": 25},
-      "expected": true
-    }
-  ]
-}
-```
-
 ## Installation
 
 ### From Release
@@ -187,6 +123,143 @@ dealloc.apply(resultPtr, resultLen);
 ```
 
 See [examples/java/FlagdEvaluatorExample.java](examples/java/FlagdEvaluatorExample.java) for a complete example.
+
+### Python with Wasmtime
+
+Python can use the WASM evaluator through [wasmtime-py](https://github.com/bytecodealliance/wasmtime-py), providing the same consistent evaluation logic as other languages.
+
+**Installation:**
+
+```bash
+pip install wasmtime
+```
+
+**Basic Example:**
+
+```python
+import json
+from wasmtime import Store, Module, Instance, Func, FuncType, ValType
+import time
+import secrets
+
+# Load WASM module
+store = Store()
+module = Module.from_file(store.engine, 'flagd_evaluator.wasm')
+
+# Define required host functions
+def get_current_time() -> int:
+    return int(time.time())
+
+def get_random_values(caller, _typed_array_ptr: int, buffer_ptr: int):
+    random_bytes = secrets.token_bytes(32)
+    memory = caller["memory"]
+    memory.write(store, buffer_ptr, random_bytes)
+
+# Minimal host function stubs (no-ops)
+def noop_i32(_: int): pass
+def noop_i32_ret(_: int) -> int: return 0
+def noop_i32_i32(_1: int, _2: int): pass
+def noop() -> int: return 0
+def noop_ret() -> int: return 128
+
+# Create host functions
+imports = {
+    "host": {
+        "get_current_time_unix_seconds": Func(store, FuncType([], [ValType.i64()]), get_current_time),
+    },
+    "__wbindgen_placeholder__": {
+        "__wbg_getRandomValues_1c61fac11405ffdc": Func(
+            store, FuncType([ValType.i32(), ValType.i32()], []), get_random_values
+        ),
+        "__wbg_new_0_23cedd11d9b40c9d": Func(store, FuncType([], [ValType.i32()]), noop),
+        "__wbg_getTime_ad1e9878a735af08": Func(
+            store, FuncType([ValType.i32()], [ValType.f64()]), lambda _: float(time.time() * 1000)
+        ),
+        "__wbg___wbindgen_throw_dd24417ed36fc46e": Func(
+            store, FuncType([ValType.i32(), ValType.i32()], []), noop_i32_i32
+        ),
+        "__wbindgen_describe": Func(store, FuncType([ValType.i32()], []), noop_i32),
+        "__wbindgen_object_drop_ref": Func(store, FuncType([ValType.i32()], []), noop_i32),
+    },
+    "__wbindgen_externref_xform__": {
+        "__wbindgen_externref_table_grow": Func(
+            store, FuncType([ValType.i32()], [ValType.i32()]), noop_ret
+        ),
+        "__wbindgen_externref_table_set_null": Func(
+            store, FuncType([ValType.i32()], []), noop_i32
+        ),
+    },
+}
+
+# Create instance with host functions
+instance = Instance(store, module, imports)
+
+# Get WASM exports
+exports = instance.exports(store)
+alloc = exports["alloc"]
+dealloc = exports["dealloc"]
+evaluate_logic = exports["evaluate_logic"]
+memory = exports["memory"]
+
+def evaluate_rule(rule: dict, data: dict) -> dict:
+    """Evaluate a JSON Logic rule against data"""
+    # Serialize to JSON
+    rule_json = json.dumps(rule).encode('utf-8')
+    data_json = json.dumps(data).encode('utf-8')
+
+    # Allocate memory
+    rule_ptr = alloc(store, len(rule_json))
+    data_ptr = alloc(store, len(data_json))
+
+    # Write to WASM memory
+    memory.write(store, rule_ptr, rule_json)
+    memory.write(store, data_ptr, data_json)
+
+    # Call evaluate_logic
+    result_packed = evaluate_logic(store, rule_ptr, len(rule_json), data_ptr, len(data_json))
+
+    # Unpack result (upper 32 bits = ptr, lower 32 bits = len)
+    result_ptr = result_packed >> 32
+    result_len = result_packed & 0xFFFFFFFF
+
+    # Read result
+    result_bytes = memory.read(store, result_ptr, result_len)
+    result = json.loads(result_bytes.decode('utf-8'))
+
+    # Free memory
+    dealloc(store, rule_ptr, len(rule_json))
+    dealloc(store, data_ptr, len(data_json))
+    dealloc(store, result_ptr, result_len)
+
+    return result
+
+# Example usage
+result = evaluate_rule({"==": [1, 1]}, {})
+print(result)  # {'success': True, 'result': True, 'error': None}
+
+# Custom operator example
+result = evaluate_rule(
+    {"starts_with": [{"var": "email"}, "admin@"]},
+    {"email": "admin@example.com"}
+)
+print(result)  # {'success': True, 'result': True, 'error': None}
+
+# Semantic version comparison
+result = evaluate_rule(
+    {"sem_ver": [">=", "2.1.0", "2.0.0"]},
+    {}
+)
+print(result)  # {'success': True, 'result': True, 'error': None}
+```
+
+**Alternative: Native Python Bindings with PyO3**
+
+For better performance and a more Pythonic API, native Python bindings could be created using [PyO3](https://github.com/PyO3/pyo3). This would:
+- Eliminate WASM overhead
+- Provide direct Rust-to-Python compilation
+- Enable a simpler, more idiomatic Python API
+
+See [GitHub issue #XX] for discussion on adding native Python bindings.
 
 ### Rust
 
@@ -520,6 +593,54 @@ The evaluator automatically enriches the evaluation context with standard `$flag
 ```
 
 **Note:** The `$flagd` properties are stored as a nested object in the evaluation context: `{"$flagd": {"flagKey": "...", "timestamp": ...}}`. This allows JSON Logic to access them using dot notation (e.g., `{"var": "$flagd.timestamp"}`).
+
+## Host Functions (Required for WASM)
+
+The WASM module requires the host environment to provide the current timestamp for context enrichment.
+
+### Required: `get_current_time_unix_seconds`
+
+**Module:** `host`
+**Function:** `get_current_time_unix_seconds() -> u64`
+
+Returns the current Unix timestamp in seconds since epoch (1970-01-01 00:00:00 UTC).
+
+#### Why is this needed?
+
+The WASM sandbox cannot access system time without WASI support. Since Chicory and other pure WASM runtimes don't provide WASI, the host must supply the current time for the `$flagd.timestamp` property used in targeting rules.
+
+#### Java Implementation Example (Chicory)
+
+```java
+import com.dylibso.chicory.runtime.HostFunction;
+import com.dylibso.chicory.wasm.types.Value;
+import com.dylibso.chicory.wasm.types.ValueType;
+
+HostFunction getCurrentTime = new HostFunction(
+    "host",                              // Module name
+    "get_current_time_unix_seconds",    // Function name
+    List.of(),                           // No parameters
+    List.of(ValueType.I64),             // Returns i64
+    (Instance instance, Value... args) -> {
+        long currentTimeSeconds = System.currentTimeMillis() / 1000;
+        return new Value[] { Value.i64(currentTimeSeconds) };
+    }
+);
+
+// Add to module when loading WASM
+Module module = Module.builder(wasmBytes)
+    .withHostFunction(getCurrentTime)
+    .build();
+```
+
+**📝 See [HOST_FUNCTIONS.md](./HOST_FUNCTIONS.md) for complete implementation examples in Java, JavaScript, and Go.**
+
+#### Behavior Without Host Function
+
+If the host function is not provided:
+- `$flagd.timestamp` defaults to `0`
+- Evaluation continues without errors
+- Time-based targeting rules will not work correctly
 
 ## JSON Schema Validation
 

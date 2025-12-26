@@ -3,10 +3,10 @@
 //! The fractional operator uses consistent hashing to assign users to buckets
 //! for A/B testing scenarios.
 
+use super::common::OperatorResult;
 use datalogic_rs::{ContextStack, Error as DataLogicError, Evaluator, Operator};
+use murmurhash3::murmurhash3_x86_32;
 use serde_json::Value;
-
-use super::common::{resolve_string_from_context, OperatorResult};
 
 /// Custom operator for fractional/percentage-based bucket assignment.
 ///
@@ -19,99 +19,76 @@ impl Operator for FractionalOperator {
         &self,
         args: &[Value],
         context: &mut ContextStack,
-        _evaluator: &dyn Evaluator,
+        evaluator: &dyn Evaluator,
     ) -> OperatorResult<Value> {
-        if args.len() < 2 {
+        if args.is_empty() {
             return Err(DataLogicError::InvalidArguments(
-                "fractional operator requires an array with at least 2 elements".into(),
+                "fractional operator requires at least one bucket definition".into(),
             ));
         }
 
-        // First argument is the bucket key (can be a value or a var reference)
-        let bucket_key = resolve_string_from_context(&args[0], context)?;
+        // Evaluate the first argument to determine bucketing key logic
+        let evaluated_first = evaluator.evaluate(&args[0], context)?;
+        let (bucket_key, start_index) = if let Value::String(s) = &evaluated_first {
+            // Explicit bucketing key provided
+            (s.clone(), 1)
+        } else {
+            // Fallback: use flagKey + targetingKey from context data
+            let data = context.root().data().clone();
+            let targeting_key = data
+                .get("targetingKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let flag_key = data
+                .get("$flagd")
+                .and_then(|v| v.get("flagKey"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            (format!("{}{}", flag_key, targeting_key), 0)
+        };
 
-        // Second argument is the buckets array
-        let buckets = args[1]
-            .as_array()
-            .ok_or_else(|| {
-                DataLogicError::InvalidArguments(
+        // Parse bucket definitions from remaining arguments
+        let mut bucket_values: Vec<Value> = Vec::new();
+
+        if start_index == 1 && args.len() == 2 {
+            // Single array format: ["key", ["bucket1", 50, "bucket2", 50]]
+            let evaluated_buckets = evaluator.evaluate(&args[1], context)?;
+            if let Some(arr) = evaluated_buckets.as_array() {
+                bucket_values.extend_from_slice(arr);
+            } else {
+                return Err(DataLogicError::InvalidArguments(
                     "Second argument must be an array of bucket definitions".into(),
-                )
-            })?
-            .as_slice();
+                ));
+            }
+        } else {
+            // Multiple array format: ["key", ["bucket1", 50], ["bucket2", 50]]
+            // or shorthand: [["bucket1"], ["bucket2", weight]]
+            for arg in &args[start_index..] {
+                let evaluated = evaluator.evaluate(arg, context)?;
+                if let Some(bucket_def) = evaluated.as_array() {
+                    // Each bucket is [name, weight] or [name] (weight=1)
+                    if bucket_def.len() >= 2 {
+                        bucket_values.push(bucket_def[0].clone());
+                        bucket_values.push(bucket_def[1].clone());
+                    } else if bucket_def.len() == 1 {
+                        // Shorthand: [name] implies weight of 1
+                        bucket_values.push(bucket_def[0].clone());
+                        bucket_values.push(Value::Number(1.into()));
+                    }
+                } else {
+                    return Err(DataLogicError::InvalidArguments(format!(
+                        "Bucket definition must be an array, got: {:?}",
+                        evaluated
+                    )));
+                }
+            }
+        }
 
-        match fractional(&bucket_key, buckets) {
+        match fractional(&bucket_key, &bucket_values) {
             Ok(bucket_name) => Ok(Value::String(bucket_name)),
             Err(e) => Err(DataLogicError::Custom(e)),
         }
     }
-}
-
-/// MurmurHash3 32-bit implementation for consistent hashing.
-///
-/// This is a simplified implementation of MurmurHash3 that provides
-/// good distribution for our use case. It's used by the fractional
-/// operator to consistently assign users to buckets.
-///
-/// # Arguments
-/// * `key` - The byte slice to hash
-/// * `seed` - Seed value for the hash
-///
-/// # Returns
-/// A 32-bit hash value
-fn murmurhash3_32(key: &[u8], seed: u32) -> u32 {
-    const C1: u32 = 0xcc9e2d51;
-    const C2: u32 = 0x1b873593;
-    const R1: u32 = 15;
-    const R2: u32 = 13;
-    const M: u32 = 5;
-    const N: u32 = 0xe6546b64;
-
-    let mut hash = seed;
-    let len = key.len();
-    let n_blocks = len / 4;
-
-    // Process 4-byte chunks
-    for i in 0..n_blocks {
-        let mut k =
-            u32::from_le_bytes([key[i * 4], key[i * 4 + 1], key[i * 4 + 2], key[i * 4 + 3]]);
-
-        k = k.wrapping_mul(C1);
-        k = k.rotate_left(R1);
-        k = k.wrapping_mul(C2);
-
-        hash ^= k;
-        hash = hash.rotate_left(R2);
-        hash = hash.wrapping_mul(M).wrapping_add(N);
-    }
-
-    // Process remaining bytes
-    let tail = &key[n_blocks * 4..];
-    let mut k1: u32 = 0;
-
-    if tail.len() >= 3 {
-        k1 ^= (tail[2] as u32) << 16;
-    }
-    if tail.len() >= 2 {
-        k1 ^= (tail[1] as u32) << 8;
-    }
-    if !tail.is_empty() {
-        k1 ^= tail[0] as u32;
-        k1 = k1.wrapping_mul(C1);
-        k1 = k1.rotate_left(R1);
-        k1 = k1.wrapping_mul(C2);
-        hash ^= k1;
-    }
-
-    // Finalization
-    hash ^= len as u32;
-    hash ^= hash >> 16;
-    hash = hash.wrapping_mul(0x85ebca6b);
-    hash ^= hash >> 13;
-    hash = hash.wrapping_mul(0xc2b2ae35);
-    hash ^= hash >> 16;
-
-    hash
 }
 
 /// Evaluates the fractional operator for consistent bucket assignment.
@@ -182,48 +159,33 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
     }
 
     // Hash the bucket key to get a consistent value
-    let hash = murmurhash3_32(bucket_key.as_bytes(), 0);
+    // Using murmurhash3_x86_32 to match Apache Commons MurmurHash3.hash32x86
+    // Java code: Math.abs(mmrHash) * 1.0f / Integer.MAX_VALUE * 100
+    let hash: u32 = murmurhash3_x86_32(bucket_key.as_bytes(), 0);
+    let hash_i32 = hash as i32; // Cast to signed integer (may be negative)
+    let abs_hash = hash_i32.abs(); // Take absolute value like Java does
+    let bucket_value = (abs_hash as f64 / i32::MAX as f64) * 100.0;
 
-    // Map hash to range [0, total_weight)
-    let bucket_value = (hash as u64 * total_weight as u64 / u32::MAX as u64) as u32;
-
-    // Find which bucket this value falls into
-    let mut cumulative_weight: u32 = 0;
-    for (name, weight) in bucket_defs {
-        cumulative_weight += weight;
+    // Find which bucket this value falls into by accumulating weights
+    let mut cumulative_weight: f64 = 0.;
+    for (name, weight) in &bucket_defs {
+        cumulative_weight += (weight * 100) as f64 / total_weight as f64;
         if bucket_value < cumulative_weight {
-            return Ok(name);
+            return Ok(name.clone());
         }
     }
 
-    // Should never reach here, but return last bucket as fallback
-    Err("Failed to select bucket".to_string())
+    // If we didn't find a bucket (e.g., total_weight < 100), return the last one
+    Ok(bucket_defs
+        .last()
+        .map(|(name, _)| name.clone())
+        .unwrap_or_default())
 }
-
-// TODO: Evaluate using an existing MurmurHash3 crate (e.g., `murmur3`, `fasthash`, or `twox-hash`)
-// instead of the custom implementation. This would reduce maintenance burden and potentially
-// provide better performance or additional features. Consider compatibility with WASM targets
-// when selecting a crate.
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn test_murmurhash3_consistency() {
-        // Same input should always produce same output
-        let hash1 = murmurhash3_32(b"test-key", 0);
-        let hash2 = murmurhash3_32(b"test-key", 0);
-        assert_eq!(hash1, hash2);
-    }
-
-    #[test]
-    fn test_murmurhash3_different_inputs() {
-        let hash1 = murmurhash3_32(b"key1", 0);
-        let hash2 = murmurhash3_32(b"key2", 0);
-        assert_ne!(hash1, hash2);
-    }
 
     #[test]
     fn test_fractional_50_50() {
@@ -303,5 +265,72 @@ mod tests {
         let buckets = vec![json!("bucket"), json!("not-a-number")];
         let result = fractional("user-123", &buckets);
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod hash_debug {
+    use super::*;
+
+    #[test]
+    fn debug_hash_calculations() {
+        let test_keys = vec![
+            "fractional-flag-shorthandjon@company.com",
+            "fractional-flag-shorthandjane@company.com",
+        ];
+
+        for key in test_keys {
+            let hash_u32 = murmurhash3_x86_32(key.as_bytes(), 0);
+            let hash_i32 = hash_u32 as i32;
+            let abs_hash = hash_i32.abs();
+
+            // Current method
+            let bucket_current = (hash_u32 as f64 / u32::MAX as f64) * 100.0;
+
+            // Java-style method
+            let bucket_java = (abs_hash as f64 / i32::MAX as f64) * 100.0;
+
+            println!("\nKey: {}", key);
+            println!("  Hash (u32): {}", hash_u32);
+            println!("  Hash (i32): {}", hash_i32);
+            println!("  Abs: {}", abs_hash);
+            println!("  Bucket (current u32/MAX): {:.6}", bucket_current);
+            println!("  Bucket (Java abs/i32MAX): {:.6}", bucket_java);
+        }
+    }
+}
+
+#[test]
+fn debug_shorthand_keys() {
+    let flag_key = "fractional-flag-shorthand";
+    let test_cases = vec![
+        ("jon@company.com", "heads"),  // Expected
+        ("jane@company.com", "tails"), // Expected
+    ];
+
+    for (targeting_key, expected) in test_cases {
+        let bucket_key = format!("{}{}", flag_key, targeting_key);
+        let hash: u32 = murmurhash3_x86_32(bucket_key.as_bytes(), 0);
+        let hash_i32 = hash as i32;
+        let abs_hash = hash_i32.abs();
+        let bucket_value = (abs_hash as f64 / i32::MAX as f64) * 100.0;
+
+        println!("\nTargeting Key: {}", targeting_key);
+        println!("  Bucket Key: {}", bucket_key);
+        println!("  Hash (u32): {}", hash);
+        println!("  Hash (i32): {}", hash_i32);
+        println!("  Abs: {}", abs_hash);
+        println!("  Bucket Value: {:.6}", bucket_value);
+        println!("  Expected: {}", expected);
+
+        // Buckets: [("heads", 1), ("tails", 1)] total=2
+        // cumulative: heads=50%, tails=100%
+        let result = if bucket_value < 50.0 {
+            "heads"
+        } else {
+            "tails"
+        };
+        println!("  Result: {}", result);
+        println!("  Match: {}", result == expected);
     }
 }
