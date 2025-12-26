@@ -259,7 +259,97 @@ For better performance and a more Pythonic API, native Python bindings could be 
 - Provide direct Rust-to-Python compilation
 - Enable a simpler, more idiomatic Python API
 
-See [GitHub issue #XX] for discussion on adding native Python bindings.
+See [GitHub issue #47](https://github.com/open-feature-forking/flagd-evaluator/issues/47) for discussion on adding native Python bindings.
+
+### Node.js/JavaScript with WASM
+
+Node.js can use the WASM evaluator using the built-in WebAssembly API:
+
+```javascript
+const fs = require('fs');
+const crypto = require('crypto');
+
+// Load WASM module
+const wasmBuffer = fs.readFileSync('flagd_evaluator.wasm');
+
+// Define host functions
+const imports = {
+  host: {
+    get_current_time_unix_seconds: () => BigInt(Math.floor(Date.now() / 1000))
+  },
+  __wbindgen_placeholder__: {
+    __wbg_getRandomValues_1c61fac11405ffdc: (typedArrayPtr, bufferPtr) => {
+      const randomBytes = crypto.randomBytes(32);
+      const memory = instance.exports.memory;
+      new Uint8Array(memory.buffer, bufferPtr, 32).set(randomBytes);
+    },
+    __wbindgen_describe: () => {},
+    __wbindgen_throw: (ptr, len) => {
+      const memory = instance.exports.memory;
+      const message = new TextDecoder().decode(
+        new Uint8Array(memory.buffer, ptr, len)
+      );
+      throw new Error(message);
+    },
+    __wbindgen_object_drop_ref: () => {},
+    __wbindgen_externref_table_grow: () => 0,
+    __wbindgen_externref_table_set_null: () => {},
+    __wbg_new0_1: () => Date.now(),
+    __wbg_getTime_1: (datePtr) => Date.now()
+  }
+};
+
+// Instantiate WASM
+let instance;
+WebAssembly.instantiate(wasmBuffer, imports).then(result => {
+  instance = result.instance;
+
+  // Helper functions
+  const alloc = instance.exports.alloc;
+  const dealloc = instance.exports.dealloc;
+  const evaluateLogic = instance.exports.evaluate_logic;
+  const memory = instance.exports.memory;
+
+  function writeString(str) {
+    const bytes = Buffer.from(str, 'utf8');
+    const ptr = alloc(bytes.length);
+    new Uint8Array(memory.buffer, ptr, bytes.length).set(bytes);
+    return { ptr, len: bytes.length };
+  }
+
+  function readString(ptr, len) {
+    const bytes = new Uint8Array(memory.buffer, ptr, len);
+    return Buffer.from(bytes).toString('utf8');
+  }
+
+  // Evaluate a rule
+  const rule = writeString('{"==": [1, 1]}');
+  const data = writeString('{}');
+
+  const resultPacked = evaluateLogic(rule.ptr, rule.len, data.ptr, data.len);
+  const resultPtr = Number(resultPacked >> 32n);
+  const resultLen = Number(resultPacked & 0xFFFFFFFFn);
+
+  const resultJson = readString(resultPtr, resultLen);
+  console.log(resultJson);
+  // Output: {"success":true,"result":true,"error":null}
+
+  // Clean up
+  dealloc(rule.ptr, rule.len);
+  dealloc(data.ptr, data.len);
+  dealloc(resultPtr, resultLen);
+});
+```
+
+**Alternative: Native Node.js Bindings with napi-rs**
+
+For better performance and a more idiomatic JavaScript/TypeScript API, native Node.js bindings could be created using [napi-rs](https://napi.rs/). This would:
+- Eliminate WASM overhead
+- Provide native npm package installation
+- Enable simpler, more JavaScript-idiomatic API
+- Auto-generate TypeScript definitions
+
+See [GitHub issue #48](https://github.com/open-feature-forking/flagd-evaluator/issues/48) for discussion on adding native Node.js bindings.
 
 ### Rust
 
