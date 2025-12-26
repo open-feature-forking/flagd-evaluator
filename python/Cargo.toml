@@ -1,0 +1,20 @@
+[package]
+name = "flagd-evaluator-py"
+version = "0.1.0"
+edition = "2021"
+authors = ["OpenFeature Community"]
+description = "Python bindings for flagd-evaluator"
+license = "Apache-2.0"
+
+[lib]
+name = "flagd_evaluator"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.20", features = ["extension-module"] }
+pythonize = "0.20"
+flagd-evaluator = { path = "..", default-features = false }
+serde_json = "1.0"
+
+[dev-dependencies]
+pyo3 = { version = "0.20", features = ["auto-initialize"] }
