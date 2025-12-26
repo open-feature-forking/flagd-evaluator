@@ -68,7 +68,7 @@ cargo clippy -- -D warnings
 
 ```
 src/
-├── lib.rs              # Main entry point, WASM exports (evaluate_logic, update_state, evaluate)
+├── lib.rs              # Main entry point, WASM exports (update_state, evaluate)
 ├── evaluation.rs       # Core flag evaluation logic, context enrichment ($flagd properties)
 ├── memory.rs           # WASM memory management (alloc/dealloc, pointer packing)
 ├── storage/            # Thread-local flag state storage
@@ -311,7 +311,7 @@ In addition to WASM integration, this project provides **native Python bindings*
 ```
 python/
 ├── src/
-│   └── lib.rs           # PyO3 bindings (evaluate_logic, FlagEvaluator class)
+│   └── lib.rs           # PyO3 bindings (FlagEvaluator class)
 ├── tests/               # Python test suite (pytest)
 ├── examples/            # Usage examples
 ├── benchmarks/          # Performance benchmarks
@@ -321,6 +321,30 @@ python/
 ```
 
 ### Building Python Bindings
+
+**Recommended: Using uv (faster)**
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Set up development environment
+cd python
+uv venv
+source .venv/bin/activate
+uv pip install maturin pytest
+
+# Build and install locally
+maturin develop
+
+# Run tests
+pytest tests/ -v
+
+# Build wheels for distribution
+maturin build --release
+```
+
+**Alternative: Using pip**
 
 ```bash
 # Install maturin
@@ -342,10 +366,14 @@ maturin build --release
 **API Design**: Pythonic dictionaries instead of JSON strings:
 ```python
 # PyO3 API (native)
-result = evaluate_logic({"==": [1, 1]}, {})
+evaluator = FlagEvaluator()
+evaluator.update_state({"flags": {"myFlag": {...}}})
+result = evaluator.evaluate("myFlag", {})
 
 # vs WASM API (for comparison)
-result_json = evaluate_logic_wasm(json.dumps(rule), json.dumps(data))
+config_json = json.dumps({"flags": {"myFlag": {...}}})
+update_state_wasm(config_json)
+result_json = evaluate_wasm("myFlag", "{}")
 result = json.loads(result_json)
 ```
 

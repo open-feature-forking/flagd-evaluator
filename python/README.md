@@ -158,12 +158,47 @@ See [benchmarks/bench_vs_wasm.py](benchmarks/bench_vs_wasm.py) for detailed comp
 
 ### Building from Source
 
+#### Recommended: Using uv (faster)
+
+[uv](https://github.com/astral-sh/uv) is a fast Python package installer and resolver written in Rust.
+
 ```bash
-# Install maturin
-pip install maturin
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create virtual environment
+cd python
+uv venv
+
+# Activate virtual environment
+source .venv/bin/activate  # On Unix/macOS
+# .venv\Scripts\activate   # On Windows
+
+# Install dependencies and build package
+uv pip install maturin pytest
+
+# Build and install the package in development mode
+maturin develop
+
+# Run tests
+pytest tests/ -v
+```
+
+#### Alternative: Using pip
+
+```bash
+# Create virtual environment
+cd python
+python -m venv .venv
+
+# Activate virtual environment
+source .venv/bin/activate  # On Unix/macOS
+# .venv\Scripts\activate   # On Windows
+
+# Install dependencies
+pip install maturin pytest
 
 # Build and install locally
-cd python
 maturin develop
 
 # Run tests
@@ -173,6 +208,11 @@ pytest tests/ -v
 ### Running Tests
 
 ```bash
+# With uv (from python directory)
+uv pip install pytest
+pytest tests/ -v
+
+# With pip (from repository root)
 pip install pytest
 pytest python/tests/ -v
 ```

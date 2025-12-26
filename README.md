@@ -184,6 +184,23 @@ print(enabled)  # True
 - 🔧 Native Python exceptions
 - 💾 Efficient memory usage
 
+**Development:**
+
+For local development, we recommend using [uv](https://github.com/astral-sh/uv) for faster package management:
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Set up development environment
+cd python
+uv venv
+source .venv/bin/activate
+uv pip install maturin pytest
+maturin develop
+pytest tests/ -v
+```
+
 See [python/README.md](python/README.md) for complete documentation.
 
 ### Python with Wasmtime (Alternative)
