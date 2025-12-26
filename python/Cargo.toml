@@ -11,10 +11,10 @@ name = "flagd_evaluator"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
 pythonize = "0.22"
 flagd-evaluator = { path = "..", default-features = false }
 serde_json = "1.0"
 
 [dev-dependencies]
-pyo3 = { version = "0.22", features = ["auto-initialize"] }
+pyo3 = { version = "0.22", features = ["auto-initialize", "abi3-py39"] }
