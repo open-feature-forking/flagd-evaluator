@@ -82,7 +82,12 @@ impl FlagEvaluator {
     ///
     /// Returns:
     ///     dict: Evaluation result with value, variant, reason, and metadata
-    fn evaluate(&self, py: Python, flag_key: String, context: &Bound<'_, PyDict>) -> PyResult<PyObject> {
+    fn evaluate(
+        &self,
+        py: Python,
+        flag_key: String,
+        context: &Bound<'_, PyDict>,
+    ) -> PyResult<PyObject> {
         let state = self.state.as_ref().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "No state loaded. Call update_state() first.",
