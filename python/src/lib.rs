@@ -45,9 +45,9 @@ impl FlagEvaluator {
     ///
     /// Returns:
     ///     dict: Update response with changed flag keys
-    fn update_state(&mut self, py: Python, config: &PyDict) -> PyResult<PyObject> {
+    fn update_state(&mut self, py: Python, config: &Bound<'_, PyDict>) -> PyResult<PyObject> {
         // Convert Python dict to JSON Value
-        let config_value: Value = pythonize::depythonize(config)?;
+        let config_value: Value = pythonize::depythonize(config.as_any())?;
 
         // Convert to JSON string for parsing
         let config_str = serde_json::to_string(&config_value).map_err(|e| {
@@ -69,7 +69,7 @@ impl FlagEvaluator {
         self.state = Some(parsing_result.clone());
 
         // Return update response (simplified - just success)
-        let result_dict = PyDict::new(py);
+        let result_dict = PyDict::new_bound(py);
         result_dict.set_item("success", true)?;
         Ok(result_dict.into())
     }
@@ -82,7 +82,7 @@ impl FlagEvaluator {
     ///
     /// Returns:
     ///     dict: Evaluation result with value, variant, reason, and metadata
-    fn evaluate(&self, py: Python, flag_key: String, context: &PyDict) -> PyResult<PyObject> {
+    fn evaluate(&self, py: Python, flag_key: String, context: &Bound<'_, PyDict>) -> PyResult<PyObject> {
         let state = self.state.as_ref().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "No state loaded. Call update_state() first.",
@@ -95,18 +95,20 @@ impl FlagEvaluator {
         })?;
 
         // Convert context to JSON Value
-        let context_value: Value = pythonize::depythonize(context)?;
+        let context_value: Value = pythonize::depythonize(context.as_any())?;
 
         // Evaluate the flag
         let result = evaluate_flag(flag, &context_value, &state.flag_set_metadata);
 
         // Convert result to Python dict
-        pythonize::pythonize(py, &result).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Failed to convert result: {}",
-                e
-            ))
-        })
+        pythonize::pythonize(py, &result)
+            .map(|bound| bound.unbind())
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Failed to convert result: {}",
+                    e
+                ))
+            })
     }
 
     /// Evaluate a boolean flag
@@ -121,7 +123,7 @@ impl FlagEvaluator {
     fn evaluate_bool(
         &self,
         flag_key: String,
-        context: &PyDict,
+        context: &Bound<'_, PyDict>,
         default_value: bool,
     ) -> PyResult<bool> {
         let state = self.state.as_ref().ok_or_else(|| {
@@ -134,7 +136,7 @@ impl FlagEvaluator {
             PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("Flag not found: {}", flag_key))
         })?;
 
-        let context_value: Value = pythonize::depythonize(context)?;
+        let context_value: Value = pythonize::depythonize(context.as_any())?;
         let result = evaluate_bool_flag(flag, &context_value, &state.flag_set_metadata);
 
         match result.value {
@@ -155,7 +157,7 @@ impl FlagEvaluator {
     fn evaluate_string(
         &self,
         flag_key: String,
-        context: &PyDict,
+        context: &Bound<'_, PyDict>,
         default_value: String,
     ) -> PyResult<String> {
         let state = self.state.as_ref().ok_or_else(|| {
@@ -168,7 +170,7 @@ impl FlagEvaluator {
             PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("Flag not found: {}", flag_key))
         })?;
 
-        let context_value: Value = pythonize::depythonize(context)?;
+        let context_value: Value = pythonize::depythonize(context.as_any())?;
         let result = evaluate_string_flag(flag, &context_value, &state.flag_set_metadata);
 
         match result.value {
@@ -189,7 +191,7 @@ impl FlagEvaluator {
     fn evaluate_int(
         &self,
         flag_key: String,
-        context: &PyDict,
+        context: &Bound<'_, PyDict>,
         default_value: i64,
     ) -> PyResult<i64> {
         let state = self.state.as_ref().ok_or_else(|| {
@@ -202,7 +204,7 @@ impl FlagEvaluator {
             PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("Flag not found: {}", flag_key))
         })?;
 
-        let context_value: Value = pythonize::depythonize(context)?;
+        let context_value: Value = pythonize::depythonize(context.as_any())?;
         let result = evaluate_int_flag(flag, &context_value, &state.flag_set_metadata);
 
         match result.value {
@@ -223,7 +225,7 @@ impl FlagEvaluator {
     fn evaluate_float(
         &self,
         flag_key: String,
-        context: &PyDict,
+        context: &Bound<'_, PyDict>,
         default_value: f64,
     ) -> PyResult<f64> {
         let state = self.state.as_ref().ok_or_else(|| {
@@ -236,7 +238,7 @@ impl FlagEvaluator {
             PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("Flag not found: {}", flag_key))
         })?;
 
-        let context_value: Value = pythonize::depythonize(context)?;
+        let context_value: Value = pythonize::depythonize(context.as_any())?;
         let result = evaluate_float_flag(flag, &context_value, &state.flag_set_metadata);
 
         match result.value {
@@ -251,7 +253,7 @@ impl FlagEvaluator {
 /// This module provides native Python bindings for the flagd-evaluator library,
 /// offering high-performance feature flag evaluation.
 #[pymodule]
-fn flagd_evaluator(_py: Python, m: &PyModule) -> PyResult<()> {
+fn flagd_evaluator(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FlagEvaluator>()?;
     Ok(())
 }
