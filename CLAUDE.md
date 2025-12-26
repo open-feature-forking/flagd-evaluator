@@ -328,11 +328,10 @@ python/
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Set up development environment
+# Set up development environment (installs deps and creates venv)
 cd python
-uv venv
+uv sync --group dev
 source .venv/bin/activate
-uv pip install maturin pytest
 
 # Build and install locally
 maturin develop

@@ -166,16 +166,13 @@ See [benchmarks/bench_vs_wasm.py](benchmarks/bench_vs_wasm.py) for detailed comp
 # Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Create virtual environment
+# Install dependencies (creates venv automatically)
 cd python
-uv venv
+uv sync --group dev
 
 # Activate virtual environment
 source .venv/bin/activate  # On Unix/macOS
 # .venv\Scripts\activate   # On Windows
-
-# Install dependencies and build package
-uv pip install maturin pytest
 
 # Build and install the package in development mode
 maturin develop

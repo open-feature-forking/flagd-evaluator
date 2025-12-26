@@ -194,9 +194,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Set up development environment
 cd python
-uv venv
+uv sync --group dev
 source .venv/bin/activate
-uv pip install maturin pytest
 maturin develop
 pytest tests/ -v
 ```

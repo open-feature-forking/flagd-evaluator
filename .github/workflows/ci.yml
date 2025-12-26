@@ -131,8 +131,7 @@ jobs:
       - name: Install dependencies and build package
         run: |
           cd python
-          uv venv
-          uv pip install maturin pytest
+          uv sync --group dev
           source .venv/bin/activate
           maturin develop
 
