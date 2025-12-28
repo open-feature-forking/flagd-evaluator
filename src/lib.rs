@@ -604,7 +604,7 @@ pub extern "C" fn evaluate_object(
         flag_key_len,
         context_ptr,
         context_len,
-        |eval, key, ctx| eval.evaluate_flag(key, ctx),
+        |eval, key, ctx| eval.evaluate_object(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -1632,7 +1632,7 @@ mod tests {
             flag_key_bytes.len() as u32,
             context_bytes.as_ptr(),
             context_bytes.len() as u32,
-            |eval, key, ctx| eval.evaluate_flag(key, ctx),
+            |eval, key, ctx| eval.evaluate_object(key, ctx),
         )
     }
 

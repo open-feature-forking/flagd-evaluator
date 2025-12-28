@@ -260,11 +260,33 @@ impl FlagEvaluator {
         }
     }
 
+    /// Evaluates an object flag with type checking.
+    pub fn evaluate_object(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
+        match &self.state {
+            Some(state) => {
+                let flag = state
+                    .flags
+                    .get(flag_key)
+                    .cloned()
+                    .unwrap_or_else(|| self.empty_flag(flag_key));
+                crate::evaluation::evaluate_object_flag(&flag, context, &state.flag_set_metadata)
+            }
+            None => EvaluationResult {
+                value: JsonValue::Object(serde_json::Map::new()),
+                variant: None,
+                reason: crate::evaluation::ResolutionReason::Error,
+                error_code: Some(crate::evaluation::ErrorCode::General),
+                error_message: Some("No flag configuration loaded".to_string()),
+                flag_metadata: None,
+            },
+        }
+    }
+
     /// Helper to create an empty flag for missing flags.
     fn empty_flag(&self, key: &str) -> crate::model::FeatureFlag {
         crate::model::FeatureFlag {
             key: Some(key.to_string()),
-            state: "DISABLED".to_string(),
+            state: "FLAG_NOT_FOUND".to_string(),
             default_variant: None,
             variants: Default::default(),
             targeting: None,

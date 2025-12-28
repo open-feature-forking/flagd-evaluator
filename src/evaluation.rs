@@ -313,6 +313,18 @@ pub fn evaluate_flag(
     // Merge metadata (flag metadata takes priority over flag-set metadata)
     let merged_metadata = merge_metadata(flag_set_metadata, &flag.metadata);
 
+    // Check if flag was not found
+    if flag.state == "FLAG_NOT_FOUND" {
+        return EvaluationResult {
+            value: Value::Null,
+            variant: None,
+            reason: ResolutionReason::FlagNotFound,
+            error_code: Some(ErrorCode::FlagNotFound),
+            error_message: Some(format!("Flag '{}' not found in configuration", flag_key)),
+            flag_metadata: merged_metadata,
+        };
+    }
+
     // Check if flag is disabled
     // Return Disabled reason with FLAG_NOT_FOUND error code to signal the client
     // to use its code-defined default value. The Disabled reason provides better
