@@ -137,6 +137,11 @@ impl FlagEvaluator {
         let context_value: Value = pythonize::depythonize(context.as_any())?;
         let result = self.inner.evaluate_bool(&flag_key, &context_value);
 
+        // If there's an error, return the default value
+        if result.error_code.is_some() {
+            return Ok(default_value);
+        }
+
         match result.value {
             Value::Bool(b) => Ok(b),
             _ => Ok(default_value),
@@ -160,6 +165,11 @@ impl FlagEvaluator {
     ) -> PyResult<String> {
         let context_value: Value = pythonize::depythonize(context.as_any())?;
         let result = self.inner.evaluate_string(&flag_key, &context_value);
+
+        // If there's an error, return the default value
+        if result.error_code.is_some() {
+            return Ok(default_value);
+        }
 
         match result.value {
             Value::String(s) => Ok(s),
@@ -185,6 +195,11 @@ impl FlagEvaluator {
         let context_value: Value = pythonize::depythonize(context.as_any())?;
         let result = self.inner.evaluate_int(&flag_key, &context_value);
 
+        // If there's an error, return the default value
+        if result.error_code.is_some() {
+            return Ok(default_value);
+        }
+
         match result.value {
             Value::Number(n) => Ok(n.as_i64().unwrap_or(default_value)),
             _ => Ok(default_value),
@@ -208,6 +223,11 @@ impl FlagEvaluator {
     ) -> PyResult<f64> {
         let context_value: Value = pythonize::depythonize(context.as_any())?;
         let result = self.inner.evaluate_float(&flag_key, &context_value);
+
+        // If there's an error, return the default value
+        if result.error_code.is_some() {
+            return Ok(default_value);
+        }
 
         match result.value {
             Value::Number(n) => Ok(n.as_f64().unwrap_or(default_value)),

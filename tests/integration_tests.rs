@@ -70,7 +70,9 @@ fn test_update_state_success() {
         }
     }"#;
     let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
-    evaluator.update_state(config).expect("expect to be updating");
+    evaluator
+        .update_state(config)
+        .expect("expect to be updating");
     let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
     let response = evaluator.update_state(config).unwrap();
     assert!(response.success);

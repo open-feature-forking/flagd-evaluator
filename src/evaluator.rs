@@ -28,7 +28,7 @@ pub enum ValidationMode {
 ///
 /// ```
 /// use flagd_evaluator::FlagEvaluator;
-/// use flagd_evaluator::storage::ValidationMode;
+/// use flagd_evaluator::ValidationMode;
 ///
 /// let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
 ///
