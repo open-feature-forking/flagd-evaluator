@@ -1,6 +1,7 @@
 # Generated files
 /target/
 /dist/
+/python/tests/__pycache__
 
 # Cargo lock file (library)
 Cargo.lock

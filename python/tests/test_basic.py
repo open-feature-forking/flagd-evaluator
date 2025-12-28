@@ -105,17 +105,21 @@ def test_flag_evaluator_float():
 
 
 def test_flag_evaluator_no_state():
-    """Test that evaluating without state raises an error."""
+    """Test that evaluating without state returns the default value."""
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
 
-    with pytest.raises(RuntimeError, match="No state loaded"):
-        evaluator.evaluate_bool("myFlag", {}, False)
+    # Should return default value when no state is loaded
+    result = evaluator.evaluate_bool("myFlag", {}, False)
+    assert result == False
+
+    result2 = evaluator.evaluate_bool("myFlag", {}, True)
+    assert result2 == True
 
 
 def test_flag_evaluator_flag_not_found():
-    """Test that evaluating non-existent flag raises an error."""
+    """Test that evaluating non-existent flag returns the default value."""
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
@@ -129,5 +133,9 @@ def test_flag_evaluator_flag_not_found():
         }
     })
 
-    with pytest.raises(KeyError, match="Flag not found"):
-        evaluator.evaluate_bool("nonExistentFlag", {}, False)
+    # Should return default value for non-existent flag
+    result = evaluator.evaluate_bool("nonExistentFlag", {}, False)
+    assert result == False
+
+    result2 = evaluator.evaluate_string("nonExistentFlag", {}, "fallback")
+    assert result2 == "fallback"

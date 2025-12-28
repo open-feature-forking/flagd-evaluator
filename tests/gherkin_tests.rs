@@ -6,10 +6,8 @@
 use cucumber::{given, then, when, World};
 use flagd_evaluator::ResolutionReason::Fallback;
 use flagd_evaluator::{
-    evaluation::{evaluate_flag, ErrorCode, ResolutionReason},
-    set_validation_mode,
-    storage::{clear_flag_state, update_flag_state},
-    ValidationMode,
+    evaluation::{ErrorCode, ResolutionReason},
+    FlagEvaluator, ValidationMode,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -17,8 +15,10 @@ use std::fs;
 use std::path::PathBuf;
 
 /// World state for Gherkin tests
-#[derive(Debug, Default, World)]
+#[derive(Debug, World)]
 pub struct FlagdWorld {
+    /// The flag evaluator instance
+    evaluator: FlagEvaluator,
     /// The current evaluation context
     context: Value,
     /// The last evaluation result
@@ -32,6 +32,21 @@ pub struct FlagdWorld {
     /// Default value for current flag
     current_default: Option<Value>,
     file: Option<String>,
+}
+
+impl Default for FlagdWorld {
+    fn default() -> Self {
+        Self {
+            evaluator: FlagEvaluator::new(ValidationMode::Permissive),
+            context: Value::Null,
+            last_result: None,
+            flag_configs: HashMap::new(),
+            current_flag_key: None,
+            current_flag_type: None,
+            current_default: None,
+            file: None,
+        }
+    }
 }
 
 impl FlagdWorld {
@@ -81,7 +96,7 @@ impl FlagdWorld {
 
 #[given("a stable flagd provider")]
 async fn given_stable_provider(world: &mut FlagdWorld) {
-    clear_flag_state();
+    world.evaluator.clear_state();
     world.load_flag_configs();
 
     // Merge all flag configs into one
@@ -134,9 +149,8 @@ async fn given_stable_provider(world: &mut FlagdWorld) {
         merged_flags.as_object_mut().unwrap().insert(key, value);
     }
 
-    set_validation_mode(ValidationMode::Permissive);
     let merged_config = serde_json::to_string(&merged_flags).unwrap();
-    match update_flag_state(&merged_config) {
+    match world.evaluator.update_state(&merged_config) {
         Err(e) => {
             println!("Warning: Failed to load merged config: {:?}", e);
         }
@@ -145,13 +159,13 @@ async fn given_stable_provider(world: &mut FlagdWorld) {
         }
     }
 
-    flagd_evaluator::storage::get_flag_state().expect("No flag state loaded");
+    world.evaluator.get_state().expect("No flag state loaded");
     world.context = json!({});
 }
 
 #[given("a metadata flagd provider")]
 async fn given_metadata_provider(world: &mut FlagdWorld) {
-    clear_flag_state();
+    world.evaluator.clear_state();
     world.load_flag_configs();
     world.context = json!({});
 }
@@ -230,15 +244,7 @@ async fn given_option(_world: &mut FlagdWorld, _key: String, _type: String, _val
 async fn when_flag_evaluated(world: &mut FlagdWorld) {
     let flag_key = world.current_flag_key.as_ref().expect("No flag key set");
 
-    let state = flagd_evaluator::storage::get_flag_state().expect("No flag state loaded");
-
-    let flag = state.flags.get(flag_key);
-
-    let result = if let Some(flag) = flag {
-        evaluate_flag(flag, &world.context, &state.flag_set_metadata)
-    } else {
-        panic!()
-    };
+    let result = world.evaluator.evaluate_flag(flag_key, &world.context);
 
     // Apply mapping layer for backward compatibility with Gherkin tests
     // The WASM module now uses semantic reasons (Fallback, Disabled) with error codes
@@ -432,69 +438,69 @@ async fn run_evaluation_tests() {
         .await;
 }
 
-// #[tokio::test]
-// async fn run_targeting_tests() {
-//     FlagdWorld::cucumber()
-//         .before(|_feature, _rule, _scenario, world| {
-//             Box::pin(async move {
-//                 // Initialize world state
-//                 world.load_flag_configs();
-//             })
-//         })
-//         .filter_run(
-//             "testbed/gherkin/targeting.feature",
-//             |_feature, _rule, scenario| {
-//                 // Skip scenarios that require features we don't support in the evaluator
-//                 !scenario
-//                     .tags
-//                     .iter()
-//                     .any(|tag| tag == "grace"  || tag == "caching")
-//             },
-//         )
-//         .await;
-// }
-//
-// #[tokio::test]
-// async fn run_context_enrichment_tests() {
-//     FlagdWorld::cucumber()
-//         .before(|_feature, _rule, _scenario, world| {
-//             Box::pin(async move {
-//                 // Initialize world state
-//                 world.load_flag_configs();
-//             })
-//         })
-//         .filter_run(
-//             "testbed/gherkin/contextEnrichment.feature",
-//             |_feature, _rule, scenario| {
-//                 // Only run in-process tests, skip RPC and connection-related tests
-//                 scenario.tags.iter().any(|tag| tag == "in-process")
-//                     && !scenario
-//                         .tags
-//                         .iter()
-//                         .any(|tag| tag == "grace"  || tag == "caching")
-//             },
-//         )
-//         .await;
-// }
-//
-// #[tokio::test]
-// async fn run_metadata_tests() {
-//     FlagdWorld::cucumber()
-//         .before(|_feature, _rule, _scenario, world| {
-//             Box::pin(async move {
-//                 // Initialize world state
-//                 world.load_flag_configs();
-//             })
-//         })
-//         .filter_run(
-//             "testbed/gherkin/metadata.feature",
-//             |_feature, _rule, scenario| {
-//                 // Run all metadata tests
-//                 !scenario
-//                     .tags
-//                     .iter()
-//                     .any(|tag| tag == "grace"  || tag == "caching" || tag == "metadata-provider")
-//             },
-//         )
-//         .await;
-//}
+#[tokio::test]
+async fn run_targeting_tests() {
+    FlagdWorld::cucumber()
+        .before(|_feature, _rule, _scenario, world| {
+            Box::pin(async move {
+                // Initialize world state
+                world.load_flag_configs();
+            })
+        })
+        .filter_run(
+            "testbed/gherkin/targeting.feature",
+            |_feature, _rule, scenario| {
+                // Skip scenarios that require features we don't support in the evaluator
+                !scenario
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "grace" || tag == "caching")
+            },
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn run_context_enrichment_tests() {
+    FlagdWorld::cucumber()
+        .before(|_feature, _rule, _scenario, world| {
+            Box::pin(async move {
+                // Initialize world state
+                world.load_flag_configs();
+            })
+        })
+        .filter_run(
+            "testbed/gherkin/contextEnrichment.feature",
+            |_feature, _rule, scenario| {
+                // Only run in-process tests, skip RPC and connection-related tests
+                scenario.tags.iter().any(|tag| tag == "in-process")
+                    && !scenario
+                        .tags
+                        .iter()
+                        .any(|tag| tag == "grace" || tag == "caching")
+            },
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn run_metadata_tests() {
+    FlagdWorld::cucumber()
+        .before(|_feature, _rule, _scenario, world| {
+            Box::pin(async move {
+                // Initialize world state
+                world.load_flag_configs();
+            })
+        })
+        .filter_run(
+            "testbed/gherkin/metadata.feature",
+            |_feature, _rule, scenario| {
+                // Run all metadata tests
+                !scenario
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "grace" || tag == "caching" || tag == "metadata-provider")
+            },
+        )
+        .await;
+}

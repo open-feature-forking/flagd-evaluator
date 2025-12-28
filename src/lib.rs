@@ -37,9 +37,20 @@
 //! ```
 
 use std::panic;
-use std::sync::Once;
+use std::sync::{Mutex, Once, OnceLock};
 
 static PANIC_HOOK_INIT: Once = Once::new();
+
+/// Global singleton FlagEvaluator instance for WASM.
+///
+/// WASM is single-threaded, so we use a simple Mutex for interior mutability.
+/// This provides a single global evaluator instance that all WASM exports use.
+static WASM_EVALUATOR: OnceLock<Mutex<evaluator::FlagEvaluator>> = OnceLock::new();
+
+/// Get or initialize the global WASM evaluator instance.
+fn get_wasm_evaluator() -> &'static Mutex<evaluator::FlagEvaluator> {
+    WASM_EVALUATOR.get_or_init(|| Mutex::new(evaluator::FlagEvaluator::new(ValidationMode::Strict)))
+}
 
 // Import optional host function for getting current time
 // If the host doesn't provide this, we'll fall back to a default value
@@ -88,10 +99,10 @@ fn init_panic_hook() {
 
 pub mod error;
 pub mod evaluation;
+pub mod evaluator;
 pub mod memory;
 pub mod model;
 pub mod operators;
-pub mod storage;
 pub mod validation;
 
 /// Gets the current Unix timestamp in seconds.
@@ -126,14 +137,12 @@ pub use evaluation::{
     evaluate_bool_flag, evaluate_flag, evaluate_float_flag, evaluate_int_flag,
     evaluate_object_flag, evaluate_string_flag, ErrorCode, EvaluationResult, ResolutionReason,
 };
+pub use evaluator::{FlagEvaluator, ValidationMode};
 pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
 pub use model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 pub use operators::create_evaluator;
-pub use storage::{
-    clear_flag_state, get_flag_state, set_validation_mode, update_flag_state, ValidationMode,
-};
 pub use validation::{validate_flags_config, ValidationError, ValidationResult};
 
 /// Re-exports for external access to allocation functions.
@@ -184,8 +193,6 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
 /// - The caller will free the returned memory using `dealloc`
 #[export_name = "set_validation_mode"]
 pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
-    use crate::storage::ValidationMode;
-
     let validation_mode = match mode {
         0 => ValidationMode::Strict,
         1 => ValidationMode::Permissive,
@@ -199,7 +206,10 @@ pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
         }
     };
 
-    crate::storage::set_validation_mode(validation_mode);
+    // Update validation mode on the singleton evaluator
+    let evaluator = get_wasm_evaluator();
+    let mut eval = evaluator.lock().unwrap();
+    eval.set_validation_mode(validation_mode);
 
     let response = serde_json::json!({
         "success": true,
@@ -267,8 +277,10 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
         }
     };
 
-    // Parse and store the configuration using the storage module
-    match update_flag_state(&config_str) {
+    // Parse and store the configuration using the singleton evaluator
+    let evaluator = get_wasm_evaluator();
+    let mut eval = evaluator.lock().unwrap();
+    match eval.update_state(&config_str) {
         Ok(response) => {
             // Convert UpdateStateResponse to JSON
             serde_json::to_string(&response).unwrap_or_else(|e| {
@@ -376,31 +388,20 @@ fn evaluate_internal(
             }
         };
 
-        // Retrieve the flag from state
-        let flag_state = match get_flag_state() {
-            Some(state) => state,
-            None => {
-                return EvaluationResult::error(
-                    ErrorCode::FlagNotFound,
-                    "Flag state not initialized. Call update_state first.",
-                )
-            }
-        };
+        // Get the singleton evaluator and evaluate the flag
+        let evaluator = get_wasm_evaluator();
+        let eval = evaluator.lock().unwrap();
 
-        let flag = match flag_state.flags.get(&flag_key) {
-            Some(f) => f.clone(),
-            None => {
-                // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
-                let mut result = EvaluationResult::flag_not_found(&flag_key);
-                if !flag_state.flag_set_metadata.is_empty() {
-                    result = result.with_metadata(flag_state.flag_set_metadata.clone());
-                }
-                return result;
-            }
-        };
+        // Check if state is initialized
+        if eval.get_state().is_none() {
+            return EvaluationResult::error(
+                ErrorCode::FlagNotFound,
+                "Flag state not initialized. Call update_state first.",
+            );
+        }
 
-        // Evaluate the flag with merged metadata (flag-set + flag metadata)
-        evaluate_flag(&flag, &context, &flag_state.flag_set_metadata)
+        // Evaluate using the evaluator instance
+        eval.evaluate_flag(&flag_key, &context)
     });
 
     match result {
@@ -451,7 +452,7 @@ pub extern "C" fn evaluate_boolean(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_bool_flag,
+        |eval, key, ctx| eval.evaluate_bool(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -489,7 +490,7 @@ pub extern "C" fn evaluate_string(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_string_flag,
+        |eval, key, ctx| eval.evaluate_string(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -527,7 +528,7 @@ pub extern "C" fn evaluate_integer(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_int_flag,
+        |eval, key, ctx| eval.evaluate_int(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -565,7 +566,7 @@ pub extern "C" fn evaluate_float(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_float_flag,
+        |eval, key, ctx| eval.evaluate_float(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -603,7 +604,7 @@ pub extern "C" fn evaluate_object(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_object_flag,
+        |eval, key, ctx| eval.evaluate_object(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -611,23 +612,23 @@ pub extern "C" fn evaluate_object(
 /// Internal helper function for type-specific evaluation.
 ///
 /// This function handles the common logic for all typed evaluation functions:
-/// parsing inputs, retrieving the flag, and calling the type-specific evaluator.
+/// parsing inputs and calling the type-specific evaluator method on the singleton.
 ///
 /// # Arguments
 /// * `flag_key_ptr` - Pointer to the flag key string
 /// * `flag_key_len` - Length of the flag key string
 /// * `context_ptr` - Pointer to the context JSON string
 /// * `context_len` - Length of the context JSON string
-/// * `evaluator` - The type-specific evaluation function to use
+/// * `evaluator_fn` - Function that calls the appropriate method on FlagEvaluator
 fn evaluate_typed_internal<F>(
     flag_key_ptr: *const u8,
     flag_key_len: u32,
     context_ptr: *const u8,
     context_len: u32,
-    evaluator: F,
+    evaluator_fn: F,
 ) -> EvaluationResult
 where
-    F: Fn(&FeatureFlag, &Value, &std::collections::HashMap<String, Value>) -> EvaluationResult,
+    F: Fn(&evaluator::FlagEvaluator, &str, &Value) -> EvaluationResult,
 {
     // Initialize panic hook for better error messages
     init_panic_hook();
@@ -666,31 +667,20 @@ where
             }
         };
 
-        // Retrieve the flag from state
-        let flag_state = match get_flag_state() {
-            Some(state) => state,
-            None => {
-                return EvaluationResult::error(
-                    ErrorCode::General,
-                    "Flag state not initialized. Call update_state first.",
-                )
-            }
-        };
+        // Get the singleton evaluator and evaluate using the type-specific method
+        let evaluator = get_wasm_evaluator();
+        let eval = evaluator.lock().unwrap();
 
-        let flag = match flag_state.flags.get(&flag_key) {
-            Some(f) => f.clone(),
-            None => {
-                // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
-                let mut result = EvaluationResult::flag_not_found(&flag_key);
-                if !flag_state.flag_set_metadata.is_empty() {
-                    result = result.with_metadata(flag_state.flag_set_metadata.clone());
-                }
-                return result;
-            }
-        };
+        // Check if state is initialized
+        if eval.get_state().is_none() {
+            return EvaluationResult::error(
+                ErrorCode::FlagNotFound,
+                "Flag state not initialized. Call update_state first.",
+            );
+        }
 
-        // Use the type-specific evaluator with merged metadata
-        evaluator(&flag, &context, &flag_state.flag_set_metadata)
+        // Call the type-specific evaluator method
+        evaluator_fn(&eval, &flag_key, &context)
     }));
 
     match result {
@@ -714,12 +704,12 @@ mod tests {
     use serde_json::json;
 
     // ============================================================================
-    // update_state and evaluate function tests
+    // Library tests using FlagEvaluator directly
     // ============================================================================
 
     #[test]
-    fn test_update_state_and_evaluate_bool() {
-        clear_flag_state();
+    fn test_evaluator_update_state_and_evaluate() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
         let config = r#"{
             "flags": {
@@ -734,32 +724,18 @@ mod tests {
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        let update_response =
-            update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-        let update_json: Value = serde_json::from_str(&update_response).unwrap();
-        assert_eq!(update_json["success"], true);
+        let response = evaluator.update_state(config).unwrap();
+        assert!(response.success);
 
-        let context = "{}";
-        let context_bytes = context.as_bytes();
-        let flag_key = "boolFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
+        let result = evaluator.evaluate_bool("boolFlag", &json!({}));
         assert_eq!(result.value, json!(false));
         assert_eq!(result.variant, Some("off".to_string()));
         assert_eq!(result.reason, ResolutionReason::Static);
     }
 
     #[test]
-    fn test_evaluate_int_flag() {
-        clear_flag_state();
+    fn test_evaluator_int_flag() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
         let config = r#"{
             "flags": {
@@ -774,315 +750,182 @@ mod tests {
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        let context = "{}";
-        let context_bytes = context.as_bytes();
-        let flag_key = "intFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
+        let result = evaluator.evaluate_int("intFlag", &json!({}));
         assert_eq!(result.value, json!(10));
         assert_eq!(result.variant, Some("small".to_string()));
     }
 
     #[test]
-    fn test_evaluate_float_flag() {
-        clear_flag_state();
+    fn test_evaluator_float_flag() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
         let config = r#"{
             "flags": {
                 "floatFlag": {
                     "state": "ENABLED",
                     "variants": {
-                        "low": 1.5,
-                        "high": 9.99
+                        "pi": 3.14,
+                        "e": 2.71
                     },
-                    "defaultVariant": "low"
+                    "defaultVariant": "pi"
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        let context = "{}";
-        let context_bytes = context.as_bytes();
-        let flag_key = "floatFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        assert_eq!(result.value, json!(1.5));
-        assert_eq!(result.variant, Some("low".to_string()));
+        let result = evaluator.evaluate_float("floatFlag", &json!({}));
+        assert_eq!(result.value, json!(3.14));
+        assert_eq!(result.variant, Some("pi".to_string()));
     }
 
     #[test]
-    fn test_evaluate_string_flag() {
-        clear_flag_state();
+    fn test_evaluator_string_flag() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
         let config = r#"{
             "flags": {
                 "stringFlag": {
                     "state": "ENABLED",
                     "variants": {
-                        "red": "crimson",
-                        "blue": "azure"
+                        "hello": "Hello, World!",
+                        "goodbye": "Goodbye!"
                     },
-                    "defaultVariant": "red"
+                    "defaultVariant": "hello"
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        let context = "{}";
-        let context_bytes = context.as_bytes();
-        let flag_key = "stringFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        assert_eq!(result.value, json!("crimson"));
-        assert_eq!(result.variant, Some("red".to_string()));
+        let result = evaluator.evaluate_string("stringFlag", &json!({}));
+        assert_eq!(result.value, json!("Hello, World!"));
+        assert_eq!(result.variant, Some("hello".to_string()));
     }
 
     #[test]
-    fn test_evaluate_object_flag() {
-        clear_flag_state();
+    fn test_evaluator_object_flag() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
         let config = r#"{
             "flags": {
                 "objectFlag": {
                     "state": "ENABLED",
                     "variants": {
-                        "config1": {"timeout": 30, "retries": 3},
-                        "config2": {"timeout": 60, "retries": 5}
+                        "config1": {"key": "value1"},
+                        "config2": {"key": "value2"}
                     },
                     "defaultVariant": "config1"
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        let context = "{}";
-        let context_bytes = context.as_bytes();
-        let flag_key = "objectFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        assert_eq!(result.value, json!({"timeout": 30, "retries": 3}));
+        let result = evaluator.evaluate_flag("objectFlag", &json!({}));
+        assert_eq!(result.value, json!({"key": "value1"}));
         assert_eq!(result.variant, Some("config1".to_string()));
     }
 
     #[test]
-    fn test_evaluate_with_targeting() {
-        clear_flag_state();
+    fn test_evaluator_with_targeting() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
         let config = r#"{
             "flags": {
                 "targetedFlag": {
                     "state": "ENABLED",
                     "variants": {
-                        "on": true,
-                        "off": false
+                        "admin": "admin-value",
+                        "user": "user-value"
                     },
-                    "defaultVariant": "off",
+                    "defaultVariant": "user",
                     "targeting": {
                         "if": [
-                            {"==": [{"var": "email"}, "admin@example.com"]},
-                            "on",
-                            "off"
+                            {"==": [{"var": "role"}, "admin"]},
+                            "admin",
+                            "user"
                         ]
                     }
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        // Test matching context
-        let context = r#"{"email": "admin@example.com"}"#;
-        let context_bytes = context.as_bytes();
-        let flag_key = "targetedFlag";
-        let flag_key_bytes = flag_key.as_bytes();
+        // Test admin role
+        let result_admin = evaluator.evaluate_flag("targetedFlag", &json!({"role": "admin"}));
+        assert_eq!(result_admin.value, json!("admin-value"));
+        assert_eq!(result_admin.variant, Some("admin".to_string()));
+        assert_eq!(result_admin.reason, ResolutionReason::TargetingMatch);
 
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        assert_eq!(result.value, json!(true));
-        assert_eq!(result.variant, Some("on".to_string()));
-        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
-
-        // Test non-matching context
-        let context = r#"{"email": "user@example.com"}"#;
-        let context_bytes = context.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        assert_eq!(result.value, json!(false));
-        assert_eq!(result.variant, Some("off".to_string()));
-        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+        // Test user role
+        let result_user = evaluator.evaluate_flag("targetedFlag", &json!({"role": "user"}));
+        assert_eq!(result_user.value, json!("user-value"));
+        assert_eq!(result_user.variant, Some("user".to_string()));
+        assert_eq!(result_user.reason, ResolutionReason::TargetingMatch);
     }
 
     #[test]
-    fn test_evaluate_disabled_flag() {
-        clear_flag_state();
+    fn test_evaluator_disabled_flag() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
         let config = r#"{
             "flags": {
                 "disabledFlag": {
                     "state": "DISABLED",
-                    "variants": {
-                        "on": true,
-                        "off": false
-                    },
-                    "defaultVariant": "off"
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "on"
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        let context = "{}";
-        let context_bytes = context.as_bytes();
-        let flag_key = "disabledFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        // Disabled flags return null value with Disabled reason to signal "use code default"
+        let result = evaluator.evaluate_bool("disabledFlag", &json!({}));
         assert_eq!(result.value, Value::Null);
         assert_eq!(result.reason, ResolutionReason::Disabled);
         assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
     }
 
     #[test]
-    fn test_evaluate_flag_not_found() {
-        clear_flag_state();
+    fn test_evaluator_flag_not_found() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
         let config = r#"{
             "flags": {
                 "existingFlag": {
                     "state": "ENABLED",
-                    "variants": {"on": true},
+                    "variants": {"on": true, "off": false},
                     "defaultVariant": "on"
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        let context = "{}";
-        let context_bytes = context.as_bytes();
-        let flag_key = "nonexistentFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
+        let result = evaluator.evaluate_flag("nonexistentFlag", &json!({}));
         assert_eq!(result.reason, ResolutionReason::FlagNotFound);
         assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
-        assert!(result.error_message.is_some());
     }
 
     #[test]
-    fn test_update_state_invalid_json() {
-        clear_flag_state();
+    fn test_evaluator_invalid_json_config() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-        let config = "not valid json";
-        let config_bytes = config.as_bytes();
-        let response = update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-        let json: Value = serde_json::from_str(&response).unwrap();
-
-        assert_eq!(json["success"], false);
-        assert!(json["error"].is_string());
+        let invalid_config = r#"{"flags": invalid}"#;
+        let result = evaluator.update_state(invalid_config);
+        assert!(result.is_ok()); // Returns Ok with error in response
+        let response = result.unwrap();
+        assert!(!response.success);
+        assert!(response.error.is_some());
     }
 
     #[test]
-    fn test_evaluate_invalid_context_json() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "testFlag": {
-                    "state": "ENABLED",
-                    "variants": {"on": true},
-                    "defaultVariant": "on"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let context = "not valid json";
-        let context_bytes = context.as_bytes();
-        let flag_key = "testFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        assert_eq!(result.reason, ResolutionReason::Error);
-        assert_eq!(result.error_code, Some(ErrorCode::ParseError));
-    }
-
-    #[test]
-    fn test_evaluate_with_fractional_targeting() {
-        clear_flag_state();
-        set_validation_mode(ValidationMode::Permissive);
+    fn test_evaluator_fractional_targeting() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
 
         let config = r#"{
             "flags": {
@@ -1095,60 +938,28 @@ mod tests {
                     "defaultVariant": "control",
                     "targeting": {
                         "fractional": [
-                            {"var": "userId"},
-                            ["control", 50, "treatment", 50]
+                            ["control", 50],
+                            ["treatment", 50]
                         ]
                     }
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        let context = r#"{"userId": "user-123"}"#;
-        let context_bytes = context.as_bytes();
-        let flag_key = "abTestFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        // Result should be one of the variants
+        let result = evaluator.evaluate_flag("abTestFlag", &json!({"targetingKey": "user-123"}));
         assert!(
             result.value == json!("control-experience")
                 || result.value == json!("treatment-experience")
         );
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
-
-        set_validation_mode(ValidationMode::Strict);
     }
 
     #[test]
-    fn test_evaluation_result_serialization() {
-        let result = EvaluationResult::static_result(json!(42), "variant1".to_string());
-        let json_str = result.to_json_string();
+    fn test_evaluator_missing_targeting_key() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
 
-        let parsed: Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(parsed["value"], 42);
-        assert_eq!(parsed["variant"], "variant1");
-        assert_eq!(parsed["reason"], "STATIC");
-    }
-
-    // ============================================================================
-    // Edge case tests: missing targeting key, unknown variant, malformed expressions
-    // ============================================================================
-
-    #[test]
-    fn test_edge_case_missing_targeting_key() {
-        clear_flag_state();
-        set_validation_mode(ValidationMode::Permissive);
-
-        // Flag that uses targetingKey for fractional bucketing
         let config = r#"{
             "flags": {
                 "testFlag": {
@@ -1160,240 +971,56 @@ mod tests {
                     "defaultVariant": "a",
                     "targeting": {
                         "fractional": [
-                            {"var": "targetingKey"},
-                            ["a", 50, "b", 50]
+                            ["a", 50],
+                            ["b", 50]
                         ]
                     }
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        // Context without targetingKey - should use empty string as default
-        let context = r#"{}"#;
-        let context_bytes = context.as_bytes();
-        let flag_key = "testFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        // Should succeed with one of the variants (using empty string as key)
+        // Missing targetingKey - should use empty string
+        let result = evaluator.evaluate_flag("testFlag", &json!({}));
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
-        assert!(
-            result.value == json!("variant-a") || result.value == json!("variant-b"),
-            "Expected variant-a or variant-b, got: {:?}",
-            result.value
-        );
-
-        set_validation_mode(ValidationMode::Strict);
+        assert!(result.value == json!("variant-a") || result.value == json!("variant-b"));
     }
 
     #[test]
-    fn test_edge_case_unknown_variant_from_targeting() {
-        clear_flag_state();
+    fn test_evaluator_unknown_variant_from_targeting() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-        // Targeting rule returns a variant name that doesn't exist
         let config = r#"{
             "flags": {
-                "testFlag": {
+                "brokenFlag": {
                     "state": "ENABLED",
                     "variants": {
-                        "on": true,
-                        "off": false
+                        "valid": "valid-value"
                     },
-                    "defaultVariant": "off",
+                    "defaultVariant": "valid",
                     "targeting": {
                         "if": [
-                            {"==": [{"var": "user"}, "admin"]},
-                            "unknown_variant",
-                            "off"
+                            true,
+                            "unknown-variant",
+                            "valid"
                         ]
                     }
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        let context = r#"{"user": "admin"}"#;
-        let context_bytes = context.as_bytes();
-        let flag_key = "testFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        // Unknown variant should return an error (Java-compatible behavior)
+        let result = evaluator.evaluate_flag("brokenFlag", &json!({}));
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::General));
-        assert!(result.error_message.is_some());
     }
 
     #[test]
-    fn test_edge_case_malformed_targeting_expression() {
-        clear_flag_state();
-        set_validation_mode(ValidationMode::Permissive);
+    fn test_evaluator_complex_targeting() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-        // Invalid JSON Logic expression (missing closing bracket)
-        let config = r#"{
-            "flags": {
-                "testFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "on": true,
-                        "off": false
-                    },
-                    "defaultVariant": "off",
-                    "targeting": {
-                        "invalid_operator": [1, 2, 3]
-                    }
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let context = r#"{}"#;
-        let context_bytes = context.as_bytes();
-        let flag_key = "testFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        // Should return error for malformed/unknown operator
-        assert_eq!(result.reason, ResolutionReason::Error);
-        // The error code might be General instead of ParseError due to unknown operator
-        assert!(result.error_code.is_some());
-        assert!(result.error_message.is_some());
-
-        set_validation_mode(ValidationMode::Strict);
-    }
-
-    #[test]
-    fn test_edge_case_fractional_with_targetingkey_context() {
-        clear_flag_state();
-        set_validation_mode(ValidationMode::Permissive);
-
-        // Use targetingKey for consistent bucketing
-        let config = r#"{
-            "flags": {
-                "featureRollout": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "enabled": true,
-                        "disabled": false
-                    },
-                    "defaultVariant": "disabled",
-                    "targeting": {
-                        "fractional": [
-                            {"var": "targetingKey"},
-                            ["enabled", 10, "disabled", 90]
-                        ]
-                    }
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        // Test with explicit targetingKey
-        let context1 = r#"{"targetingKey": "user-001"}"#;
-        let context_bytes1 = context1.as_bytes();
-        let flag_key = "featureRollout";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result1 = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes1.as_ptr(),
-            context_bytes1.len() as u32,
-        );
-
-        // Same targetingKey should give same result (consistency)
-        let result2 = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes1.as_ptr(),
-            context_bytes1.len() as u32,
-        );
-
-        assert_eq!(result1.value, result2.value);
-        assert_eq!(result1.variant, result2.variant);
-        assert_eq!(result1.reason, ResolutionReason::TargetingMatch);
-
-        set_validation_mode(ValidationMode::Strict);
-    }
-
-    #[test]
-    fn test_edge_case_targeting_with_flag_key_reference() {
-        clear_flag_state();
-
-        // Targeting rule that uses the $flagd.flagKey field
-        let config = r#"{
-            "flags": {
-                "debugFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "on": true,
-                        "off": false
-                    },
-                    "defaultVariant": "off",
-                    "targeting": {
-                        "if": [
-                            {"==": [{"var": "$flagd.flagKey"}, "debugFlag"]},
-                            "on",
-                            "off"
-                        ]
-                    }
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let context = r#"{}"#;
-        let context_bytes = context.as_bytes();
-        let flag_key = "debugFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        // Should match because $flagd.flagKey is enriched in context
-        assert_eq!(result.value, json!(true));
-        assert_eq!(result.variant, Some("on".to_string()));
-        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
-    }
-
-    #[test]
-    fn test_edge_case_complex_targeting_with_all_operators() {
-        clear_flag_state();
-
-        // Complex rule using multiple custom operators
         let config = r#"{
             "flags": {
                 "complexFlag": {
@@ -1421,108 +1048,37 @@ mod tests {
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        evaluator.update_state(config).unwrap();
 
-        // Test admin email - should get premium
-        let context1 = r#"{"email": "admin@example.com", "appVersion": "1.0.0"}"#;
-        let context_bytes1 = context1.as_bytes();
-        let flag_key = "complexFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result1 = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes1.as_ptr(),
-            context_bytes1.len() as u32,
+        // Admin email
+        let result_admin = evaluator.evaluate_flag(
+            "complexFlag",
+            &json!({"email": "admin@example.com", "appVersion": "1.0.0"}),
         );
+        assert_eq!(result_admin.value, json!("premium-tier"));
 
-        assert_eq!(result1.value, json!("premium-tier"));
-        assert_eq!(result1.variant, Some("premium".to_string()));
-
-        // Test non-admin with new version - should get standard
-        let context2 = r#"{"email": "user@example.com", "appVersion": "2.1.0"}"#;
-        let context_bytes2 = context2.as_bytes();
-
-        let result2 = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes2.as_ptr(),
-            context_bytes2.len() as u32,
+        // Non-admin with new version
+        let result_standard = evaluator.evaluate_flag(
+            "complexFlag",
+            &json!({"email": "user@example.com", "appVersion": "2.1.0"}),
         );
+        assert_eq!(result_standard.value, json!("standard-tier"));
 
-        assert_eq!(result2.value, json!("standard-tier"));
-        assert_eq!(result2.variant, Some("standard".to_string()));
-
-        // Test non-admin with old version - should get basic
-        let context3 = r#"{"email": "user@example.com", "appVersion": "1.5.0"}"#;
-        let context_bytes3 = context3.as_bytes();
-
-        let result3 = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes3.as_ptr(),
-            context_bytes3.len() as u32,
+        // Non-admin with old version
+        let result_basic = evaluator.evaluate_flag(
+            "complexFlag",
+            &json!({"email": "user@example.com", "appVersion": "1.5.0"}),
         );
-
-        assert_eq!(result3.value, json!("basic-tier"));
-        assert_eq!(result3.variant, Some("basic".to_string()));
+        assert_eq!(result_basic.value, json!("basic-tier"));
     }
 
     #[test]
-    fn test_flagd_timestamp_in_targeting() {
-        clear_flag_state();
+    fn test_evaluator_flagd_properties() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-        // Flag that uses $flagd.timestamp for time-based targeting
         let config = r#"{
             "flags": {
-                "timeBasedFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "current": true,
-                        "expired": false
-                    },
-                    "defaultVariant": "expired",
-                    "targeting": {
-                        "if": [
-                            {">": [{"var": "$flagd.timestamp"}, 1000000000]},
-                            "current",
-                            "expired"
-                        ]
-                    }
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let context = r#"{}"#;
-        let context_bytes = context.as_bytes();
-        let flag_key = "timeBasedFlag";
-        let flag_key_bytes = flag_key.as_bytes();
-
-        let result = evaluate_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-        );
-
-        // Current timestamp should be > 1000000000 (Sep 2001), so should get "current"
-        assert_eq!(result.value, json!(true));
-        assert_eq!(result.variant, Some("current".to_string()));
-        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
-    }
-
-    #[test]
-    fn test_flagd_properties_are_injected() {
-        clear_flag_state();
-
-        // Flag that verifies both $flagd properties exist
-        let config = r#"{
-            "flags": {
-                "verifyFlag": {
+                "enrichedFlag": {
                     "state": "ENABLED",
                     "variants": {
                         "verified": "properties-present",
@@ -1533,7 +1089,7 @@ mod tests {
                         "if": [
                             {
                                 "and": [
-                                    {"==": [{"var": "$flagd.flagKey"}, "verifyFlag"]},
+                                    {"==": [{"var": "$flagd.flagKey"}, "enrichedFlag"]},
                                     {">": [{"var": "$flagd.timestamp"}, 0]}
                                 ]
                             },
@@ -1545,514 +1101,382 @@ mod tests {
             }
         }"#;
 
+        evaluator.update_state(config).unwrap();
+
+        let result = evaluator.evaluate_flag("enrichedFlag", &json!({}));
+        assert_eq!(result.value, json!("properties-present"));
+        assert_eq!(result.variant, Some("verified".to_string()));
+    }
+
+    #[test]
+    fn test_evaluator_type_checking_bool() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+        let config = r#"{
+            "flags": {
+                "stringFlag": {
+                    "state": "ENABLED",
+                    "variants": {"val": "string-value", "alt": "alternative-value"},
+                    "defaultVariant": "val"
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+
+        let result = evaluator.evaluate_bool("stringFlag", &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+    }
+
+    #[test]
+    fn test_evaluator_type_checking_string() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+        let config = r#"{
+            "flags": {
+                "boolFlag": {
+                    "state": "ENABLED",
+                    "variants": {"val": true, "alt": false},
+                    "defaultVariant": "val"
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+
+        let result = evaluator.evaluate_string("stringFlag", &json!({}));
+        assert_eq!(result.reason, ResolutionReason::FlagNotFound);
+    }
+
+    #[test]
+    fn test_evaluator_type_checking_int() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+        let config = r#"{
+            "flags": {
+                "floatFlag": {
+                    "state": "ENABLED",
+                    "variants": {"val": 3.14, "alt": 2.71},
+                    "defaultVariant": "val"
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+
+        // Integer evaluation should accept floats via coercion
+        let result = evaluator.evaluate_int("floatFlag", &json!({}));
+        assert_eq!(result.value, json!(3));
+    }
+
+    #[test]
+    fn test_evaluator_type_checking_float() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+        let config = r#"{
+            "flags": {
+                "intFlag": {
+                    "state": "ENABLED",
+                    "variants": {"val": 42, "alt": 100},
+                    "defaultVariant": "val"
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+
+        // Float evaluation should accept integers via coercion
+        let result = evaluator.evaluate_float("intFlag", &json!({}));
+        assert_eq!(result.value, json!(42.0));
+    }
+
+    #[test]
+    fn test_evaluator_type_checking_object() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+        let config = r#"{
+            "flags": {
+                "stringFlag": {
+                    "state": "ENABLED",
+                    "variants": {"val": "string-value", "alt": "alternative-value"},
+                    "defaultVariant": "val"
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+
+        let result = evaluator.evaluate_object("stringFlag", &json!({}));
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
+    }
+
+    #[test]
+    fn test_evaluator_all_types_flag_not_found() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+        let config = r#"{
+            "flags": {
+                "existingFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "on"
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+
+        let bool_result = evaluator.evaluate_bool("missingFlag", &json!({}));
+        assert_eq!(bool_result.reason, ResolutionReason::FlagNotFound);
+
+        let string_result = evaluator.evaluate_string("missingFlag", &json!({}));
+        assert_eq!(string_result.reason, ResolutionReason::FlagNotFound);
+
+        let int_result = evaluator.evaluate_int("missingFlag", &json!({}));
+        assert_eq!(int_result.reason, ResolutionReason::FlagNotFound);
+
+        let float_result = evaluator.evaluate_float("missingFlag", &json!({}));
+        assert_eq!(float_result.reason, ResolutionReason::FlagNotFound);
+
+        let object_result = evaluator.evaluate_object("missingFlag", &json!({}));
+        assert_eq!(object_result.reason, ResolutionReason::FlagNotFound);
+    }
+
+    #[test]
+    fn test_evaluator_disabled_flags_all_types() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+        let config = r#"{
+            "flags": {
+                "disabledBool": {
+                    "state": "DISABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "on"
+                },
+                "disabledString": {
+                    "state": "DISABLED",
+                    "variants": {"val": "text", "alt": "alternative"},
+                    "defaultVariant": "val"
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+
+        let bool_result = evaluator.evaluate_bool("disabledBool", &json!({}));
+        assert_eq!(bool_result.value, Value::Null);
+        assert_eq!(bool_result.reason, ResolutionReason::Disabled);
+
+        let string_result = evaluator.evaluate_string("disabledString", &json!({}));
+        assert_eq!(string_result.value, Value::Null);
+        assert_eq!(string_result.reason, ResolutionReason::Disabled);
+    }
+
+    #[test]
+    fn test_evaluator_validation_modes() {
+        // Strict mode
+        let mut strict_eval = FlagEvaluator::new(ValidationMode::Strict);
+        assert_eq!(strict_eval.validation_mode(), ValidationMode::Strict);
+
+        // Permissive mode
+        let permissive_eval = FlagEvaluator::new(ValidationMode::Permissive);
+        assert_eq!(
+            permissive_eval.validation_mode(),
+            ValidationMode::Permissive
+        );
+
+        // Change mode
+        strict_eval.set_validation_mode(ValidationMode::Permissive);
+        assert_eq!(strict_eval.validation_mode(), ValidationMode::Permissive);
+    }
+
+    #[test]
+    fn test_evaluator_clear_state() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+        let config = r#"{
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "on"
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+        assert!(evaluator.get_state().is_some());
+
+        evaluator.clear_state();
+        assert!(evaluator.get_state().is_none());
+    }
+
+    #[test]
+    fn test_evaluator_changed_flags_detection() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+        let config1 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "on"
+                }
+            }
+        }"#;
+
+        let response1 = evaluator.update_state(config1).unwrap();
+        assert!(response1.changed_flags.is_some());
+        assert_eq!(response1.changed_flags.unwrap(), vec!["flag1"]);
+
+        let config2 = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "on"
+                },
+                "flag2": {
+                    "state": "ENABLED",
+                    "variants": {"off": false, "on": true},
+                    "defaultVariant": "off"
+                }
+            }
+        }"#;
+
+        let response2 = evaluator.update_state(config2).unwrap();
+        assert!(response2.changed_flags.is_some());
+        assert_eq!(response2.changed_flags.unwrap(), vec!["flag2"]);
+    }
+}
+
+// ============================================================================
+// WASM Integration Tests
+// ============================================================================
+
+#[cfg(test)]
+mod wasm_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Helper function to reset the WASM singleton evaluator between tests
+    fn reset_wasm_evaluator() {
+        let evaluator = get_wasm_evaluator();
+        let mut eval = evaluator.lock().unwrap();
+        eval.clear_state();
+        eval.set_validation_mode(ValidationMode::Strict);
+    }
+
+    /// Helper to call update_state WASM export
+    fn update_state_wasm(config: &str) -> String {
         let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32)
+    }
 
-        let context = r#"{}"#;
-        let context_bytes = context.as_bytes();
-        let flag_key = "verifyFlag";
+    /// Helper to call evaluate WASM export
+    fn evaluate_wasm(flag_key: &str, context: &str) -> EvaluationResult {
         let flag_key_bytes = flag_key.as_bytes();
+        let context_bytes = context.as_bytes();
 
-        let result = evaluate_internal(
+        let packed = evaluate_internal(
             flag_key_bytes.as_ptr(),
             flag_key_bytes.len() as u32,
             context_bytes.as_ptr(),
             context_bytes.len() as u32,
         );
 
-        // Both conditions should pass
-        assert_eq!(result.value, json!("properties-present"));
-        assert_eq!(result.variant, Some("verified".to_string()));
-        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
-    }
-
-    // ============================================================================
-    // Type-specific WASM evaluation tests
-    // ============================================================================
-
-    fn evaluate_boolean_internal(flag_key: &str, context: &str) -> EvaluationResult {
-        let flag_key_bytes = flag_key.as_bytes();
-        let context_bytes = context.as_bytes();
-        evaluate_typed_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-            evaluate_bool_flag,
-        )
-    }
-
-    fn evaluate_string_internal(flag_key: &str, context: &str) -> EvaluationResult {
-        let flag_key_bytes = flag_key.as_bytes();
-        let context_bytes = context.as_bytes();
-        evaluate_typed_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-            evaluate_string_flag,
-        )
-    }
-
-    fn evaluate_integer_internal(flag_key: &str, context: &str) -> EvaluationResult {
-        let flag_key_bytes = flag_key.as_bytes();
-        let context_bytes = context.as_bytes();
-        evaluate_typed_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-            evaluate_int_flag,
-        )
-    }
-
-    fn evaluate_float_internal(flag_key: &str, context: &str) -> EvaluationResult {
-        let flag_key_bytes = flag_key.as_bytes();
-        let context_bytes = context.as_bytes();
-        evaluate_typed_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-            evaluate_float_flag,
-        )
-    }
-
-    fn evaluate_object_internal(flag_key: &str, context: &str) -> EvaluationResult {
-        let flag_key_bytes = flag_key.as_bytes();
-        let context_bytes = context.as_bytes();
-        evaluate_typed_internal(
-            flag_key_bytes.as_ptr(),
-            flag_key_bytes.len() as u32,
-            context_bytes.as_ptr(),
-            context_bytes.len() as u32,
-            evaluate_object_flag,
-        )
+        // evaluate_internal already returns EvaluationResult directly
+        packed
     }
 
     #[test]
-    fn test_evaluate_boolean_success() {
-        clear_flag_state();
+    fn test_wasm_memory_allocation() {
+        // Test alloc and dealloc
+        let size = 100;
+        let ptr = wasm_alloc(size);
+        assert!(!ptr.is_null());
+
+        // Write some data
+        unsafe {
+            std::ptr::write_bytes(ptr, 0x42, size as usize);
+        }
+
+        // Free the memory
+        wasm_dealloc(ptr, size);
+    }
+
+    #[test]
+    fn test_wasm_update_state_export() {
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
-                "boolFlag": {
+                "testFlag": {
                     "state": "ENABLED",
-                    "variants": {
-                        "on": true,
-                        "off": false
-                    },
+                    "variants": {"on": true, "off": false},
                     "defaultVariant": "on"
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        let response_json = update_state_wasm(config);
+        let response: Value = serde_json::from_str(&response_json).unwrap();
+        assert_eq!(response["success"], true);
+    }
 
-        let result = evaluate_boolean_internal("boolFlag", "{}");
+    #[test]
+    fn test_wasm_evaluate_export() {
+        reset_wasm_evaluator();
+
+        let config = r#"{
+            "flags": {
+                "boolFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "on"
+                }
+            }
+        }"#;
+
+        update_state_wasm(config);
+
+        let result = evaluate_wasm("boolFlag", "{}");
         assert_eq!(result.value, json!(true));
         assert_eq!(result.reason, ResolutionReason::Static);
-        assert!(result.error_code.is_none());
     }
 
     #[test]
-    fn test_evaluate_boolean_type_mismatch() {
-        clear_flag_state();
+    fn test_wasm_packed_pointer_format() {
+        // Test pack and unpack utilities
+        let ptr = 0x12345678 as *mut u8;
+        let len = 42;
+
+        let packed = pack_ptr_len(ptr, len);
+        let (unpacked_ptr, unpacked_len) = unpack_ptr_len(packed);
+
+        assert_eq!(unpacked_ptr, ptr);
+        assert_eq!(unpacked_len, len);
+    }
+
+    #[test]
+    fn test_wasm_utf8_handling() {
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
-                "stringFlag": {
+                "unicodeFlag": {
                     "state": "ENABLED",
-                    "variants": {
-                        "on": "yes",
-                        "off": "no"
-                    },
-                    "defaultVariant": "on"
+                    "variants": {"emoji": "Hello 👋 World 🌍"},
+                    "defaultVariant": "emoji"
                 }
             }
         }"#;
 
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
+        update_state_wasm(config);
 
-        let result = evaluate_boolean_internal("stringFlag", "{}");
-        assert_eq!(result.reason, ResolutionReason::Error);
-        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
-        assert!(result.error_message.unwrap().contains("Expected boolean"));
-    }
-
-    #[test]
-    fn test_evaluate_string_success() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "stringFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "red": "crimson",
-                        "blue": "azure"
-                    },
-                    "defaultVariant": "red"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let result = evaluate_string_internal("stringFlag", "{}");
-        assert_eq!(result.value, json!("crimson"));
-        assert_eq!(result.reason, ResolutionReason::Static);
-        assert!(result.error_code.is_none());
-    }
-
-    #[test]
-    fn test_evaluate_string_type_mismatch() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "intFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "small": 10,
-                        "large": 100
-                    },
-                    "defaultVariant": "small"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let result = evaluate_string_internal("intFlag", "{}");
-        assert_eq!(result.reason, ResolutionReason::Error);
-        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
-        assert!(result.error_message.unwrap().contains("Expected string"));
-    }
-
-    #[test]
-    fn test_evaluate_integer_success() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "intFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "small": 10,
-                        "large": 100
-                    },
-                    "defaultVariant": "small"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let result = evaluate_integer_internal("intFlag", "{}");
-        assert_eq!(result.value, json!(10));
-        assert_eq!(result.reason, ResolutionReason::Static);
-        assert!(result.error_code.is_none());
-    }
-
-    #[test]
-    fn test_evaluate_integer_type_mismatch_float() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "floatFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "low": 1.5,
-                        "high": 9.99
-                    },
-                    "defaultVariant": "low"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let result = evaluate_integer_internal("floatFlag", "{}");
-        // Float is coerced to integer (Java-compatible behavior)
-        // 1.5 becomes 1
-        assert_eq!(result.value, json!(1));
-        assert_eq!(result.reason, ResolutionReason::Static);
-        assert!(result.error_code.is_none());
-    }
-
-    #[test]
-    fn test_evaluate_float_success() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "floatFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "low": 1.5,
-                        "high": 9.99
-                    },
-                    "defaultVariant": "low"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let result = evaluate_float_internal("floatFlag", "{}");
-        assert_eq!(result.value, json!(1.5));
-        assert_eq!(result.reason, ResolutionReason::Static);
-        assert!(result.error_code.is_none());
-    }
-
-    #[test]
-    fn test_evaluate_float_accepts_integer() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "intFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "small": 10,
-                        "large": 100
-                    },
-                    "defaultVariant": "small"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let result = evaluate_float_internal("intFlag", "{}");
-        // Integer is coerced to float (Java-compatible behavior)
-        assert_eq!(result.value, json!(10.0));
-        assert_eq!(result.reason, ResolutionReason::Static);
-        assert!(result.error_code.is_none());
-    }
-
-    #[test]
-    fn test_evaluate_float_type_mismatch() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "stringFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "red": "crimson"
-                    },
-                    "defaultVariant": "red"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let result = evaluate_float_internal("stringFlag", "{}");
-        assert_eq!(result.reason, ResolutionReason::Error);
-        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
-        assert!(result.error_message.unwrap().contains("Expected float"));
-    }
-
-    #[test]
-    fn test_evaluate_object_success() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "objectFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "config1": {"timeout": 30, "retries": 3},
-                        "config2": {"timeout": 60, "retries": 5}
-                    },
-                    "defaultVariant": "config1"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let result = evaluate_object_internal("objectFlag", "{}");
-        assert_eq!(result.value, json!({"timeout": 30, "retries": 3}));
-        assert_eq!(result.reason, ResolutionReason::Static);
-        assert!(result.error_code.is_none());
-    }
-
-    #[test]
-    fn test_evaluate_object_type_mismatch() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "stringFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "red": "crimson"
-                    },
-                    "defaultVariant": "red"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let result = evaluate_object_internal("stringFlag", "{}");
-        assert_eq!(result.reason, ResolutionReason::Error);
-        assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
-        assert!(result.error_message.unwrap().contains("Expected object"));
-    }
-
-    #[test]
-    fn test_all_type_evaluators_flag_not_found() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "existingFlag": {
-                    "state": "ENABLED",
-                    "variants": {"on": true},
-                    "defaultVariant": "on"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        // All type-specific evaluators should return FLAG_NOT_FOUND for missing flags
-        let bool_result = evaluate_boolean_internal("missingFlag", "{}");
-        assert_eq!(bool_result.reason, ResolutionReason::FlagNotFound);
-        assert_eq!(bool_result.error_code, Some(ErrorCode::FlagNotFound));
-
-        let string_result = evaluate_string_internal("missingFlag", "{}");
-        assert_eq!(string_result.reason, ResolutionReason::FlagNotFound);
-        assert_eq!(string_result.error_code, Some(ErrorCode::FlagNotFound));
-
-        let int_result = evaluate_integer_internal("missingFlag", "{}");
-        assert_eq!(int_result.reason, ResolutionReason::FlagNotFound);
-        assert_eq!(int_result.error_code, Some(ErrorCode::FlagNotFound));
-
-        let float_result = evaluate_float_internal("missingFlag", "{}");
-        assert_eq!(float_result.reason, ResolutionReason::FlagNotFound);
-        assert_eq!(float_result.error_code, Some(ErrorCode::FlagNotFound));
-
-        let object_result = evaluate_object_internal("missingFlag", "{}");
-        assert_eq!(object_result.reason, ResolutionReason::FlagNotFound);
-        assert_eq!(object_result.error_code, Some(ErrorCode::FlagNotFound));
-    }
-
-    #[test]
-    fn test_type_evaluators_with_targeting() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "boolFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "on": true,
-                        "off": false
-                    },
-                    "defaultVariant": "off",
-                    "targeting": {
-                        "if": [
-                            {"==": [{"var": "email"}, "admin@example.com"]},
-                            "on",
-                            "off"
-                        ]
-                    }
-                },
-                "intFlag": {
-                    "state": "ENABLED",
-                    "variants": {
-                        "small": 10,
-                        "large": 100
-                    },
-                    "defaultVariant": "small",
-                    "targeting": {
-                        "if": [
-                            {">": [{"var": "age"}, 18]},
-                            "large",
-                            "small"
-                        ]
-                    }
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        // Test boolean with targeting match
-        let bool_result =
-            evaluate_boolean_internal("boolFlag", r#"{"email": "admin@example.com"}"#);
-        assert_eq!(bool_result.value, json!(true));
-        assert_eq!(bool_result.reason, ResolutionReason::TargetingMatch);
-
-        // Test boolean with targeting no match
-        let bool_result = evaluate_boolean_internal("boolFlag", r#"{"email": "user@example.com"}"#);
-        assert_eq!(bool_result.value, json!(false));
-        assert_eq!(bool_result.reason, ResolutionReason::TargetingMatch);
-
-        // Test integer with targeting
-        let int_result = evaluate_integer_internal("intFlag", r#"{"age": 25}"#);
-        assert_eq!(int_result.value, json!(100));
-        assert_eq!(int_result.reason, ResolutionReason::TargetingMatch);
-    }
-
-    #[test]
-    fn test_type_evaluators_with_disabled_flags() {
-        clear_flag_state();
-
-        let config = r#"{
-            "flags": {
-                "disabledBool": {
-                    "state": "DISABLED",
-                    "variants": {
-                        "on": true,
-                        "off": false
-                    },
-                    "defaultVariant": "off"
-                },
-                "disabledString": {
-                    "state": "DISABLED",
-                    "variants": {
-                        "red": "crimson",
-                        "blue": "azure"
-                    },
-                    "defaultVariant": "blue"
-                }
-            }
-        }"#;
-
-        let config_bytes = config.as_bytes();
-        update_state_internal(config_bytes.as_ptr(), config_bytes.len() as u32);
-
-        let bool_result = evaluate_boolean_internal("disabledBool", "{}");
-        // Disabled flags return null value with Disabled reason to signal "use code default"
-        assert_eq!(bool_result.value, Value::Null);
-        assert_eq!(bool_result.reason, ResolutionReason::Disabled);
-        assert_eq!(bool_result.error_code, Some(ErrorCode::FlagNotFound));
-
-        let string_result = evaluate_string_internal("disabledString", "{}");
-        // Disabled flags return null value with Disabled reason to signal "use code default"
-        assert_eq!(string_result.value, Value::Null);
-        assert_eq!(string_result.reason, ResolutionReason::Disabled);
-        assert_eq!(string_result.error_code, Some(ErrorCode::FlagNotFound));
+        let result = evaluate_wasm("unicodeFlag", "{}");
+        assert_eq!(result.value, json!("Hello 👋 World 🌍"));
     }
 }

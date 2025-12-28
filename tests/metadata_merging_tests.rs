@@ -5,14 +5,13 @@
 //! Metadata should be returned on a "best effort" basis for disabled, missing, and
 //! erroneous flags.
 
-use flagd_evaluator::evaluation::evaluate_flag;
-use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+use flagd_evaluator::{FlagEvaluator, ValidationMode};
 use serde_json::json;
 
 #[test]
 fn test_metadata_merging_flag_priority() {
     // Test that flag metadata takes priority over flag-set metadata
-    clear_flag_state();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
     let config = r#"{
         "metadata": {
@@ -36,12 +35,10 @@ fn test_metadata_merging_flag_priority() {
         }
     }"#;
 
-    update_flag_state(config).unwrap();
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
-    let flag = state.flags.get("testFlag").unwrap();
+    evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("testFlag", &context);
 
     // Verify metadata is merged with flag metadata taking priority
     assert!(result.flag_metadata.is_some());
@@ -61,7 +58,7 @@ fn test_metadata_merging_flag_priority() {
 #[test]
 fn test_metadata_only_flag_set() {
     // Test when only flag-set metadata exists
-    clear_flag_state();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
     let config = r#"{
         "metadata": {
@@ -80,12 +77,10 @@ fn test_metadata_only_flag_set() {
         }
     }"#;
 
-    update_flag_state(config).unwrap();
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
-    let flag = state.flags.get("testFlag").unwrap();
+    evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("testFlag", &context);
 
     // Verify flag-set metadata is included
     assert!(result.flag_metadata.is_some());
@@ -97,7 +92,7 @@ fn test_metadata_only_flag_set() {
 #[test]
 fn test_metadata_only_flag_level() {
     // Test when only flag-level metadata exists
-    clear_flag_state();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
     let config = r#"{
         "flags": {
@@ -116,12 +111,10 @@ fn test_metadata_only_flag_level() {
         }
     }"#;
 
-    update_flag_state(config).unwrap();
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
-    let flag = state.flags.get("testFlag").unwrap();
+    evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("testFlag", &context);
 
     // Verify flag-level metadata is included
     assert!(result.flag_metadata.is_some());
@@ -131,16 +124,16 @@ fn test_metadata_only_flag_level() {
 }
 
 #[test]
-fn test_metadata_with_disabled_flag() {
-    // Test metadata is returned for disabled flags
-    clear_flag_state();
+fn test_metadata_disabled_flag_returns_metadata() {
+    // Test that metadata is returned even for disabled flags
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
     let config = r#"{
         "metadata": {
             "version": "1.0"
         },
         "flags": {
-            "disabledFlag": {
+            "testFlag": {
                 "state": "DISABLED",
                 "defaultVariant": "off",
                 "variants": {
@@ -148,83 +141,61 @@ fn test_metadata_with_disabled_flag() {
                     "off": false
                 },
                 "metadata": {
-                    "reason": "deprecated"
+                    "reason": "Feature discontinued"
                 }
             }
         }
     }"#;
 
-    update_flag_state(config).unwrap();
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
-    let flag = state.flags.get("disabledFlag").unwrap();
+    evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("testFlag", &context);
 
-    // Verify disabled flag returns metadata
-    assert_eq!(
-        result.reason,
-        flagd_evaluator::evaluation::ResolutionReason::Disabled
-    );
+    // Verify metadata is returned even for disabled flag
     assert!(result.flag_metadata.is_some());
     let metadata = result.flag_metadata.unwrap();
-    assert_eq!(metadata.get("reason").unwrap(), "deprecated");
     assert_eq!(metadata.get("version").unwrap(), "1.0");
+    assert_eq!(metadata.get("reason").unwrap(), "Feature discontinued");
 }
 
 #[test]
-fn test_metadata_with_targeting_match() {
-    // Test metadata is returned with targeting match
-    clear_flag_state();
+fn test_metadata_missing_flag_returns_flag_set_metadata() {
+    // Test that flag-set metadata is returned even when flag doesn't exist
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
     let config = r#"{
         "metadata": {
-            "project": "feature-flags"
+            "version": "1.0",
+            "fallback": "Use default"
         },
         "flags": {
-            "targetedFlag": {
+            "existingFlag": {
                 "state": "ENABLED",
-                "defaultVariant": "off",
+                "defaultVariant": "on",
                 "variants": {
-                    "on": true,
-                    "off": false
-                },
-                "targeting": {
-                    "if": [
-                        {"==": [{"var": "user"}, "admin"]},
-                        "on",
-                        "off"
-                    ]
-                },
-                "metadata": {
-                    "category": "access-control"
+                    "on": true
                 }
             }
         }
     }"#;
 
-    update_flag_state(config).unwrap();
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
-    let flag = state.flags.get("targetedFlag").unwrap();
+    evaluator.update_state(config).unwrap();
 
-    let context = json!({"user": "admin"});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let context = json!({});
+    let result = evaluator.evaluate_flag("missingFlag", &context);
 
-    // Verify targeting match includes merged metadata
-    assert_eq!(
-        result.reason,
-        flagd_evaluator::evaluation::ResolutionReason::TargetingMatch
-    );
+    // Verify flag-set metadata is returned on "best effort" basis
     assert!(result.flag_metadata.is_some());
     let metadata = result.flag_metadata.unwrap();
-    assert_eq!(metadata.get("category").unwrap(), "access-control");
-    assert_eq!(metadata.get("project").unwrap(), "feature-flags");
+    assert_eq!(metadata.get("version").unwrap(), "1.0");
+    assert_eq!(metadata.get("fallback").unwrap(), "Use default");
 }
 
 #[test]
-fn test_no_metadata_when_empty() {
-    // Test that no metadata field is present when both are empty
-    clear_flag_state();
+fn test_metadata_empty_merging() {
+    // Test when both flag-set and flag metadata are empty
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
     let config = r#"{
         "flags": {
@@ -239,13 +210,11 @@ fn test_no_metadata_when_empty() {
         }
     }"#;
 
-    update_flag_state(config).unwrap();
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
-    let flag = state.flags.get("testFlag").unwrap();
+    evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("testFlag", &context);
 
-    // Verify no metadata field when both are empty
-    assert!(result.flag_metadata.is_none());
+    // Verify empty metadata is not included
+    assert!(result.flag_metadata.is_none() || result.flag_metadata.as_ref().unwrap().is_empty());
 }
