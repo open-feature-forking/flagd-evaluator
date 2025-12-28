@@ -37,9 +37,22 @@
 //! ```
 
 use std::panic;
-use std::sync::Once;
+use std::sync::{Mutex, Once, OnceLock};
 
 static PANIC_HOOK_INIT: Once = Once::new();
+
+/// Global singleton FlagEvaluator instance for WASM.
+///
+/// WASM is single-threaded, so we use a simple Mutex for interior mutability.
+/// This provides a single global evaluator instance that all WASM exports use.
+static WASM_EVALUATOR: OnceLock<Mutex<evaluator::FlagEvaluator>> = OnceLock::new();
+
+/// Get or initialize the global WASM evaluator instance.
+fn get_wasm_evaluator() -> &'static Mutex<evaluator::FlagEvaluator> {
+    WASM_EVALUATOR.get_or_init(|| {
+        Mutex::new(evaluator::FlagEvaluator::new(storage::ValidationMode::Strict))
+    })
+}
 
 // Import optional host function for getting current time
 // If the host doesn't provide this, we'll fall back to a default value
@@ -202,7 +215,10 @@ pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
         }
     };
 
-    crate::storage::set_validation_mode(validation_mode);
+    // Update validation mode on the singleton evaluator
+    let evaluator = get_wasm_evaluator();
+    let mut eval = evaluator.lock().unwrap();
+    eval.set_validation_mode(validation_mode);
 
     let response = serde_json::json!({
         "success": true,
@@ -270,8 +286,10 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
         }
     };
 
-    // Parse and store the configuration using the storage module
-    match update_flag_state(&config_str) {
+    // Parse and store the configuration using the singleton evaluator
+    let evaluator = get_wasm_evaluator();
+    let mut eval = evaluator.lock().unwrap();
+    match eval.update_state(&config_str) {
         Ok(response) => {
             // Convert UpdateStateResponse to JSON
             serde_json::to_string(&response).unwrap_or_else(|e| {
@@ -379,31 +397,20 @@ fn evaluate_internal(
             }
         };
 
-        // Retrieve the flag from state
-        let flag_state = match get_flag_state() {
-            Some(state) => state,
-            None => {
-                return EvaluationResult::error(
-                    ErrorCode::FlagNotFound,
-                    "Flag state not initialized. Call update_state first.",
-                )
-            }
-        };
+        // Get the singleton evaluator and evaluate the flag
+        let evaluator = get_wasm_evaluator();
+        let eval = evaluator.lock().unwrap();
 
-        let flag = match flag_state.flags.get(&flag_key) {
-            Some(f) => f.clone(),
-            None => {
-                // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
-                let mut result = EvaluationResult::flag_not_found(&flag_key);
-                if !flag_state.flag_set_metadata.is_empty() {
-                    result = result.with_metadata(flag_state.flag_set_metadata.clone());
-                }
-                return result;
-            }
-        };
+        // Check if state is initialized
+        if eval.get_state().is_none() {
+            return EvaluationResult::error(
+                ErrorCode::FlagNotFound,
+                "Flag state not initialized. Call update_state first.",
+            );
+        }
 
-        // Evaluate the flag with merged metadata (flag-set + flag metadata)
-        evaluate_flag(&flag, &context, &flag_state.flag_set_metadata)
+        // Evaluate using the evaluator instance
+        eval.evaluate_flag(&flag_key, &context)
     });
 
     match result {

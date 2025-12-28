@@ -129,6 +129,13 @@ impl FlagEvaluator {
         self.validation_mode
     }
 
+    /// Sets the validation mode for this evaluator.
+    ///
+    /// This affects how subsequent `update_state` calls will handle validation errors.
+    pub fn set_validation_mode(&mut self, mode: ValidationMode) {
+        self.validation_mode = mode;
+    }
+
     /// Clears the flag state.
     pub fn clear_state(&mut self) {
         self.state = None;
