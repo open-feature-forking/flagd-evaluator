@@ -6,10 +6,18 @@
 
 use crate::evaluation::EvaluationResult;
 use crate::model::{ParsingResult, UpdateStateResponse};
-use crate::storage::ValidationMode;
 use crate::validation::validate_flags_config;
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
+
+/// Validation mode determines how validation errors are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationMode {
+    /// Reject invalid flag configurations (default, strict mode)
+    Strict,
+    /// Accept invalid flag configurations with warnings (permissive mode)
+    Permissive,
+}
 
 /// Instance-based flag evaluator.
 ///
@@ -39,6 +47,7 @@ use std::collections::HashSet;
 ///
 /// evaluator.update_state(config).unwrap();
 /// ```
+#[derive(Debug)]
 pub struct FlagEvaluator {
     state: Option<ParsingResult>,
     validation_mode: ValidationMode,
@@ -142,14 +151,12 @@ impl FlagEvaluator {
     }
 
     /// Evaluates a boolean flag.
-    pub fn evaluate_bool(
-        &self,
-        flag_key: &str,
-        context: &JsonValue,
-    ) -> EvaluationResult {
+    pub fn evaluate_bool(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
         match &self.state {
             Some(state) => {
-                let flag = state.flags.get(flag_key)
+                let flag = state
+                    .flags
+                    .get(flag_key)
                     .cloned()
                     .unwrap_or_else(|| self.empty_flag(flag_key));
                 crate::evaluation::evaluate_bool_flag(&flag, context, &state.flag_set_metadata)
@@ -166,14 +173,12 @@ impl FlagEvaluator {
     }
 
     /// Evaluates a string flag.
-    pub fn evaluate_string(
-        &self,
-        flag_key: &str,
-        context: &JsonValue,
-    ) -> EvaluationResult {
+    pub fn evaluate_string(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
         match &self.state {
             Some(state) => {
-                let flag = state.flags.get(flag_key)
+                let flag = state
+                    .flags
+                    .get(flag_key)
                     .cloned()
                     .unwrap_or_else(|| self.empty_flag(flag_key));
                 crate::evaluation::evaluate_string_flag(&flag, context, &state.flag_set_metadata)
@@ -190,14 +195,12 @@ impl FlagEvaluator {
     }
 
     /// Evaluates an integer flag.
-    pub fn evaluate_int(
-        &self,
-        flag_key: &str,
-        context: &JsonValue,
-    ) -> EvaluationResult {
+    pub fn evaluate_int(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
         match &self.state {
             Some(state) => {
-                let flag = state.flags.get(flag_key)
+                let flag = state
+                    .flags
+                    .get(flag_key)
                     .cloned()
                     .unwrap_or_else(|| self.empty_flag(flag_key));
                 crate::evaluation::evaluate_int_flag(&flag, context, &state.flag_set_metadata)
@@ -214,14 +217,12 @@ impl FlagEvaluator {
     }
 
     /// Evaluates a float flag.
-    pub fn evaluate_float(
-        &self,
-        flag_key: &str,
-        context: &JsonValue,
-    ) -> EvaluationResult {
+    pub fn evaluate_float(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
         match &self.state {
             Some(state) => {
-                let flag = state.flags.get(flag_key)
+                let flag = state
+                    .flags
+                    .get(flag_key)
                     .cloned()
                     .unwrap_or_else(|| self.empty_flag(flag_key));
                 crate::evaluation::evaluate_float_flag(&flag, context, &state.flag_set_metadata)
@@ -238,14 +239,12 @@ impl FlagEvaluator {
     }
 
     /// Evaluates a generic flag (for objects/structs).
-    pub fn evaluate_flag(
-        &self,
-        flag_key: &str,
-        context: &JsonValue,
-    ) -> EvaluationResult {
+    pub fn evaluate_flag(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
         match &self.state {
             Some(state) => {
-                let flag = state.flags.get(flag_key)
+                let flag = state
+                    .flags
+                    .get(flag_key)
                     .cloned()
                     .unwrap_or_else(|| self.empty_flag(flag_key));
                 crate::evaluation::evaluate_flag(&flag, context, &state.flag_set_metadata)

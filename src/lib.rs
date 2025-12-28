@@ -49,9 +49,7 @@ static WASM_EVALUATOR: OnceLock<Mutex<evaluator::FlagEvaluator>> = OnceLock::new
 
 /// Get or initialize the global WASM evaluator instance.
 fn get_wasm_evaluator() -> &'static Mutex<evaluator::FlagEvaluator> {
-    WASM_EVALUATOR.get_or_init(|| {
-        Mutex::new(evaluator::FlagEvaluator::new(storage::ValidationMode::Strict))
-    })
+    WASM_EVALUATOR.get_or_init(|| Mutex::new(evaluator::FlagEvaluator::new(ValidationMode::Strict)))
 }
 
 // Import optional host function for getting current time
@@ -105,7 +103,6 @@ pub mod evaluator;
 pub mod memory;
 pub mod model;
 pub mod operators;
-pub mod storage;
 pub mod validation;
 
 /// Gets the current Unix timestamp in seconds.
@@ -140,16 +137,12 @@ pub use evaluation::{
     evaluate_bool_flag, evaluate_flag, evaluate_float_flag, evaluate_int_flag,
     evaluate_object_flag, evaluate_string_flag, ErrorCode, EvaluationResult, ResolutionReason,
 };
+pub use evaluator::{FlagEvaluator, ValidationMode};
 pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
 pub use model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 pub use operators::create_evaluator;
-pub use evaluator::FlagEvaluator;
-pub use storage::{
-    clear_flag_state, get_flag_state, get_state_validation_mode, set_validation_mode,
-    update_flag_state, update_flag_state_with_mode, ValidationMode,
-};
 pub use validation::{validate_flags_config, ValidationError, ValidationResult};
 
 /// Re-exports for external access to allocation functions.
@@ -200,8 +193,6 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
 /// - The caller will free the returned memory using `dealloc`
 #[export_name = "set_validation_mode"]
 pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
-    use crate::storage::ValidationMode;
-
     let validation_mode = match mode {
         0 => ValidationMode::Strict,
         1 => ValidationMode::Permissive,
@@ -461,7 +452,7 @@ pub extern "C" fn evaluate_boolean(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_bool_flag,
+        |eval, key, ctx| eval.evaluate_bool(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -499,7 +490,7 @@ pub extern "C" fn evaluate_string(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_string_flag,
+        |eval, key, ctx| eval.evaluate_string(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -537,7 +528,7 @@ pub extern "C" fn evaluate_integer(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_int_flag,
+        |eval, key, ctx| eval.evaluate_int(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -575,7 +566,7 @@ pub extern "C" fn evaluate_float(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_float_flag,
+        |eval, key, ctx| eval.evaluate_float(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -613,7 +604,7 @@ pub extern "C" fn evaluate_object(
         flag_key_len,
         context_ptr,
         context_len,
-        evaluate_object_flag,
+        |eval, key, ctx| eval.evaluate_flag(key, ctx),
     );
     string_to_memory(&result.to_json_string())
 }
@@ -621,23 +612,23 @@ pub extern "C" fn evaluate_object(
 /// Internal helper function for type-specific evaluation.
 ///
 /// This function handles the common logic for all typed evaluation functions:
-/// parsing inputs, retrieving the flag, and calling the type-specific evaluator.
+/// parsing inputs and calling the type-specific evaluator method on the singleton.
 ///
 /// # Arguments
 /// * `flag_key_ptr` - Pointer to the flag key string
 /// * `flag_key_len` - Length of the flag key string
 /// * `context_ptr` - Pointer to the context JSON string
 /// * `context_len` - Length of the context JSON string
-/// * `evaluator` - The type-specific evaluation function to use
+/// * `evaluator_fn` - Function that calls the appropriate method on FlagEvaluator
 fn evaluate_typed_internal<F>(
     flag_key_ptr: *const u8,
     flag_key_len: u32,
     context_ptr: *const u8,
     context_len: u32,
-    evaluator: F,
+    evaluator_fn: F,
 ) -> EvaluationResult
 where
-    F: Fn(&FeatureFlag, &Value, &std::collections::HashMap<String, Value>) -> EvaluationResult,
+    F: Fn(&evaluator::FlagEvaluator, &str, &Value) -> EvaluationResult,
 {
     // Initialize panic hook for better error messages
     init_panic_hook();
@@ -676,31 +667,20 @@ where
             }
         };
 
-        // Retrieve the flag from state
-        let flag_state = match get_flag_state() {
-            Some(state) => state,
-            None => {
-                return EvaluationResult::error(
-                    ErrorCode::General,
-                    "Flag state not initialized. Call update_state first.",
-                )
-            }
-        };
+        // Get the singleton evaluator and evaluate using the type-specific method
+        let evaluator = get_wasm_evaluator();
+        let eval = evaluator.lock().unwrap();
 
-        let flag = match flag_state.flags.get(&flag_key) {
-            Some(f) => f.clone(),
-            None => {
-                // For FLAG_NOT_FOUND, return flag-set metadata on a "best effort" basis
-                let mut result = EvaluationResult::flag_not_found(&flag_key);
-                if !flag_state.flag_set_metadata.is_empty() {
-                    result = result.with_metadata(flag_state.flag_set_metadata.clone());
-                }
-                return result;
-            }
-        };
+        // Check if state is initialized
+        if eval.get_state().is_none() {
+            return EvaluationResult::error(
+                ErrorCode::FlagNotFound,
+                "Flag state not initialized. Call update_state first.",
+            );
+        }
 
-        // Use the type-specific evaluator with merged metadata
-        evaluator(&flag, &context, &flag_state.flag_set_metadata)
+        // Call the type-specific evaluator method
+        evaluator_fn(&eval, &flag_key, &context)
     }));
 
     match result {
@@ -723,13 +703,21 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Helper function to reset the WASM singleton evaluator between tests
+    fn reset_wasm_evaluator() {
+        let evaluator = get_wasm_evaluator();
+        let mut eval = evaluator.lock().unwrap();
+        eval.clear_state();
+        eval.set_validation_mode(ValidationMode::Strict);
+    }
+
     // ============================================================================
     // update_state and evaluate function tests
     // ============================================================================
 
     #[test]
     fn test_update_state_and_evaluate_bool() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -769,7 +757,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_int_flag() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -805,7 +793,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_float_flag() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -841,7 +829,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_string_flag() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -877,7 +865,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_object_flag() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -913,7 +901,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_with_targeting() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -973,7 +961,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_disabled_flag() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1011,7 +999,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_flag_not_found() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1045,7 +1033,7 @@ mod tests {
 
     #[test]
     fn test_update_state_invalid_json() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = "not valid json";
         let config_bytes = config.as_bytes();
@@ -1058,7 +1046,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_invalid_context_json() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1091,8 +1079,12 @@ mod tests {
 
     #[test]
     fn test_evaluate_with_fractional_targeting() {
-        clear_flag_state();
-        set_validation_mode(ValidationMode::Permissive);
+        reset_wasm_evaluator();
+        let evaluator = get_wasm_evaluator();
+        evaluator
+            .lock()
+            .unwrap()
+            .set_validation_mode(ValidationMode::Permissive);
 
         let config = r#"{
             "flags": {
@@ -1134,8 +1126,6 @@ mod tests {
                 || result.value == json!("treatment-experience")
         );
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
-
-        set_validation_mode(ValidationMode::Strict);
     }
 
     #[test]
@@ -1155,8 +1145,12 @@ mod tests {
 
     #[test]
     fn test_edge_case_missing_targeting_key() {
-        clear_flag_state();
-        set_validation_mode(ValidationMode::Permissive);
+        reset_wasm_evaluator();
+        let evaluator = get_wasm_evaluator();
+        evaluator
+            .lock()
+            .unwrap()
+            .set_validation_mode(ValidationMode::Permissive);
 
         // Flag that uses targetingKey for fractional bucketing
         let config = r#"{
@@ -1201,13 +1195,11 @@ mod tests {
             "Expected variant-a or variant-b, got: {:?}",
             result.value
         );
-
-        set_validation_mode(ValidationMode::Strict);
     }
 
     #[test]
     fn test_edge_case_unknown_variant_from_targeting() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         // Targeting rule returns a variant name that doesn't exist
         let config = r#"{
@@ -1253,8 +1245,12 @@ mod tests {
 
     #[test]
     fn test_edge_case_malformed_targeting_expression() {
-        clear_flag_state();
-        set_validation_mode(ValidationMode::Permissive);
+        reset_wasm_evaluator();
+        let evaluator = get_wasm_evaluator();
+        evaluator
+            .lock()
+            .unwrap()
+            .set_validation_mode(ValidationMode::Permissive);
 
         // Invalid JSON Logic expression (missing closing bracket)
         let config = r#"{
@@ -1293,14 +1289,16 @@ mod tests {
         // The error code might be General instead of ParseError due to unknown operator
         assert!(result.error_code.is_some());
         assert!(result.error_message.is_some());
-
-        set_validation_mode(ValidationMode::Strict);
     }
 
     #[test]
     fn test_edge_case_fractional_with_targetingkey_context() {
-        clear_flag_state();
-        set_validation_mode(ValidationMode::Permissive);
+        reset_wasm_evaluator();
+        let evaluator = get_wasm_evaluator();
+        evaluator
+            .lock()
+            .unwrap()
+            .set_validation_mode(ValidationMode::Permissive);
 
         // Use targetingKey for consistent bucketing
         let config = r#"{
@@ -1349,13 +1347,11 @@ mod tests {
         assert_eq!(result1.value, result2.value);
         assert_eq!(result1.variant, result2.variant);
         assert_eq!(result1.reason, ResolutionReason::TargetingMatch);
-
-        set_validation_mode(ValidationMode::Strict);
     }
 
     #[test]
     fn test_edge_case_targeting_with_flag_key_reference() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         // Targeting rule that uses the $flagd.flagKey field
         let config = r#"{
@@ -1401,7 +1397,7 @@ mod tests {
 
     #[test]
     fn test_edge_case_complex_targeting_with_all_operators() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         // Complex rule using multiple custom operators
         let config = r#"{
@@ -1481,7 +1477,7 @@ mod tests {
 
     #[test]
     fn test_flagd_timestamp_in_targeting() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         // Flag that uses $flagd.timestamp for time-based targeting
         let config = r#"{
@@ -1527,7 +1523,7 @@ mod tests {
 
     #[test]
     fn test_flagd_properties_are_injected() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         // Flag that verifies both $flagd properties exist
         let config = r#"{
@@ -1588,7 +1584,7 @@ mod tests {
             flag_key_bytes.len() as u32,
             context_bytes.as_ptr(),
             context_bytes.len() as u32,
-            evaluate_bool_flag,
+            |eval, key, ctx| eval.evaluate_bool(key, ctx),
         )
     }
 
@@ -1600,7 +1596,7 @@ mod tests {
             flag_key_bytes.len() as u32,
             context_bytes.as_ptr(),
             context_bytes.len() as u32,
-            evaluate_string_flag,
+            |eval, key, ctx| eval.evaluate_string(key, ctx),
         )
     }
 
@@ -1612,7 +1608,7 @@ mod tests {
             flag_key_bytes.len() as u32,
             context_bytes.as_ptr(),
             context_bytes.len() as u32,
-            evaluate_int_flag,
+            |eval, key, ctx| eval.evaluate_int(key, ctx),
         )
     }
 
@@ -1624,7 +1620,7 @@ mod tests {
             flag_key_bytes.len() as u32,
             context_bytes.as_ptr(),
             context_bytes.len() as u32,
-            evaluate_float_flag,
+            |eval, key, ctx| eval.evaluate_float(key, ctx),
         )
     }
 
@@ -1636,13 +1632,13 @@ mod tests {
             flag_key_bytes.len() as u32,
             context_bytes.as_ptr(),
             context_bytes.len() as u32,
-            evaluate_object_flag,
+            |eval, key, ctx| eval.evaluate_flag(key, ctx),
         )
     }
 
     #[test]
     fn test_evaluate_boolean_success() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1668,7 +1664,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_boolean_type_mismatch() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1694,7 +1690,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_string_success() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1720,7 +1716,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_string_type_mismatch() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1746,7 +1742,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_integer_success() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1772,7 +1768,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_integer_type_mismatch_float() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1800,7 +1796,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_float_success() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1826,7 +1822,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_float_accepts_integer() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1853,7 +1849,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_float_type_mismatch() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1878,7 +1874,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_object_success() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1904,7 +1900,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_object_type_mismatch() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1929,7 +1925,7 @@ mod tests {
 
     #[test]
     fn test_all_type_evaluators_flag_not_found() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1968,7 +1964,7 @@ mod tests {
 
     #[test]
     fn test_type_evaluators_with_targeting() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -2027,7 +2023,7 @@ mod tests {
 
     #[test]
     fn test_type_evaluators_with_disabled_flags() {
-        clear_flag_state();
+        reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {

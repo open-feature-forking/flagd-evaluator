@@ -3,7 +3,9 @@
 //! These tests verify the complete evaluation flow including memory management,
 //! JSON parsing, custom operators, and error handling.
 
-use flagd_evaluator::{alloc, dealloc, pack_ptr_len, unpack_ptr_len};
+use flagd_evaluator::{
+    alloc, dealloc, pack_ptr_len, unpack_ptr_len, FlagEvaluator, ValidationMode,
+};
 
 // ============================================================================
 // Memory Management
@@ -67,12 +69,14 @@ fn test_update_state_success() {
             }
         }
     }"#;
-
-    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let response = evaluator.update_state(config).unwrap();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let response = evaluator.update_state(config).unwrap();
     assert!(response.success);
 
     // Verify the state was actually stored
-    let state = flagd_evaluator::storage::get_flag_state();
+    let state = evaluator.get_state();
     assert!(state.is_some());
     let state = state.unwrap();
     assert_eq!(state.flags.len(), 1);
@@ -82,7 +86,8 @@ fn test_update_state_success() {
 #[test]
 fn test_update_state_invalid_json() {
     let config = "not valid json";
-    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let response = evaluator.update_state(config).unwrap();
     assert!(!response.success);
     let err = response.error.unwrap();
     // Error should be JSON format with validation errors
@@ -92,7 +97,8 @@ fn test_update_state_invalid_json() {
 #[test]
 fn test_update_state_missing_flags_field() {
     let config = r#"{"other": "data"}"#;
-    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let response = evaluator.update_state(config).unwrap();
     assert!(!response.success);
     let err = response.error.unwrap();
     // Error should indicate missing required field or invalid schema
@@ -111,11 +117,12 @@ fn test_update_state_replaces_existing_state() {
             }
         }
     }"#;
-    let response = flagd_evaluator::storage::update_flag_state(config1).unwrap();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let response = evaluator.update_state(config1).unwrap();
     assert!(response.success);
 
     // Verify first state
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let state = evaluator.get_state().unwrap();
     assert!(state.flags.contains_key("flag1"));
 
     // Second configuration should replace the first
@@ -128,11 +135,11 @@ fn test_update_state_replaces_existing_state() {
             }
         }
     }"#;
-    let response = flagd_evaluator::storage::update_flag_state(config2).unwrap();
+    let response = evaluator.update_state(config2).unwrap();
     assert!(response.success);
 
     // Verify state was replaced
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let state = evaluator.get_state().unwrap();
     assert!(!state.flags.contains_key("flag1"));
     assert!(state.flags.contains_key("flag2"));
     assert_eq!(state.flags.len(), 1);
@@ -160,10 +167,11 @@ fn test_update_state_with_targeting() {
         }
     }"#;
 
-    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let response = evaluator.update_state(config).unwrap();
     assert!(response.success);
 
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let state = evaluator.get_state().unwrap();
     let flag = state.flags.get("complexFlag").unwrap();
     assert!(flag.targeting.is_some());
 }
@@ -190,10 +198,11 @@ fn test_update_state_with_metadata() {
         }
     }"#;
 
-    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let response = evaluator.update_state(config).unwrap();
     assert!(response.success);
 
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let state = evaluator.get_state().unwrap();
     // $schema and $evaluators should NOT be in flag_set_metadata
     assert!(!state.flag_set_metadata.contains_key("$schema"));
     assert!(!state.flag_set_metadata.contains_key("$evaluators"));
@@ -211,10 +220,11 @@ fn test_update_state_with_metadata() {
 #[test]
 fn test_update_state_empty_flags() {
     let config = r#"{"flags": {}}"#;
-    let result = flagd_evaluator::storage::update_flag_state(config);
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let result = evaluator.update_state(config);
     assert!(result.is_ok());
 
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let state = evaluator.get_state().unwrap();
     assert_eq!(state.flags.len(), 0);
 }
 
@@ -240,10 +250,11 @@ fn test_update_state_multiple_flags() {
         }
     }"#;
 
-    let result = flagd_evaluator::storage::update_flag_state(config);
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let result = evaluator.update_state(config);
     assert!(result.is_ok());
 
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let state = evaluator.get_state().unwrap();
     assert_eq!(state.flags.len(), 3);
     assert!(state.flags.contains_key("flag1"));
     assert!(state.flags.contains_key("flag2"));
@@ -259,7 +270,8 @@ fn test_update_state_invalid_flag_structure() {
             }
         }
     }"#;
-    let response = flagd_evaluator::storage::update_flag_state(config).unwrap();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+    let response = evaluator.update_state(config).unwrap();
     assert!(!response.success);
     let err = response.error.unwrap();
     // Error should indicate validation failure due to missing required fields
@@ -273,10 +285,10 @@ fn test_update_state_invalid_flag_structure() {
 #[test]
 fn test_evaluators_simple_ref_evaluation() {
     use flagd_evaluator::evaluation::evaluate_flag;
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
     use serde_json::json;
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-    clear_flag_state();
+    evaluator.clear_state();
 
     let config = r#"{
         "$evaluators": {
@@ -304,11 +316,11 @@ fn test_evaluators_simple_ref_evaluation() {
     }"#;
 
     // Update state
-    let result = update_flag_state(config);
+    let result = evaluator.update_state(config);
     assert!(result.is_ok(), "Failed to update state: {:?}", result);
 
     // Get the flag
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    let state = evaluator.get_state().unwrap();
     let flag = state.flags.get("adminFeature").unwrap();
 
     // Test with admin email - should return true
@@ -327,10 +339,11 @@ fn test_evaluators_simple_ref_evaluation() {
 #[test]
 fn test_evaluators_nested_ref_evaluation() {
     use flagd_evaluator::evaluation::evaluate_flag;
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
     use serde_json::json;
 
-    clear_flag_state();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    evaluator.clear_state();
 
     let config = r#"{
         "$evaluators": {
@@ -365,9 +378,8 @@ fn test_evaluators_nested_ref_evaluation() {
             }
         }
     }"#;
-
-    update_flag_state(config).unwrap();
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    evaluator.update_state(config).unwrap();
+    let state = evaluator.get_state().unwrap();
     let flag = state.flags.get("premiumFeature").unwrap();
 
     // Test with active admin - should return premium
@@ -392,14 +404,12 @@ fn test_evaluators_nested_ref_evaluation() {
 #[test]
 fn test_evaluators_with_fractional_operator() {
     use flagd_evaluator::evaluation::evaluate_flag;
-    use flagd_evaluator::storage::{
-        clear_flag_state, set_validation_mode, update_flag_state, ValidationMode,
-    };
+
     use serde_json::json;
 
-    clear_flag_state();
-    // Use permissive mode since bare $ref at top level doesn't validate
-    set_validation_mode(ValidationMode::Permissive);
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+    evaluator.clear_state();
 
     let config = r#"{
         "$evaluators": {
@@ -426,9 +436,8 @@ fn test_evaluators_with_fractional_operator() {
         }
     }"#;
 
-    update_flag_state(config).unwrap();
-    set_validation_mode(ValidationMode::Strict); // Reset to strict for other tests
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    evaluator.update_state(config).unwrap();
+    let state = evaluator.get_state().unwrap();
     let flag = state.flags.get("experimentFlag").unwrap();
 
     // Test with specific user ID - should consistently return same variant
@@ -445,10 +454,11 @@ fn test_evaluators_with_fractional_operator() {
 #[test]
 fn test_evaluators_complex_targeting() {
     use flagd_evaluator::evaluation::evaluate_flag;
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
     use serde_json::json;
 
-    clear_flag_state();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    evaluator.clear_state();
 
     let config = r#"{
         "$evaluators": {
@@ -489,8 +499,8 @@ fn test_evaluators_complex_targeting() {
         }
     }"#;
 
-    update_flag_state(config).unwrap();
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    evaluator.update_state(config).unwrap();
+    let state = evaluator.get_state().unwrap();
     let flag = state.flags.get("vipFeatures").unwrap();
 
     // Premium + active - should get VIP
@@ -516,9 +526,9 @@ fn test_evaluators_complex_targeting() {
 
 #[test]
 fn test_evaluators_missing_ref_in_storage() {
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-    clear_flag_state();
+    evaluator.clear_state();
 
     let config = r#"{
         "$evaluators": {
@@ -538,7 +548,7 @@ fn test_evaluators_missing_ref_in_storage() {
         }
     }"#;
 
-    let result = update_flag_state(config);
+    let result = evaluator.update_state(config);
     let response = result.unwrap();
     assert!(!response.success);
     let err = response.error.unwrap();
@@ -550,10 +560,12 @@ fn test_evaluators_missing_ref_in_storage() {
 #[test]
 fn test_evaluators_multiple_refs_in_single_flag() {
     use flagd_evaluator::evaluation::evaluate_flag;
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+
     use serde_json::json;
 
-    clear_flag_state();
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    evaluator.clear_state();
 
     let config = r#"{
         "$evaluators": {
@@ -590,8 +602,8 @@ fn test_evaluators_multiple_refs_in_single_flag() {
         }
     }"#;
 
-    update_flag_state(config).unwrap();
-    let state = flagd_evaluator::storage::get_flag_state().unwrap();
+    evaluator.update_state(config).unwrap();
+    let state = evaluator.get_state().unwrap();
     let flag = state.flags.get("accessFlag").unwrap();
 
     // Admin gets full access
@@ -616,9 +628,9 @@ fn test_evaluators_multiple_refs_in_single_flag() {
 
 #[test]
 fn test_update_state_changed_flags_on_first_update() {
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-    clear_flag_state();
+    evaluator.clear_state();
 
     let config = r#"{
         "flags": {
@@ -635,7 +647,7 @@ fn test_update_state_changed_flags_on_first_update() {
         }
     }"#;
 
-    let response = update_flag_state(config).unwrap();
+    let response = evaluator.update_state(config).unwrap();
     assert!(response.success);
     let changed = response.changed_flags.unwrap();
     assert_eq!(changed.len(), 2);
@@ -645,9 +657,9 @@ fn test_update_state_changed_flags_on_first_update() {
 
 #[test]
 fn test_update_state_changed_flags_partial_update() {
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-    clear_flag_state();
+    evaluator.clear_state();
 
     // Initial config
     let config1 = r#"{
@@ -664,7 +676,7 @@ fn test_update_state_changed_flags_partial_update() {
             }
         }
     }"#;
-    update_flag_state(config1).unwrap();
+    evaluator.update_state(config1).unwrap();
 
     // Update - modify flag1, keep flag2 same
     let config2 = r#"{
@@ -682,7 +694,7 @@ fn test_update_state_changed_flags_partial_update() {
         }
     }"#;
 
-    let response = update_flag_state(config2).unwrap();
+    let response = evaluator.update_state(config2).unwrap();
     assert!(response.success);
     let changed = response.changed_flags.unwrap();
     assert_eq!(changed.len(), 1);
@@ -691,9 +703,9 @@ fn test_update_state_changed_flags_partial_update() {
 
 #[test]
 fn test_update_state_changed_flags_targeting_change() {
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-    clear_flag_state();
+    evaluator.clear_state();
 
     // Initial config
     let config1 = r#"{
@@ -712,7 +724,7 @@ fn test_update_state_changed_flags_targeting_change() {
             }
         }
     }"#;
-    update_flag_state(config1).unwrap();
+    evaluator.update_state(config1).unwrap();
 
     // Update with different targeting rule
     let config2 = r#"{
@@ -732,7 +744,7 @@ fn test_update_state_changed_flags_targeting_change() {
         }
     }"#;
 
-    let response = update_flag_state(config2).unwrap();
+    let response = evaluator.update_state(config2).unwrap();
     assert!(response.success);
     let changed = response.changed_flags.unwrap();
     assert_eq!(changed.len(), 1);
@@ -741,9 +753,9 @@ fn test_update_state_changed_flags_targeting_change() {
 
 #[test]
 fn test_update_state_changed_flags_metadata_change() {
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-    clear_flag_state();
+    evaluator.clear_state();
 
     // Initial config
     let config1 = r#"{
@@ -758,7 +770,7 @@ fn test_update_state_changed_flags_metadata_change() {
             }
         }
     }"#;
-    update_flag_state(config1).unwrap();
+    evaluator.update_state(config1).unwrap();
 
     // Update with different metadata
     let config2 = r#"{
@@ -774,7 +786,7 @@ fn test_update_state_changed_flags_metadata_change() {
         }
     }"#;
 
-    let response = update_flag_state(config2).unwrap();
+    let response = evaluator.update_state(config2).unwrap();
     assert!(response.success);
     let changed = response.changed_flags.unwrap();
     assert_eq!(changed.len(), 1);
@@ -783,9 +795,9 @@ fn test_update_state_changed_flags_metadata_change() {
 
 #[test]
 fn test_update_state_changed_flags_no_changes() {
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-    clear_flag_state();
+    evaluator.clear_state();
 
     let config = r#"{
         "flags": {
@@ -798,10 +810,10 @@ fn test_update_state_changed_flags_no_changes() {
     }"#;
 
     // First update
-    update_flag_state(config).unwrap();
+    evaluator.update_state(config).unwrap();
 
     // Second update with same config
-    let response = update_flag_state(config).unwrap();
+    let response = evaluator.update_state(config).unwrap();
     assert!(response.success);
     let changed = response.changed_flags.unwrap();
     assert_eq!(changed.len(), 0);
@@ -809,9 +821,9 @@ fn test_update_state_changed_flags_no_changes() {
 
 #[test]
 fn test_update_state_changed_flags_add_and_remove() {
-    use flagd_evaluator::storage::{clear_flag_state, update_flag_state};
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-    clear_flag_state();
+    evaluator.clear_state();
 
     // Initial config
     let config1 = r#"{
@@ -828,7 +840,7 @@ fn test_update_state_changed_flags_add_and_remove() {
             }
         }
     }"#;
-    update_flag_state(config1).unwrap();
+    evaluator.update_state(config1).unwrap();
 
     // Remove flag2, add flag3
     let config2 = r#"{
@@ -846,7 +858,7 @@ fn test_update_state_changed_flags_add_and_remove() {
         }
     }"#;
 
-    let response = update_flag_state(config2).unwrap();
+    let response = evaluator.update_state(config2).unwrap();
     assert!(response.success);
     let changed = response.changed_flags.unwrap();
     assert_eq!(changed.len(), 2);
