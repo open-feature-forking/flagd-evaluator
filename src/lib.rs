@@ -88,6 +88,7 @@ fn init_panic_hook() {
 
 pub mod error;
 pub mod evaluation;
+pub mod evaluator;
 pub mod memory;
 pub mod model;
 pub mod operators;
@@ -131,8 +132,10 @@ pub use memory::{
 };
 pub use model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 pub use operators::create_evaluator;
+pub use evaluator::FlagEvaluator;
 pub use storage::{
-    clear_flag_state, get_flag_state, set_validation_mode, update_flag_state, ValidationMode,
+    clear_flag_state, get_flag_state, get_state_validation_mode, set_validation_mode,
+    update_flag_state, update_flag_state_with_mode, ValidationMode,
 };
 pub use validation::{validate_flags_config, ValidationError, ValidationResult};
 

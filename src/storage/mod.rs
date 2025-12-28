@@ -18,51 +18,82 @@ pub enum ValidationMode {
     Permissive,
 }
 
+/// Combined storage for flag state and its associated validation mode.
+#[derive(Clone)]
+struct FlagStateWithMode {
+    parsing_result: ParsingResult,
+    validation_mode: ValidationMode,
+}
+
 thread_local! {
-    /// Thread-local storage for feature flags.
+    /// Thread-local storage for feature flags and validation mode.
     ///
     /// In WASM environments, there's a single thread, so we use RefCell for
     /// interior mutability without the overhead of multi-threading primitives.
-    static FLAG_STORE: RefCell<Option<ParsingResult>> = const { RefCell::new(None) };
-
-    /// Thread-local storage for validation mode configuration.
     ///
-    /// Controls whether flags should be stored when validation fails.
-    static VALIDATION_MODE: RefCell<ValidationMode> = const { RefCell::new(ValidationMode::Strict) };
+    /// The validation mode is stored per-state, allowing different "instances"
+    /// (different flag states) to have different validation requirements.
+    static FLAG_STORE: RefCell<Option<FlagStateWithMode>> = const { RefCell::new(None) };
+
+    /// Thread-local storage for default validation mode.
+    ///
+    /// This is used when creating new flag state via `update_flag_state()`
+    /// without an explicit mode. For WASM compatibility and backwards compatibility.
+    static DEFAULT_VALIDATION_MODE: RefCell<ValidationMode> = const { RefCell::new(ValidationMode::Strict) };
 }
 
-/// Sets the validation mode for flag state updates.
+/// Sets the default validation mode for subsequent flag state updates.
+///
+/// This sets the default validation mode that will be used when calling
+/// `update_flag_state()` without an explicit mode. For per-instance control,
+/// use `update_flag_state_with_mode()` instead.
 ///
 /// # Arguments
 ///
-/// * `mode` - The validation mode to use
+/// * `mode` - The default validation mode to use
 ///
 /// # Example
 ///
 /// ```
 /// use flagd_evaluator::storage::{set_validation_mode, ValidationMode};
 ///
-/// // Use permissive mode to store flags even with validation errors
+/// // Set default to permissive mode for backwards compatibility
 /// set_validation_mode(ValidationMode::Permissive);
 /// ```
 pub fn set_validation_mode(mode: ValidationMode) {
-    VALIDATION_MODE.with(|m| {
+    DEFAULT_VALIDATION_MODE.with(|m| {
         *m.borrow_mut() = mode;
     });
 }
 
-/// Gets the current validation mode.
+/// Gets the current default validation mode.
+///
+/// Returns the default mode that will be used for `update_flag_state()` calls.
 pub fn get_validation_mode() -> ValidationMode {
-    VALIDATION_MODE.with(|m| *m.borrow())
+    DEFAULT_VALIDATION_MODE.with(|m| *m.borrow())
 }
 
-/// Updates the internal flag state with a new configuration.
+/// Gets the validation mode associated with the currently stored flag state.
+///
+/// Returns the validation mode that was used when the current flags were loaded.
+/// If no flags are loaded, returns the default validation mode.
+pub fn get_state_validation_mode() -> ValidationMode {
+    FLAG_STORE.with(|store| {
+        store
+            .borrow()
+            .as_ref()
+            .map(|state| state.validation_mode)
+            .unwrap_or_else(get_validation_mode)
+    })
+}
+
+/// Updates the internal flag state with a new configuration using the specified validation mode.
 ///
 /// This function validates the provided JSON configuration against the flagd schema,
 /// then parses and stores it. The behavior when validation fails depends on the
-/// current validation mode:
+/// provided validation mode:
 ///
-/// - `ValidationMode::Strict` (default): Flags are only stored if validation succeeds
+/// - `ValidationMode::Strict`: Flags are only stored if validation succeeds
 /// - `ValidationMode::Permissive`: Flags are stored even if validation fails
 ///
 /// The function also detects changes between the old and new configuration by comparing:
@@ -73,6 +104,7 @@ pub fn get_validation_mode() -> ValidationMode {
 /// # Arguments
 ///
 /// * `json_config` - JSON string containing the flag configuration
+/// * `validation_mode` - The validation mode to use for this update
 ///
 /// # Returns
 ///
@@ -96,7 +128,7 @@ pub fn get_validation_mode() -> ValidationMode {
 /// # Example
 ///
 /// ```
-/// use flagd_evaluator::storage::update_flag_state;
+/// use flagd_evaluator::storage::{update_flag_state_with_mode, ValidationMode};
 ///
 /// let config = r#"{
 ///     "flags": {
@@ -111,12 +143,14 @@ pub fn get_validation_mode() -> ValidationMode {
 ///     }
 /// }"#;
 ///
-/// let response = update_flag_state(config).unwrap();
+/// let response = update_flag_state_with_mode(config, ValidationMode::Permissive).unwrap();
 /// assert!(response.success);
 /// assert!(response.changed_flags.is_some());
 /// ```
-pub fn update_flag_state(json_config: &str) -> Result<UpdateStateResponse, String> {
-    let validation_mode = get_validation_mode();
+pub fn update_flag_state_with_mode(
+    json_config: &str,
+    validation_mode: ValidationMode,
+) -> Result<UpdateStateResponse, String> {
 
     // Validate the configuration against the schema
     let validation_result = validate_flags_config(json_config);
@@ -160,9 +194,12 @@ pub fn update_flag_state(json_config: &str) -> Result<UpdateStateResponse, Strin
     // Detect changed flags
     let changed_flags = detect_changed_flags(old_state.as_ref(), &new_parsing_result);
 
-    // Store the parsed flags, replacing any existing state
+    // Store the parsed flags with the validation mode
     FLAG_STORE.with(|store| {
-        *store.borrow_mut() = Some(new_parsing_result);
+        *store.borrow_mut() = Some(FlagStateWithMode {
+            parsing_result: new_parsing_result,
+            validation_mode,
+        });
     });
 
     Ok(UpdateStateResponse {
@@ -170,6 +207,18 @@ pub fn update_flag_state(json_config: &str) -> Result<UpdateStateResponse, Strin
         error: None,
         changed_flags: Some(changed_flags),
     })
+}
+
+/// Updates the internal flag state with a new configuration using the default validation mode.
+///
+/// This is a convenience function that uses the default validation mode set by
+/// `set_validation_mode()`. For per-instance validation mode control, use
+/// `update_flag_state_with_mode()` instead.
+///
+/// See `update_flag_state_with_mode()` for full documentation.
+pub fn update_flag_state(json_config: &str) -> Result<UpdateStateResponse, String> {
+    let mode = get_validation_mode();
+    update_flag_state_with_mode(json_config, mode)
 }
 
 /// Detects which flags have changed between the old and new state.
@@ -239,7 +288,12 @@ fn detect_changed_flags(
 /// * `Some(ParsingResult)` - If the flag store has been initialized
 /// * `None` - If no configuration has been loaded yet
 pub fn get_flag_state() -> Option<ParsingResult> {
-    FLAG_STORE.with(|store| store.borrow().as_ref().cloned())
+    FLAG_STORE.with(|store| {
+        store
+            .borrow()
+            .as_ref()
+            .map(|state| state.parsing_result.clone())
+    })
 }
 
 /// Clears the internal flag state.
