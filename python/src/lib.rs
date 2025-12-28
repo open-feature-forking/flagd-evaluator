@@ -33,8 +33,24 @@ struct FlagEvaluator {
 #[pymethods]
 impl FlagEvaluator {
     /// Create a new FlagEvaluator instance
+    ///
+    /// Args:
+    ///     permissive (bool, optional): If True, use permissive validation mode (accept invalid configs).
+    ///                                   If False, use strict mode (reject invalid configs).
+    ///                                   Defaults to False (strict mode).
     #[new]
-    fn new() -> Self {
+    #[pyo3(signature = (permissive=false))]
+    fn new(permissive: bool) -> Self {
+        use ::flagd_evaluator::storage::{set_validation_mode, ValidationMode};
+
+        let mode = if permissive {
+            ValidationMode::Permissive
+        } else {
+            ValidationMode::Strict
+        };
+
+        set_validation_mode(mode);
+
         FlagEvaluator { state: None }
     }
 
@@ -253,6 +269,75 @@ impl FlagEvaluator {
     }
 }
 
+/// Evaluate targeting rules (JSON Logic) against context data.
+///
+/// This is a helper function for the flagd provider to evaluate targeting rules.
+/// For general flag evaluation, use the FlagEvaluator class instead.
+///
+/// Args:
+///     targeting (dict): JSON Logic targeting rules
+///     context (dict): Evaluation context data
+///
+/// Returns:
+///     dict: Evaluation result with 'success', 'result', and optional 'error' fields
+#[pyfunction]
+fn evaluate_targeting(
+    py: Python,
+    targeting: &Bound<'_, PyDict>,
+    context: &Bound<'_, PyDict>,
+) -> PyResult<PyObject> {
+    use ::flagd_evaluator::operators;
+
+    // Convert Python dicts to JSON values
+    let targeting_value: Value = pythonize::depythonize(targeting.as_any()).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Failed to parse targeting: {}", e))
+    })?;
+
+    let context_value: Value = pythonize::depythonize(context.as_any()).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Failed to parse context: {}", e))
+    })?;
+
+    // Convert to JSON strings for evaluation
+    let targeting_str = serde_json::to_string(&targeting_value).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Failed to serialize targeting: {}",
+            e
+        ))
+    })?;
+
+    let context_str = serde_json::to_string(&context_value).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Failed to serialize context: {}",
+            e
+        ))
+    })?;
+
+    // Evaluate using JSON Logic with custom operators
+    let logic = operators::create_evaluator();
+    let result_dict = PyDict::new_bound(py);
+
+    match logic.evaluate_json(&targeting_str, &context_str) {
+        Ok(result) => {
+            result_dict.set_item("success", true)?;
+            // Convert result back to Python
+            let py_result = pythonize::pythonize(py, &result).map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Failed to convert result: {}",
+                    e
+                ))
+            })?;
+            result_dict.set_item("result", py_result)?;
+        }
+        Err(e) => {
+            result_dict.set_item("success", false)?;
+            result_dict.set_item("result", py.None())?;
+            result_dict.set_item("error", format!("{}", e))?;
+        }
+    }
+
+    Ok(result_dict.into())
+}
+
 /// flagd_evaluator - Feature flag evaluation
 ///
 /// This module provides native Python bindings for the flagd-evaluator library,
@@ -260,5 +345,6 @@ impl FlagEvaluator {
 #[pymodule]
 fn flagd_evaluator(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FlagEvaluator>()?;
+    m.add_function(wrap_pyfunction!(evaluate_targeting, m)?)?;
     Ok(())
 }
