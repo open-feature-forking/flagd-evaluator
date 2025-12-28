@@ -10,8 +10,9 @@ A WebAssembly-based JSON Logic evaluator with custom operators for feature flag 
 - **Full JSON Logic Support**: Evaluate complex JSON Logic rules with all standard operators via [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
 - **Custom Operators**: Feature-flag specific operators like `fractional` for A/B testing
 - **JSON Schema Validation**: Validates flag configurations against the official [flagd-schemas](https://github.com/open-feature/flagd-schemas)
-- **Configurable Validation Mode**: Choose between strict (reject invalid configs) or permissive (store with warnings) validation
-- **Flag State Management**: Internal storage for flag configurations with `update_state` API
+- **Configurable Validation Mode**: Choose between strict (reject invalid configs) or permissive (store with warnings) validation per evaluator instance
+- **Instance-Based API**: Use `FlagEvaluator` for stateful flag evaluation in Rust, or singleton WASM exports for language interop
+- **Type-Specific Evaluation**: Dedicated functions for boolean, string, integer, float, and object flags with type checking
 - **Chicory Compatible**: Works seamlessly with pure Java WASM runtimes - no JNI required
 - **Zero Dependencies at Runtime**: Single WASM file, no external dependencies
 - **Optimized Size**: WASM binary optimized for size (~2.4MB, includes full JSON Logic implementation and schema validation)
@@ -464,33 +465,56 @@ See [GitHub issue #48](https://github.com/open-feature-forking/flagd-evaluator/i
 
 ### Rust
 
+The Rust library provides an instance-based `FlagEvaluator` API for stateful flag evaluation:
+
 ```rust
-use flagd_evaluator::evaluation::{evaluate_flag, EvaluationContext};
-use flagd_evaluator::model::FlagConfiguration;
+use flagd_evaluator::{FlagEvaluator, ValidationMode};
 use serde_json::json;
 
-// Parse flag configuration
-let config_json = json!({
+// Create evaluator with strict validation (default)
+let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+// Update flag configuration
+let config = json!({
     "flags": {
         "myFlag": {
             "state": "ENABLED",
             "variants": {"on": true, "off": false},
-            "defaultVariant": "on"
+            "defaultVariant": "on",
+            "targeting": {
+                "if": [
+                    {"==": [{"var": "email"}, "admin@example.com"]},
+                    "on",
+                    "off"
+                ]
+            }
         }
     }
-});
+}).to_string();
 
-let config: FlagConfiguration = serde_json::from_value(config_json).unwrap();
+evaluator.update_state(&config).unwrap();
 
-// Store the configuration (in real usage, use storage module)
-// For this example, we'll evaluate directly
-let flag = config.flags.get("myFlag").unwrap();
-let context = EvaluationContext::default();
+// Evaluate with type-specific methods
+let result = evaluator.evaluate_bool("myFlag", &json!({}));
+println!("{:?}", result.value);  // false (default variant)
 
-let result = evaluate_flag("myFlag", flag, &context);
-println!("{:?}", result.value);
-// Output: true
+let result = evaluator.evaluate_bool("myFlag", &json!({"email": "admin@example.com"}));
+println!("{:?}", result.value);  // true (targeting matched)
+
+// Or use the generic evaluate method for full result details
+let result = evaluator.evaluate_flag("myFlag", &json!({}));
+println!("Variant: {:?}, Reason: {:?}", result.variant, result.reason);
 ```
+
+**Type-Specific Evaluation Methods:**
+- `evaluate_bool(flag_key, context) -> EvaluationResult` - For boolean flags
+- `evaluate_string(flag_key, context) -> EvaluationResult` - For string flags
+- `evaluate_int(flag_key, context) -> EvaluationResult` - For integer flags
+- `evaluate_float(flag_key, context) -> EvaluationResult` - For float flags
+- `evaluate_object(flag_key, context) -> EvaluationResult` - For object flags
+- `evaluate_flag(flag_key, context) -> EvaluationResult` - Generic evaluation
+
+Each evaluator instance maintains its own flag configuration state and validation mode.
 
 ## API Reference
 
@@ -499,7 +523,12 @@ println!("{:?}", result.value);
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `update_state` | `(config_ptr, config_len) -> u64` | Updates the feature flag configuration state |
-| `evaluate` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a feature flag against context |
+| `evaluate` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a feature flag against context (generic) |
+| `evaluate_boolean` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a boolean flag with type checking |
+| `evaluate_string` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a string flag with type checking |
+| `evaluate_integer` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates an integer flag with type checking |
+| `evaluate_float` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a float flag with type checking |
+| `evaluate_object` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates an object flag with type checking |
 | `set_validation_mode` | `(mode: u32) -> u64` | Sets validation mode (0=Strict, 1=Permissive) |
 | `alloc` | `(len: u32) -> *mut u8` | Allocates memory in WASM linear memory |
 | `dealloc` | `(ptr: *mut u8, len: u32)` | Frees previously allocated memory |
@@ -831,17 +860,26 @@ You can configure how validation errors are handled:
 - **Permissive Mode**: Stores flag configurations even if validation fails (useful for legacy configurations)
 
 **From Rust:**
+
+Each `FlagEvaluator` instance can have its own validation mode:
+
 ```rust
-use flagd_evaluator::storage::{set_validation_mode, ValidationMode};
+use flagd_evaluator::{FlagEvaluator, ValidationMode};
 
-// Use strict validation (default)
-set_validation_mode(ValidationMode::Strict);
+// Create evaluator with strict validation (default)
+let strict_evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
-// Use permissive validation
-set_validation_mode(ValidationMode::Permissive);
+// Create evaluator with permissive validation
+let permissive_evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+// Change validation mode on an existing evaluator
+let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+evaluator.set_validation_mode(ValidationMode::Permissive);
 ```
 
 **From WASM (e.g., Java via Chicory):**
+
+The WASM module uses a singleton evaluator, and you can set its validation mode globally:
 ```java
 // Get the set_validation_mode function
 WasmFunction setValidationMode = instance.export("set_validation_mode");
