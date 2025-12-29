@@ -5,6 +5,7 @@
 //! provides utilities for packing and unpacking pointer+length pairs.
 
 use std::alloc::{alloc, dealloc as std_dealloc, Layout};
+use thiserror::Error;
 
 /// Allocates a block of memory in the WASM linear memory.
 ///
@@ -106,28 +107,66 @@ pub fn unpack_ptr_len(packed: u64) -> (*const u8, u32) {
     (ptr, len)
 }
 
+/// Memory allocation error for WASM operations.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("Failed to allocate WASM memory")]
+pub struct MemoryAllocationError;
+
 /// Writes a string to newly allocated memory and returns a packed pointer+length.
 ///
 /// # Arguments
 /// * `s` - The string to write to memory
 ///
 /// # Returns
-/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits).
+/// Returns 0 if allocation fails (distinguishable from empty string which returns valid ptr + len 0).
+///
+/// # Note
+/// For empty strings, this allocates 1 byte to ensure a non-null pointer,
+/// allowing callers to distinguish empty strings from allocation failures.
 pub fn string_to_memory(s: &str) -> u64 {
     let bytes = s.as_bytes();
     let len = bytes.len() as u32;
-    let ptr = wasm_alloc(len);
+
+    // For empty strings, allocate 1 byte to ensure non-null pointer
+    // This allows callers to distinguish empty string (valid ptr, len=0)
+    // from allocation failure (ptr=0, len=0)
+    let alloc_size = if len == 0 { 1 } else { len };
+    let ptr = wasm_alloc(alloc_size);
 
     if ptr.is_null() {
         return 0;
     }
 
     // SAFETY: We just allocated this memory and know it's valid
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len as usize);
+    if len > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len as usize);
+        }
     }
 
     pack_ptr_len(ptr, len)
+}
+
+/// Writes a string to newly allocated memory, returning a Result for explicit error handling.
+///
+/// This is the preferred API for Rust callers who want explicit error handling.
+///
+/// # Arguments
+/// * `s` - The string to write to memory
+///
+/// # Returns
+/// * `Ok(u64)` - Packed pointer+length on success
+/// * `Err(MemoryAllocationError)` - If allocation fails
+pub fn string_to_memory_checked(s: &str) -> Result<u64, MemoryAllocationError> {
+    let packed = string_to_memory(s);
+    let (ptr, _len) = unpack_ptr_len(packed);
+
+    if ptr.is_null() {
+        Err(MemoryAllocationError)
+    } else {
+        Ok(packed)
+    }
 }
 
 /// Reads a string from WASM memory.
@@ -216,5 +255,37 @@ mod tests {
             assert_eq!(result, test_str);
             wasm_dealloc(ptr, test_str.len() as u32);
         }
+    }
+
+    #[test]
+    fn test_string_to_memory_empty_string() {
+        // Empty strings should return a non-null pointer with length 0
+        // This distinguishes them from allocation failures (which return 0)
+        let packed = string_to_memory("");
+        assert_ne!(
+            packed, 0,
+            "Empty string should not return 0 (allocation failure)"
+        );
+
+        let (ptr, len) = unpack_ptr_len(packed);
+        assert!(!ptr.is_null(), "Empty string should have non-null pointer");
+        assert_eq!(len, 0, "Empty string should have length 0");
+    }
+
+    #[test]
+    fn test_string_to_memory_checked() {
+        // Normal string should succeed
+        let result = string_to_memory_checked("hello");
+        assert!(result.is_ok());
+
+        // Empty string should also succeed
+        let result = string_to_memory_checked("");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_memory_allocation_error_display() {
+        let err = MemoryAllocationError;
+        assert_eq!(format!("{}", err), "Failed to allocate WASM memory");
     }
 }

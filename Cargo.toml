@@ -22,6 +22,7 @@ serde = { version = "1.0", features = ["derive", "alloc"], default-features = fa
 serde_json = { version = "1.0", features = ["alloc"], default-features = false }
 boon = "0.6"
 murmurhash3 = "0.0.5"
+thiserror = "2.0"
 # Override ahash to avoid SIMD/AES-NI instructions that break Chicory WASM compatibility
 # ahash is pulled in by boon and uses AES-NI by default
 # We disable default features and use compile-time-rng to avoid runtime randomness

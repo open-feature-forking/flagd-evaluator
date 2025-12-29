@@ -868,3 +868,383 @@ fn test_update_state_changed_flags_add_and_remove() {
     assert!(changed.contains(&"flag3".to_string())); // Added
     assert!(!changed.contains(&"flag1".to_string())); // Unchanged
 }
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+#[test]
+fn test_fractional_single_bucket() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use serde_json::json;
+
+    // Single bucket with 100% weight should always return that bucket
+    // Use permissive mode to allow single-bucket fractional
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+    let config = r#"{
+        "flags": {
+            "singleBucket": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"on": true, "off": false},
+                "targeting": {
+                    "fractional": [
+                        ["on", 100]
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    let result = evaluator.update_state(config);
+    assert!(
+        result.is_ok(),
+        "Should be able to update state: {:?}",
+        result
+    );
+    let state = evaluator
+        .get_state()
+        .expect("State should be set after update_state");
+    let flag = state.flags.get("singleBucket").expect("Flag should exist");
+
+    // Any context should get "on" variant
+    for i in 0..10 {
+        let context = json!({"targetingKey": format!("user-{}", i)});
+        let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+        assert_eq!(
+            result.variant,
+            Some("on".to_string()),
+            "User {} should get 'on' variant",
+            i
+        );
+    }
+}
+
+#[test]
+fn test_fractional_unequal_weights() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use serde_json::json;
+
+    // 90/10 split - most users should get variant A
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    let config = r#"{
+        "flags": {
+            "heavyA": {
+                "state": "ENABLED",
+                "defaultVariant": "off",
+                "variants": {"a": "variant-a", "b": "variant-b"},
+                "targeting": {
+                    "fractional": [
+                        ["a", 90],
+                        ["b", 10]
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    evaluator.update_state(config).unwrap();
+    let state = evaluator.get_state().unwrap();
+    let flag = state.flags.get("heavyA").unwrap();
+
+    let mut a_count = 0;
+    let mut b_count = 0;
+
+    // Test with many users
+    for i in 0..100 {
+        let context = json!({"targetingKey": format!("test-user-{}", i)});
+        let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+        match result.variant.as_deref() {
+            Some("a") => a_count += 1,
+            Some("b") => b_count += 1,
+            _ => panic!("Unexpected variant"),
+        }
+    }
+
+    // With 100 users and 90/10 split, we expect roughly 90 "a" and 10 "b"
+    // Allow some variance due to hash distribution
+    assert!(
+        a_count > 70,
+        "Expected mostly 'a' variants, got {}",
+        a_count
+    );
+    assert!(b_count > 0, "Expected some 'b' variants, got {}", b_count);
+}
+
+#[test]
+fn test_unicode_flag_key() {
+    use serde_json::json;
+
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    let config = r#"{
+        "flags": {
+            "日本語フラグ": {
+                "state": "ENABLED",
+                "defaultVariant": "オン",
+                "variants": {"オン": true, "オフ": false}
+            }
+        }
+    }"#;
+
+    evaluator.update_state(config).unwrap();
+    let result = evaluator.evaluate_bool("日本語フラグ", &json!({}));
+    assert_eq!(result.value, json!(true));
+    assert_eq!(result.variant, Some("オン".to_string()));
+}
+
+#[test]
+fn test_unicode_in_context() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use serde_json::json;
+
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    let config = r#"{
+        "flags": {
+            "greetingFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "hello",
+                "variants": {"hello": "Hello", "nihao": "你好", "konnichiwa": "こんにちは"},
+                "targeting": {
+                    "if": [
+                        {"==": [{"var": "language"}, "中文"]},
+                        "nihao",
+                        {"if": [
+                            {"==": [{"var": "language"}, "日本語"]},
+                            "konnichiwa",
+                            "hello"
+                        ]}
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    evaluator.update_state(config).unwrap();
+    let state = evaluator.get_state().unwrap();
+    let flag = state.flags.get("greetingFlag").unwrap();
+
+    let context = json!({"language": "中文"});
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    assert_eq!(result.value, json!("你好"));
+
+    let context = json!({"language": "日本語"});
+    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    assert_eq!(result.value, json!("こんにちは"));
+}
+
+#[test]
+fn test_emoji_in_variant_values() {
+    use serde_json::json;
+
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    let config = r#"{
+        "flags": {
+            "emojiFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "happy",
+                "variants": {"happy": "😀", "sad": "😢", "party": "🎉"}
+            }
+        }
+    }"#;
+
+    evaluator.update_state(config).unwrap();
+    let result = evaluator.evaluate_string("emojiFlag", &json!({}));
+    assert_eq!(result.value, json!("😀"));
+}
+
+#[test]
+fn test_memory_large_allocation() {
+    // Test allocation of a moderately large buffer
+    let size = 1_000_000; // 1MB
+    let ptr = alloc(size);
+    assert!(!ptr.is_null(), "Should be able to allocate 1MB");
+    dealloc(ptr, size);
+}
+
+#[test]
+fn test_memory_consecutive_allocations() {
+    // Test that consecutive allocations and deallocations work correctly
+    for _ in 0..100 {
+        let ptr = alloc(1024);
+        assert!(!ptr.is_null());
+        dealloc(ptr, 1024);
+    }
+}
+
+#[test]
+fn test_empty_variants_map() {
+    use serde_json::json;
+
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+    // Empty variants map - should use default handling
+    let config = r#"{
+        "flags": {
+            "emptyVariants": {
+                "state": "ENABLED",
+                "defaultVariant": "default",
+                "variants": {}
+            }
+        }
+    }"#;
+
+    evaluator.update_state(config).unwrap();
+    let result = evaluator.evaluate_flag("emptyVariants", &json!({}));
+    // Should return an error since variant doesn't exist
+    assert!(result.error_code.is_some());
+}
+
+#[test]
+fn test_deeply_nested_targeting() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use serde_json::json;
+
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    // Create deeply nested if/else targeting
+    let config = r#"{
+        "flags": {
+            "nestedFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "level0",
+                "variants": {
+                    "level0": 0,
+                    "level1": 1,
+                    "level2": 2,
+                    "level3": 3,
+                    "level4": 4,
+                    "level5": 5
+                },
+                "targeting": {
+                    "if": [
+                        {">": [{"var": "level"}, 4]},
+                        "level5",
+                        {"if": [
+                            {">": [{"var": "level"}, 3]},
+                            "level4",
+                            {"if": [
+                                {">": [{"var": "level"}, 2]},
+                                "level3",
+                                {"if": [
+                                    {">": [{"var": "level"}, 1]},
+                                    "level2",
+                                    {"if": [
+                                        {">": [{"var": "level"}, 0]},
+                                        "level1",
+                                        "level0"
+                                    ]}
+                                ]}
+                            ]}
+                        ]}
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    evaluator.update_state(config).unwrap();
+    let state = evaluator.get_state().unwrap();
+    let flag = state.flags.get("nestedFlag").unwrap();
+
+    for level in 0..=5 {
+        let context = json!({"level": level});
+        let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+        assert_eq!(
+            result.value,
+            json!(level),
+            "Level {} should return {}",
+            level,
+            level
+        );
+    }
+}
+
+#[test]
+fn test_flag_removal_and_readd() {
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    // Add flag
+    let config1 = r#"{
+        "flags": {
+            "tempFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "on",
+                "variants": {"on": true}
+            }
+        }
+    }"#;
+    evaluator.update_state(config1).unwrap();
+
+    // Remove flag
+    let config2 = r#"{"flags": {}}"#;
+    let response = evaluator.update_state(config2).unwrap();
+    let changed = response.changed_flags.unwrap();
+    assert!(
+        changed.contains(&"tempFlag".to_string()),
+        "Removed flag should be in changed list"
+    );
+
+    // Re-add flag with same config
+    let response = evaluator.update_state(config1).unwrap();
+    let changed = response.changed_flags.unwrap();
+    assert!(
+        changed.contains(&"tempFlag".to_string()),
+        "Re-added flag should be in changed list"
+    );
+}
+
+#[test]
+fn test_sem_ver_edge_cases() {
+    use flagd_evaluator::evaluation::evaluate_flag;
+    use serde_json::json;
+
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+
+    let config = r#"{
+        "flags": {
+            "versionFlag": {
+                "state": "ENABLED",
+                "defaultVariant": "old",
+                "variants": {"old": "old-version", "new": "new-version"},
+                "targeting": {
+                    "if": [
+                        {"sem_ver": [{"var": "appVersion"}, ">=", "2.0.0"]},
+                        "new",
+                        "old"
+                    ]
+                }
+            }
+        }
+    }"#;
+
+    evaluator.update_state(config).unwrap();
+    let state = evaluator.get_state().unwrap();
+    let flag = state.flags.get("versionFlag").unwrap();
+
+    // Test various version formats
+    let test_cases = vec![
+        ("1.0.0", "old"),
+        ("1.9.9", "old"),
+        ("2.0.0", "new"),
+        ("2.0.1", "new"),
+        ("10.0.0", "new"),
+        ("2.0.0-alpha", "old"), // Pre-release is less than release
+    ];
+
+    for (version, expected) in test_cases {
+        let context = json!({"appVersion": version});
+        let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+        assert_eq!(
+            result.variant,
+            Some(expected.to_string()),
+            "Version {} should map to variant {}",
+            version,
+            expected
+        );
+    }
+}
