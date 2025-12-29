@@ -140,3 +140,48 @@ jobs:
           cd python
           source .venv/bin/activate
           pytest tests/ -v
+
+  test-java:
+    name: Test Java Library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-java-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-java-
+
+      - name: Make Maven wrapper executable
+        run: chmod +x java/mvnw
+
+      - name: Build with Maven
+        run: cd java && ./mvnw clean verify
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-test-results
+          path: java/target/surefire-reports/
+          retention-days: 30

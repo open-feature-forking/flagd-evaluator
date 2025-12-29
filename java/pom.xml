@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>dev.openfeature</groupId>
+    <artifactId>flagd-evaluator-java</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>flagd-evaluator-java</name>
+    <description>Java library for flagd-evaluator with bundled WASM runtime</description>
+    <url>https://github.com/open-feature/flagd-evaluator</url>
+
+    <licenses>
+        <license>
+            <name>Apache License 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+        </license>
+    </licenses>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Dependency versions -->
+        <chicory.version>1.6.1</chicory.version>
+        <jackson.version>2.18.2</jackson.version>
+        <junit.version>5.11.4</junit.version>
+        <assertj.version>3.27.3</assertj.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.openfeature</groupId>
+            <artifactId>sdk</artifactId>
+            <version>1.19.2</version>
+        </dependency>
+        <!-- Chicory WASM Runtime -->
+        <dependency>
+            <groupId>com.dylibso.chicory</groupId>
+            <artifactId>runtime</artifactId>
+            <version>${chicory.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.dylibso.chicory</groupId>
+            <artifactId>wasm</artifactId>
+            <version>${chicory.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.dylibso.chicory</groupId>
+            <artifactId>compiler</artifactId>
+            <version>${chicory.version}</version>
+        </dependency>
+
+        <!-- Jackson for JSON -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>11</source>
+                    <target>11</target>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+            </plugin>
+
+            <!-- Copy WASM file from Rust build to resources -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-wasm-module</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${project.basedir}/../target/wasm32-unknown-unknown/release</directory>
+                                    <includes>
+                                        <include>flagd_evaluator.wasm</include>
+                                    </includes>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Build WASM module before copying -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>build-wasm</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>cargo</executable>
+                            <workingDirectory>${project.basedir}/..</workingDirectory>
+                            <arguments>
+                                <argument>build</argument>
+                                <argument>--target</argument>
+                                <argument>wasm32-unknown-unknown</argument>
+                                <argument>--no-default-features</argument>
+                                <argument>--release</argument>
+                                <argument>--lib</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- AOT compile WASM to Java bytecode -->
+            <plugin>
+                <groupId>com.dylibso.chicory</groupId>
+                <artifactId>chicory-compiler-maven-plugin</artifactId>
+                <version>${chicory.version}</version>
+                <executions>
+                    <execution>
+                        <id>compiler-gen</id>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <wasmFile>${project.build.outputDirectory}/flagd_evaluator.wasm</wasmFile>
+                            <name>dev.openfeature.flagd.evaluator.CompiledEvaluator</name>
+                            <!-- Allow interpreter fallback for functions that exceed JVM method size limits -->
+                            <interpreterFallback>WARN</interpreterFallback>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>addSource</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.build.directory}/generated-sources/chicory-compiler</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Source JAR -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>3.3.1</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Javadoc JAR -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.11.2</version>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
