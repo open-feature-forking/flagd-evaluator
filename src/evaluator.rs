@@ -150,8 +150,27 @@ impl FlagEvaluator {
         self.state = None;
     }
 
-    /// Evaluates a boolean flag.
-    pub fn evaluate_bool(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
+    /// Generic evaluation dispatcher that eliminates duplication across type-specific methods.
+    ///
+    /// # Arguments
+    /// * `flag_key` - The key of the flag to evaluate
+    /// * `context` - The evaluation context
+    /// * `eval_fn` - The type-specific evaluation function to call
+    /// * `default_value` - The default value to return if no state is loaded
+    fn evaluate_with<F>(
+        &self,
+        flag_key: &str,
+        context: &JsonValue,
+        eval_fn: F,
+        default_value: JsonValue,
+    ) -> EvaluationResult
+    where
+        F: FnOnce(
+            &crate::model::FeatureFlag,
+            &JsonValue,
+            &std::collections::HashMap<String, JsonValue>,
+        ) -> EvaluationResult,
+    {
         match &self.state {
             Some(state) => {
                 let flag = state
@@ -159,127 +178,82 @@ impl FlagEvaluator {
                     .get(flag_key)
                     .cloned()
                     .unwrap_or_else(|| self.empty_flag(flag_key));
-                crate::evaluation::evaluate_bool_flag(&flag, context, &state.flag_set_metadata)
+                eval_fn(&flag, context, &state.flag_set_metadata)
             }
-            None => EvaluationResult {
-                value: JsonValue::Bool(false),
-                variant: None,
-                reason: crate::evaluation::ResolutionReason::Error,
-                error_code: Some(crate::evaluation::ErrorCode::General),
-                error_message: Some("No flag configuration loaded".to_string()),
-                flag_metadata: None,
-            },
+            None => Self::no_state_error(default_value),
         }
+    }
+
+    /// Creates a standard error response for when no state is loaded.
+    fn no_state_error(default_value: JsonValue) -> EvaluationResult {
+        EvaluationResult {
+            value: default_value,
+            variant: None,
+            reason: crate::evaluation::ResolutionReason::Error,
+            error_code: Some(crate::evaluation::ErrorCode::General),
+            error_message: Some("No flag configuration loaded".to_string()),
+            flag_metadata: None,
+        }
+    }
+
+    /// Evaluates a boolean flag.
+    pub fn evaluate_bool(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
+        self.evaluate_with(
+            flag_key,
+            context,
+            crate::evaluation::evaluate_bool_flag,
+            JsonValue::Bool(false),
+        )
     }
 
     /// Evaluates a string flag.
     pub fn evaluate_string(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        match &self.state {
-            Some(state) => {
-                let flag = state
-                    .flags
-                    .get(flag_key)
-                    .cloned()
-                    .unwrap_or_else(|| self.empty_flag(flag_key));
-                crate::evaluation::evaluate_string_flag(&flag, context, &state.flag_set_metadata)
-            }
-            None => EvaluationResult {
-                value: JsonValue::String(String::new()),
-                variant: None,
-                reason: crate::evaluation::ResolutionReason::Error,
-                error_code: Some(crate::evaluation::ErrorCode::General),
-                error_message: Some("No flag configuration loaded".to_string()),
-                flag_metadata: None,
-            },
-        }
+        self.evaluate_with(
+            flag_key,
+            context,
+            crate::evaluation::evaluate_string_flag,
+            JsonValue::String(String::new()),
+        )
     }
 
     /// Evaluates an integer flag.
     pub fn evaluate_int(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        match &self.state {
-            Some(state) => {
-                let flag = state
-                    .flags
-                    .get(flag_key)
-                    .cloned()
-                    .unwrap_or_else(|| self.empty_flag(flag_key));
-                crate::evaluation::evaluate_int_flag(&flag, context, &state.flag_set_metadata)
-            }
-            None => EvaluationResult {
-                value: JsonValue::Number(0.into()),
-                variant: None,
-                reason: crate::evaluation::ResolutionReason::Error,
-                error_code: Some(crate::evaluation::ErrorCode::General),
-                error_message: Some("No flag configuration loaded".to_string()),
-                flag_metadata: None,
-            },
-        }
+        self.evaluate_with(
+            flag_key,
+            context,
+            crate::evaluation::evaluate_int_flag,
+            JsonValue::Number(0.into()),
+        )
     }
 
     /// Evaluates a float flag.
     pub fn evaluate_float(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        match &self.state {
-            Some(state) => {
-                let flag = state
-                    .flags
-                    .get(flag_key)
-                    .cloned()
-                    .unwrap_or_else(|| self.empty_flag(flag_key));
-                crate::evaluation::evaluate_float_flag(&flag, context, &state.flag_set_metadata)
-            }
-            None => EvaluationResult {
-                value: JsonValue::Number(serde_json::Number::from_f64(0.0).unwrap()),
-                variant: None,
-                reason: crate::evaluation::ResolutionReason::Error,
-                error_code: Some(crate::evaluation::ErrorCode::General),
-                error_message: Some("No flag configuration loaded".to_string()),
-                flag_metadata: None,
-            },
-        }
+        self.evaluate_with(
+            flag_key,
+            context,
+            crate::evaluation::evaluate_float_flag,
+            JsonValue::Number(serde_json::Number::from_f64(0.0).unwrap()),
+        )
     }
 
     /// Evaluates a generic flag (for objects/structs).
     pub fn evaluate_flag(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        match &self.state {
-            Some(state) => {
-                let flag = state
-                    .flags
-                    .get(flag_key)
-                    .cloned()
-                    .unwrap_or_else(|| self.empty_flag(flag_key));
-                crate::evaluation::evaluate_flag(&flag, context, &state.flag_set_metadata)
-            }
-            None => EvaluationResult {
-                value: JsonValue::Object(serde_json::Map::new()),
-                variant: None,
-                reason: crate::evaluation::ResolutionReason::Error,
-                error_code: Some(crate::evaluation::ErrorCode::General),
-                error_message: Some("No flag configuration loaded".to_string()),
-                flag_metadata: None,
-            },
-        }
+        self.evaluate_with(
+            flag_key,
+            context,
+            crate::evaluation::evaluate_flag,
+            JsonValue::Object(serde_json::Map::new()),
+        )
     }
 
     /// Evaluates an object flag with type checking.
     pub fn evaluate_object(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        match &self.state {
-            Some(state) => {
-                let flag = state
-                    .flags
-                    .get(flag_key)
-                    .cloned()
-                    .unwrap_or_else(|| self.empty_flag(flag_key));
-                crate::evaluation::evaluate_object_flag(&flag, context, &state.flag_set_metadata)
-            }
-            None => EvaluationResult {
-                value: JsonValue::Object(serde_json::Map::new()),
-                variant: None,
-                reason: crate::evaluation::ResolutionReason::Error,
-                error_code: Some(crate::evaluation::ErrorCode::General),
-                error_message: Some("No flag configuration loaded".to_string()),
-                flag_metadata: None,
-            },
-        }
+        self.evaluate_with(
+            flag_key,
+            context,
+            crate::evaluation::evaluate_object_flag,
+            JsonValue::Object(serde_json::Map::new()),
+        )
     }
 
     /// Helper to create an empty flag for missing flags.

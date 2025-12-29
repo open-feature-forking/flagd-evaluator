@@ -37,19 +37,60 @@
 //! ```
 
 use std::panic;
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::Once;
 
 static PANIC_HOOK_INIT: Once = Once::new();
 
-/// Global singleton FlagEvaluator instance for WASM.
-///
-/// WASM is single-threaded, so we use a simple Mutex for interior mutability.
-/// This provides a single global evaluator instance that all WASM exports use.
-static WASM_EVALUATOR: OnceLock<Mutex<evaluator::FlagEvaluator>> = OnceLock::new();
+// WASM is single-threaded, so we can use RefCell for better semantics.
+// For native targets (testing, library usage), we use Mutex for thread safety.
 
-/// Get or initialize the global WASM evaluator instance.
-fn get_wasm_evaluator() -> &'static Mutex<evaluator::FlagEvaluator> {
-    WASM_EVALUATOR.get_or_init(|| Mutex::new(evaluator::FlagEvaluator::new(ValidationMode::Strict)))
+#[cfg(target_family = "wasm")]
+mod wasm_evaluator {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// A wrapper that makes RefCell Sync for WASM.
+    ///
+    /// # Safety
+    /// This is safe because WASM is guaranteed to be single-threaded.
+    /// The Sync impl allows using RefCell in static context.
+    struct SyncRefCell<T>(RefCell<T>);
+
+    // SAFETY: WASM is single-threaded, so this is safe.
+    unsafe impl<T> Sync for SyncRefCell<T> {}
+
+    static WASM_EVALUATOR: SyncRefCell<Option<evaluator::FlagEvaluator>> =
+        SyncRefCell(RefCell::new(None));
+
+    /// Get or initialize the global WASM evaluator instance.
+    pub fn with_evaluator<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut evaluator::FlagEvaluator) -> R,
+    {
+        let mut borrow = WASM_EVALUATOR.0.borrow_mut();
+        let evaluator =
+            borrow.get_or_insert_with(|| evaluator::FlagEvaluator::new(ValidationMode::Strict));
+        f(evaluator)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+mod wasm_evaluator {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static WASM_EVALUATOR: OnceLock<Mutex<evaluator::FlagEvaluator>> = OnceLock::new();
+
+    /// Get or initialize the global evaluator instance (thread-safe for native).
+    pub fn with_evaluator<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut evaluator::FlagEvaluator) -> R,
+    {
+        let mutex = WASM_EVALUATOR
+            .get_or_init(|| Mutex::new(evaluator::FlagEvaluator::new(ValidationMode::Strict)));
+        let mut guard = mutex.lock().unwrap();
+        f(&mut guard)
+    }
 }
 
 // Import optional host function for getting current time
@@ -207,9 +248,9 @@ pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
     };
 
     // Update validation mode on the singleton evaluator
-    let evaluator = get_wasm_evaluator();
-    let mut eval = evaluator.lock().unwrap();
-    eval.set_validation_mode(validation_mode);
+    wasm_evaluator::with_evaluator(|eval| {
+        eval.set_validation_mode(validation_mode);
+    });
 
     let response = serde_json::json!({
         "success": true,
@@ -278,27 +319,27 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
     };
 
     // Parse and store the configuration using the singleton evaluator
-    let evaluator = get_wasm_evaluator();
-    let mut eval = evaluator.lock().unwrap();
-    match eval.update_state(&config_str) {
-        Ok(response) => {
-            // Convert UpdateStateResponse to JSON
-            serde_json::to_string(&response).unwrap_or_else(|e| {
-                serde_json::json!({
-                    "success": false,
-                    "error": format!("Failed to serialize response: {}", e),
-                    "changedFlags": null
+    wasm_evaluator::with_evaluator(|eval| {
+        match eval.update_state(&config_str) {
+            Ok(response) => {
+                // Convert UpdateStateResponse to JSON
+                serde_json::to_string(&response).unwrap_or_else(|e| {
+                    serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to serialize response: {}", e),
+                        "changedFlags": null
+                    })
+                    .to_string()
                 })
-                .to_string()
+            }
+            Err(e) => serde_json::json!({
+                "success": false,
+                "error": e,
+                "changedFlags": null
             })
+            .to_string(),
         }
-        Err(e) => serde_json::json!({
-            "success": false,
-            "error": e,
-            "changedFlags": null
-        })
-        .to_string(),
-    }
+    })
 }
 
 /// Evaluates a feature flag against the provided context.
@@ -389,19 +430,18 @@ fn evaluate_internal(
         };
 
         // Get the singleton evaluator and evaluate the flag
-        let evaluator = get_wasm_evaluator();
-        let eval = evaluator.lock().unwrap();
+        wasm_evaluator::with_evaluator(|eval| {
+            // Check if state is initialized
+            if eval.get_state().is_none() {
+                return EvaluationResult::error(
+                    ErrorCode::FlagNotFound,
+                    "Flag state not initialized. Call update_state first.",
+                );
+            }
 
-        // Check if state is initialized
-        if eval.get_state().is_none() {
-            return EvaluationResult::error(
-                ErrorCode::FlagNotFound,
-                "Flag state not initialized. Call update_state first.",
-            );
-        }
-
-        // Evaluate using the evaluator instance
-        eval.evaluate_flag(&flag_key, &context)
+            // Evaluate using the evaluator instance
+            eval.evaluate_flag(&flag_key, &context)
+        })
     });
 
     match result {
@@ -668,19 +708,18 @@ where
         };
 
         // Get the singleton evaluator and evaluate using the type-specific method
-        let evaluator = get_wasm_evaluator();
-        let eval = evaluator.lock().unwrap();
+        wasm_evaluator::with_evaluator(|eval| {
+            // Check if state is initialized
+            if eval.get_state().is_none() {
+                return EvaluationResult::error(
+                    ErrorCode::FlagNotFound,
+                    "Flag state not initialized. Call update_state first.",
+                );
+            }
 
-        // Check if state is initialized
-        if eval.get_state().is_none() {
-            return EvaluationResult::error(
-                ErrorCode::FlagNotFound,
-                "Flag state not initialized. Call update_state first.",
-            );
-        }
-
-        // Call the type-specific evaluator method
-        evaluator_fn(&eval, &flag_key, &context)
+            // Call the type-specific evaluator method
+            evaluator_fn(eval, &flag_key, &context)
+        })
     }));
 
     match result {
@@ -1363,10 +1402,10 @@ mod wasm_tests {
 
     /// Helper function to reset the WASM singleton evaluator between tests
     fn reset_wasm_evaluator() {
-        let evaluator = get_wasm_evaluator();
-        let mut eval = evaluator.lock().unwrap();
-        eval.clear_state();
-        eval.set_validation_mode(ValidationMode::Strict);
+        wasm_evaluator::with_evaluator(|eval| {
+            eval.clear_state();
+            eval.set_validation_mode(ValidationMode::Strict);
+        });
     }
 
     /// Helper to call update_state WASM export
