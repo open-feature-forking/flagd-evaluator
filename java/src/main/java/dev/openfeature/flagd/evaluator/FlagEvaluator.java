@@ -3,16 +3,18 @@ package dev.openfeature.flagd.evaluator;
 import com.dylibso.chicory.runtime.ExportFunction;
 import com.dylibso.chicory.runtime.Instance;
 import com.dylibso.chicory.runtime.Memory;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
+import dev.openfeature.flagd.evaluator.jackson.EvaluationResultDeserializer;
 import dev.openfeature.flagd.evaluator.jackson.ImmutableMetadataDeserializer;
 import dev.openfeature.flagd.evaluator.jackson.LayeredEvalContextSerializer;
-import dev.openfeature.sdk.ImmutableMetadata;
-import dev.openfeature.sdk.LayeredEvaluationContext;
-import dev.openfeature.sdk.ProviderEvaluation;
-import dev.openfeature.sdk.Value;
+import dev.openfeature.sdk.*;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -46,14 +48,21 @@ import java.util.Map;
  */
 public class FlagEvaluator implements AutoCloseable {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final JsonFactory JSON_FACTORY = new JsonFactory();
     private static final Map<Class, JavaType> JAVA_TYPE_MAP = new HashMap<>();
+    private static final LayeredEvalContextSerializer CONTEXT_SERIALIZER = new LayeredEvalContextSerializer();
+
+    // ThreadLocal buffers for reducing allocations
+    private static final ThreadLocal<ByteArrayOutputStream> JSON_BUFFER =
+        ThreadLocal.withInitial(() -> new ByteArrayOutputStream(8192));
 
     static {
         // Register custom serializers/deserializers with the ObjectMapper
         SimpleModule module = new SimpleModule();
         module.addDeserializer(ImmutableMetadata.class, new ImmutableMetadataDeserializer());
-        module.addSerializer(LayeredEvaluationContext.class, new LayeredEvalContextSerializer());
+        module.addSerializer(EvaluationContext.class, CONTEXT_SERIALIZER);
+        module.addDeserializer(EvaluationResult.class, new EvaluationResultDeserializer<>());
         OBJECT_MAPPER.registerModule(module);
         JAVA_TYPE_MAP.put(Integer.class, OBJECT_MAPPER.getTypeFactory()
                 .constructParametricType(EvaluationResult.class, Integer.class));
@@ -125,7 +134,8 @@ public class FlagEvaluator implements AutoCloseable {
      * @throws EvaluatorException if the update fails
      */
     public synchronized UpdateStateResult updateState(String jsonConfig) throws EvaluatorException {
-        byte[] configBytes = jsonConfig.getBytes();
+        // Use explicit UTF-8 encoding for better performance
+        byte[] configBytes = jsonConfig.getBytes(StandardCharsets.UTF_8);
         long configPtr = allocFunction.apply(configBytes.length)[0];
 
         try {
@@ -177,14 +187,15 @@ public class FlagEvaluator implements AutoCloseable {
      * @throws EvaluatorException if the evaluation fails
      */
     public synchronized <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, String contextJson) throws EvaluatorException {
-        byte[] flagBytes = flagKey.getBytes();
+        // Use explicit UTF-8 encoding for better performance
+        byte[] flagBytes = flagKey.getBytes(StandardCharsets.UTF_8);
         long flagPtr = allocFunction.apply(flagBytes.length)[0];
 
-        byte[] contextBytes = contextJson.getBytes();
+        byte[] contextBytes = contextJson.getBytes(StandardCharsets.UTF_8);
         long contextPtr = allocFunction.apply(contextBytes.length)[0];
 
         try {
-            memory.writeString((int) flagPtr, flagKey);
+            memory.write((int) flagPtr, flagBytes);
             memory.write((int) contextPtr, contextBytes);
 
             long packedResult = evaluateFunction.apply(flagPtr, flagBytes.length, contextPtr, contextBytes.length)[0];
@@ -214,11 +225,20 @@ public class FlagEvaluator implements AutoCloseable {
      * @return the evaluation result containing value, variant, reason, and metadata
      * @throws EvaluatorException if the evaluation or serialization fails
      */
-    public <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, Map<String, Object> context) throws EvaluatorException {
+    public <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, EvaluationContext context) throws EvaluatorException {
         try {
-            String contextJson = context == null || context.isEmpty()
-                    ? "{}"
-                    : OBJECT_MAPPER.writeValueAsString(context);
+            String contextJson;
+            if (context == null || context.isEmpty()) {
+                contextJson = "{}";
+            } else {
+                // Use ThreadLocal buffer for streaming serialization
+                ByteArrayOutputStream buffer = JSON_BUFFER.get();
+                buffer.reset();
+                try (JsonGenerator generator = JSON_FACTORY.createGenerator(buffer)) {
+                    OBJECT_MAPPER.writeValue(generator, context);
+                }
+                contextJson = buffer.toString(StandardCharsets.UTF_8.name());
+            }
             return evaluateFlag(type, flagKey, contextJson);
         } catch (Exception e) {
             throw new EvaluatorException("Failed to serialize context", e);

@@ -1,5 +1,7 @@
 package dev.openfeature.flagd.evaluator;
 
+import dev.openfeature.sdk.EvaluationContext;
+import dev.openfeature.sdk.MutableContext;
 import dev.openfeature.sdk.ProviderEvaluation;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -102,14 +104,14 @@ class FlagEvaluatorTest {
         assertThat(updateResult.isSuccess()).isTrue();
 
         // Test with matching context
-        Map<String, Object> context = Map.of("email", "premium@example.com");
+        EvaluationContext context = new MutableContext().add("email", "premium@example.com");
         EvaluationResult<Boolean> result = evaluator.evaluateFlag(Boolean.class, "user-flag", context);
         assertThat(result.getValue()).isEqualTo(true);
         assertThat(result.getVariant()).isEqualTo("premium");
         assertThat(result.getReason()).isEqualTo("TARGETING_MATCH");
 
         // Test with non-matching context
-        context = Map.of("email", "regular@example.com");
+        context = new MutableContext().add("email", "regular@example.com");
         result = evaluator.evaluateFlag(Boolean.class, "user-flag", context);
         assertThat(result.getValue()).isEqualTo(false);
         assertThat(result.getVariant()).isEqualTo("default");
@@ -203,7 +205,7 @@ class FlagEvaluatorTest {
         assertThat(updateResult.isSuccess()).isTrue();
 
         // Test with targeting key
-        Map<String, Object> context = Map.of("targetingKey", "user-123");
+        EvaluationContext context = new MutableContext("user-123");
         EvaluationResult<String> result = evaluator.evaluateFlag(String.class, "targeting-key-flag", context);
         assertThat(result.getValue()).isEqualTo("known-user");
         assertThat(result.getReason()).isEqualTo("TARGETING_MATCH");

@@ -1,6 +1,8 @@
 package dev.openfeature.flagd.evaluator;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import dev.openfeature.sdk.ImmutableMetadata;
+
 import java.util.Map;
 
 /**
@@ -18,7 +20,7 @@ public class EvaluationResult<T> {
 
     private String errorMessage;
 
-    private Map<String, Object> flagMetadata;
+    private ImmutableMetadata flagMetadata;
 
     public EvaluationResult() {
     }
@@ -102,11 +104,11 @@ public class EvaluationResult<T> {
      *
      * @return the metadata map, or null if no metadata
      */
-    public Map<String, Object> getFlagMetadata() {
+    public ImmutableMetadata getFlagMetadata() {
         return flagMetadata;
     }
 
-    public void setFlagMetadata(Map<String, Object> flagMetadata) {
+    public void setFlagMetadata(ImmutableMetadata flagMetadata) {
         this.flagMetadata = flagMetadata;
     }
 

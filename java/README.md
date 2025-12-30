@@ -270,8 +270,9 @@ At runtime:
 ## Performance
 
 - **Startup**: WASM module compiled once during class loading (~100ms)
-- **Evaluation**: ~7,900 ops/s with realistic layered contexts (JIT compiled)
+- **Evaluation**: ~13,000 ops/s with realistic layered contexts (JIT compiled)
 - **Memory**: ~3MB for WASM module + Chicory runtime
+- **Object Churn**: ~12.8 KB allocated per layered evaluation, ~6.9 KB per simple evaluation
 
 ### Benchmarks
 
@@ -285,15 +286,28 @@ The library includes JMH (Java Microbenchmark Harness) benchmarks for performanc
 **Benchmark Results** (example from development machine):
 ```
 Benchmark                                              Mode  Cnt       Score        Error  Units
-FlagEvaluatorJmhBenchmark.evaluateWithLayeredContext  thrpt    5    7939.094 ±   5513.151  ops/s
-FlagEvaluatorJmhBenchmark.evaluateWithSimpleContext   thrpt    5   10800.953 ±   4705.577  ops/s
+FlagEvaluatorJmhBenchmark.evaluateWithLayeredContext  thrpt    5   13035.383 ±   4173.375  ops/s
+FlagEvaluatorJmhBenchmark.evaluateWithSimpleContext   thrpt    5   14748.099 ±   2689.011  ops/s
 FlagEvaluatorJmhBenchmark.serializeLayeredContext     thrpt    5  222863.374 ± 151002.720  ops/s
+```
+
+**Object Churn (GC allocation rates)**:
+```
+Benchmark                                              Alloc Rate     Alloc/Op
+evaluateWithLayeredContext                             159.6 MB/sec   12.8 KB/op
+evaluateWithSimpleContext                              97.8 MB/sec    6.9 KB/op
 ```
 
 **Benchmark Scenarios:**
 - **evaluateWithLayeredContext**: Full flag evaluation with 4-layer context (API, Transaction, Client, Invocation) and 100+ entries per layer
 - **evaluateWithSimpleContext**: Baseline evaluation with minimal context
 - **serializeLayeredContext**: JSON serialization overhead measurement
+
+To run with GC profiling:
+```bash
+./mvnw exec:java -Dexec.classpathScope=test -Dexec.mainClass=org.openjdk.jmh.Main \
+  -Dexec.args="FlagEvaluatorJmhBenchmark -prof gc -f 0"
+```
 
 The JUnit-based benchmark test suite is also available:
 ```bash

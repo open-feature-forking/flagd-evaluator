@@ -1,6 +1,8 @@
 package dev.openfeature.flagd.evaluator;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.module.SimpleModule;
+import dev.openfeature.flagd.evaluator.jackson.LayeredEvalContextSerializer;
 import dev.openfeature.sdk.EvaluationContext;
 import dev.openfeature.sdk.ImmutableContext;
 import dev.openfeature.sdk.LayeredEvaluationContext;
@@ -12,6 +14,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
+
+import static dev.openfeature.flagd.evaluator.FlagEvaluator.OBJECT_MAPPER;
 
 /**
  * JMH Benchmark for FlagEvaluator to measure and track performance over time.
@@ -42,7 +46,6 @@ import java.util.concurrent.TimeUnit;
 public class FlagEvaluatorJmhBenchmark {
 
     private static final int CONTEXT_ENTRIES_PER_LAYER = 100;
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     // Static contexts shared across all evaluations
     private EvaluationContext apiContext;
@@ -127,11 +130,8 @@ public class FlagEvaluatorJmhBenchmark {
                 invocationContext
             );
 
-            // Serialize to JSON for evaluation
-            String contextJson = OBJECT_MAPPER.writeValueAsString(layeredContext);
-
             // Perform evaluation
-            EvaluationResult<Boolean> result = evaluator.evaluateFlag(Boolean.class, "benchmark-flag", contextJson);
+            EvaluationResult<Boolean> result = evaluator.evaluateFlag(Boolean.class, "benchmark-flag", layeredContext);
 
             // Consume result to prevent dead code elimination
             blackhole.consume(result.getValue());
