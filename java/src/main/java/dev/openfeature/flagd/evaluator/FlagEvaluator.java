@@ -8,9 +8,9 @@ import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
+import dev.openfeature.flagd.evaluator.jackson.EvaluationContextSerializer;
 import dev.openfeature.flagd.evaluator.jackson.EvaluationResultDeserializer;
 import dev.openfeature.flagd.evaluator.jackson.ImmutableMetadataDeserializer;
-import dev.openfeature.flagd.evaluator.jackson.LayeredEvalContextSerializer;
 import dev.openfeature.sdk.*;
 
 import java.io.ByteArrayOutputStream;
@@ -51,7 +51,7 @@ public class FlagEvaluator implements AutoCloseable {
     static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final JsonFactory JSON_FACTORY = new JsonFactory();
     private static final Map<Class, JavaType> JAVA_TYPE_MAP = new HashMap<>();
-    private static final LayeredEvalContextSerializer CONTEXT_SERIALIZER = new LayeredEvalContextSerializer();
+    private static final EvaluationContextSerializer CONTEXT_SERIALIZER = new EvaluationContextSerializer();
 
     // ThreadLocal buffers for reducing allocations
     private static final ThreadLocal<ByteArrayOutputStream> JSON_BUFFER =

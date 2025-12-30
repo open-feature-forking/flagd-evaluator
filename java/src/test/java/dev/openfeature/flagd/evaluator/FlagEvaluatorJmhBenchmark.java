@@ -2,7 +2,7 @@ package dev.openfeature.flagd.evaluator;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
-import dev.openfeature.flagd.evaluator.jackson.LayeredEvalContextSerializer;
+import dev.openfeature.flagd.evaluator.jackson.EvaluationContextSerializer;
 import dev.openfeature.sdk.EvaluationContext;
 import dev.openfeature.sdk.ImmutableContext;
 import dev.openfeature.sdk.LayeredEvaluationContext;
