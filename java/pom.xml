@@ -30,6 +30,7 @@
         <jackson.version>2.18.2</jackson.version>
         <junit.version>5.11.4</junit.version>
         <assertj.version>3.27.3</assertj.version>
+        <jmh.version>1.37</jmh.version>
     </properties>
 
     <dependencies>
@@ -73,6 +74,20 @@
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
             <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JMH Benchmarking -->
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+            <version>${jmh.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+            <version>${jmh.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -144,6 +159,22 @@
                                 <argument>--no-default-features</argument>
                                 <argument>--release</argument>
                                 <argument>--lib</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>run-jmh-benchmark</id>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <includePluginDependencies>false</includePluginDependencies>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>org.openjdk.jmh.Main</mainClass>
+                            <arguments>
+                                <argument>FlagEvaluatorJmhBenchmark</argument>
+                                <argument>-f</argument>
+                                <argument>0</argument>
                             </arguments>
                         </configuration>
                     </execution>

@@ -8,12 +8,13 @@ This library provides a standalone Java artifact that bundles the flagd-evaluato
 
 ## Features
 
-- ✅ **OpenFeature SDK Integration** - Uses official OpenFeature SDK types
+- ✅ **OpenFeature SDK Integration** - Built on official OpenFeature SDK types
 - ✅ **Type-safe API** - Generic evaluation methods with compile-time type checking
 - ✅ **Bundled WASM module** - No need to manually copy WASM files
 - ✅ **Thread-safe** - Safe for concurrent use
 - ✅ **JIT compiled** - Uses Chicory's JIT compiler for performance
 - ✅ **Full feature support** - All flagd evaluation features including targeting rules
+- ✅ **Performance benchmarks** - JMH benchmarks for tracking performance over time
 
 ## Installation
 
@@ -28,10 +29,11 @@ Add the dependency to your `pom.xml`:
 ```
 
 This library includes:
-- **OpenFeature SDK** (1.19.2) - Provides `ProviderEvaluation<T>` and related types
-- **Chicory WASM Runtime** (1.6.1) - Pure Java WebAssembly runtime
+- **OpenFeature SDK** (1.19.2) - Provides core types and context management
+- **Chicory WASM Runtime** (1.6.1) - Pure Java WebAssembly runtime with JIT compilation
 - **Jackson** (2.18.2) - JSON serialization with custom OpenFeature serializers
 - **flagd-evaluator WASM module** - Bundled in the JAR
+- **JMH Benchmarks** (1.37) - Performance benchmarking suite (test scope)
 
 ## Usage
 
@@ -39,8 +41,8 @@ This library includes:
 
 ```java
 import dev.openfeature.flagd.evaluator.FlagEvaluator;
+import dev.openfeature.flagd.evaluator.EvaluationResult;
 import dev.openfeature.flagd.evaluator.UpdateStateResult;
-import dev.openfeature.sdk.ProviderEvaluation;
 
 // Create evaluator
 FlagEvaluator evaluator = new FlagEvaluator();
@@ -65,7 +67,7 @@ UpdateStateResult updateResult = evaluator.updateState(config);
 System.out.println("Flags changed: " + updateResult.getChangedFlags());
 
 // Evaluate boolean flag
-ProviderEvaluation<Boolean> result = evaluator.evaluateFlag(Boolean.class, "my-flag", "{}");
+EvaluationResult<Boolean> result = evaluator.evaluateFlag(Boolean.class, "my-flag", "{}");
 System.out.println("Value: " + result.getValue());
 System.out.println("Variant: " + result.getVariant());
 System.out.println("Reason: " + result.getReason());
@@ -76,22 +78,22 @@ System.out.println("Reason: " + result.getReason());
 The library supports type-safe flag evaluation for all OpenFeature types:
 
 ```java
-import dev.openfeature.sdk.ProviderEvaluation;
+import dev.openfeature.flagd.evaluator.EvaluationResult;
 
 // Boolean flags
-ProviderEvaluation<Boolean> boolResult = evaluator.evaluateFlag(Boolean.class, "feature-enabled", "{}");
+EvaluationResult<Boolean> boolResult = evaluator.evaluateFlag(Boolean.class, "feature-enabled", "{}");
 boolean isEnabled = boolResult.getValue();
 
 // String flags
-ProviderEvaluation<String> stringResult = evaluator.evaluateFlag(String.class, "color-scheme", "{}");
+EvaluationResult<String> stringResult = evaluator.evaluateFlag(String.class, "color-scheme", "{}");
 String color = stringResult.getValue();
 
 // Integer flags
-ProviderEvaluation<Integer> intResult = evaluator.evaluateFlag(Integer.class, "max-items", "{}");
+EvaluationResult<Integer> intResult = evaluator.evaluateFlag(Integer.class, "max-items", "{}");
 int maxItems = intResult.getValue();
 
 // Double flags
-ProviderEvaluation<Double> doubleResult = evaluator.evaluateFlag(Double.class, "threshold", "{}");
+EvaluationResult<Double> doubleResult = evaluator.evaluateFlag(Double.class, "threshold", "{}");
 double threshold = doubleResult.getValue();
 ```
 
@@ -99,7 +101,8 @@ double threshold = doubleResult.getValue();
 
 ```java
 import java.util.Map;
-import dev.openfeature.sdk.ProviderEvaluation;
+import dev.openfeature.flagd.evaluator.EvaluationResult;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 Map<String, Object> context = Map.of(
     "targetingKey", "user-123",
@@ -108,7 +111,7 @@ Map<String, Object> context = Map.of(
 );
 
 String contextJson = new ObjectMapper().writeValueAsString(context);
-ProviderEvaluation<Boolean> result = evaluator.evaluateFlag(Boolean.class, "premium-feature", contextJson);
+EvaluationResult<Boolean> result = evaluator.evaluateFlag(Boolean.class, "premium-feature", contextJson);
 ```
 
 ### Targeting Rules
@@ -150,7 +153,7 @@ ObjectMapper mapper = new ObjectMapper();
 // Premium user
 Map<String, Object> premiumContext = Map.of("email", "premium@example.com");
 String premiumContextJson = mapper.writeValueAsString(premiumContext);
-ProviderEvaluation<Boolean> result = evaluator.evaluateFlag(Boolean.class, "premium-feature", premiumContextJson);
+EvaluationResult<Boolean> result = evaluator.evaluateFlag(Boolean.class, "premium-feature", premiumContextJson);
 // result.getValue() == true
 
 // Regular user
@@ -186,7 +189,8 @@ Main class for flag evaluation.
 #### Methods
 
 - `UpdateStateResult updateState(String jsonConfig)` - Updates flag configuration
-- `<T> ProviderEvaluation<T> evaluateFlag(Class<T> type, String flagKey, String contextJson)` - Type-safe flag evaluation with JSON context
+- `<T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, String contextJson)` - Type-safe flag evaluation with JSON context
+- `<T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, Map<String, Object> context)` - Type-safe flag evaluation with Map context
 
 **Supported Types:**
 - `Boolean.class` - For boolean flags
@@ -195,18 +199,19 @@ Main class for flag evaluation.
 - `Double.class` - For double/number flags
 - `Value.class` - For structured/object flags
 
-### ProviderEvaluation<T>
+### EvaluationResult<T>
 
-OpenFeature SDK class containing the result of flag evaluation.
+Generic result class containing the outcome of flag evaluation.
 
 #### Properties
 
 - `T getValue()` - The resolved value (type-safe based on generic parameter)
 - `String getVariant()` - The selected variant name
-- `String getReason()` - Resolution reason (STATIC, TARGETING_MATCH, DISABLED, ERROR, FLAG_NOT_FOUND)
-- `ErrorCode getErrorCode()` - Error code if evaluation failed
+- `String getReason()` - Resolution reason (STATIC, TARGETING_MATCH, DEFAULT, DISABLED, ERROR, FLAG_NOT_FOUND)
+- `boolean isError()` - Whether the evaluation encountered an error
+- `String getErrorCode()` - Error code if evaluation failed
 - `String getErrorMessage()` - Error message if evaluation failed
-- `FlagMetadata getFlagMetadata()` - Flag metadata (returns ImmutableMetadata)
+- `ImmutableMetadata getMetadata()` - Flag metadata
 
 ### UpdateStateResult
 
@@ -259,14 +264,42 @@ At runtime:
 - Chicory JIT compiles the WASM to optimized bytecode
 - Custom Jackson serializers handle OpenFeature SDK types (`ImmutableMetadata`, `LayeredEvaluationContext`)
 - Each `FlagEvaluator` instance creates its own WASM instance
-- Type-safe evaluation returns `ProviderEvaluation<T>` with compile-time type checking
+- Type-safe evaluation returns `EvaluationResult<T>` with compile-time type checking
 - Evaluations are synchronized for thread safety
 
 ## Performance
 
 - **Startup**: WASM module compiled once during class loading (~100ms)
-- **Evaluation**: Microseconds per evaluation (JIT compiled)
+- **Evaluation**: ~7,900 ops/s with realistic layered contexts (JIT compiled)
 - **Memory**: ~3MB for WASM module + Chicory runtime
+
+### Benchmarks
+
+The library includes JMH (Java Microbenchmark Harness) benchmarks for performance tracking:
+
+```bash
+# Run JMH benchmarks
+./mvnw exec:java@run-jmh-benchmark
+```
+
+**Benchmark Results** (example from development machine):
+```
+Benchmark                                              Mode  Cnt       Score        Error  Units
+FlagEvaluatorJmhBenchmark.evaluateWithLayeredContext  thrpt    5    7939.094 ±   5513.151  ops/s
+FlagEvaluatorJmhBenchmark.evaluateWithSimpleContext   thrpt    5   10800.953 ±   4705.577  ops/s
+FlagEvaluatorJmhBenchmark.serializeLayeredContext     thrpt    5  222863.374 ± 151002.720  ops/s
+```
+
+**Benchmark Scenarios:**
+- **evaluateWithLayeredContext**: Full flag evaluation with 4-layer context (API, Transaction, Client, Invocation) and 100+ entries per layer
+- **evaluateWithSimpleContext**: Baseline evaluation with minimal context
+- **serializeLayeredContext**: JSON serialization overhead measurement
+
+The JUnit-based benchmark test suite is also available:
+```bash
+# Run performance benchmark tests
+./mvnw test -Dtest=FlagEvaluatorBenchmarkTest
+```
 
 ## Thread Safety
 
