@@ -139,11 +139,11 @@ fn init_panic_hook() {
 }
 
 pub mod error;
-pub mod evaluation;
 pub mod evaluator;
 pub mod memory;
 pub mod model;
 pub mod operators;
+pub mod types;
 pub mod validation;
 
 /// Gets the current Unix timestamp in seconds.
@@ -174,16 +174,13 @@ pub fn get_current_time() -> u64 {
 use serde_json::Value;
 
 pub use error::{ErrorType, EvaluatorError};
-pub use evaluation::{
-    evaluate_bool_flag, evaluate_flag, evaluate_float_flag, evaluate_int_flag,
-    evaluate_object_flag, evaluate_string_flag, ErrorCode, EvaluationResult, ResolutionReason,
-};
 pub use evaluator::{FlagEvaluator, ValidationMode};
 pub use memory::{
     pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
 };
 pub use model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 pub use operators::create_evaluator;
+pub use types::{ErrorCode, EvaluationResult, ResolutionReason};
 pub use validation::{validate_flags_config, ValidationError, ValidationResult};
 
 /// Re-exports for external access to allocation functions.
@@ -374,14 +371,30 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
 /// - `flag_key_ptr` and `context_ptr` point to valid memory
 /// - The memory regions are valid UTF-8
 /// - The caller will free the returned memory using `dealloc`
+/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
+/// - For empty context, pass context_ptr=0 and context_len=0 to skip allocation entirely
 #[no_mangle]
 pub extern "C" fn evaluate(
-    flag_key_ptr: *const u8,
+    flag_key_ptr: *mut u8,
     flag_key_len: u32,
-    context_ptr: *const u8,
+    context_ptr: *mut u8,
     context_len: u32,
 ) -> u64 {
-    let result = evaluate_internal(flag_key_ptr, flag_key_len, context_ptr, context_len);
+    let result = evaluate_internal(
+        flag_key_ptr as *const u8,
+        flag_key_len,
+        context_ptr as *const u8,
+        context_len,
+    );
+
+    // Free input buffers - caller no longer needs to call dealloc for these
+    // This saves 2 WASM calls per evaluation
+    wasm_dealloc(flag_key_ptr, flag_key_len);
+    // Only dealloc context if it was actually allocated (non-null pointer with length > 0)
+    if !context_ptr.is_null() && context_len > 0 {
+        wasm_dealloc(context_ptr, context_len);
+    }
+
     string_to_memory(&result.to_json_string())
 }
 
@@ -408,24 +421,29 @@ fn evaluate_internal(
             }
         };
 
-        let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
-            Ok(s) => s,
-            Err(e) => {
-                return EvaluationResult::error(
-                    ErrorCode::ParseError,
-                    format!("Failed to read context: {}", e),
-                )
-            }
-        };
+        // Fast path: null pointer or zero length means empty context
+        // This saves an allocation on the Java side for the common empty context case
+        let context: Value = if context_ptr.is_null() || context_len == 0 {
+            Value::Null
+        } else {
+            let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
+                Ok(s) => s,
+                Err(e) => {
+                    return EvaluationResult::error(
+                        ErrorCode::ParseError,
+                        format!("Failed to read context: {}", e),
+                    )
+                }
+            };
 
-        // Parse the context JSON
-        let context: Value = match serde_json::from_str(&context_str) {
-            Ok(v) => v,
-            Err(e) => {
-                return EvaluationResult::error(
-                    ErrorCode::ParseError,
-                    format!("Failed to parse context JSON: {}", e),
-                )
+            match serde_json::from_str(&context_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    return EvaluationResult::error(
+                        ErrorCode::ParseError,
+                        format!("Failed to parse context JSON: {}", e),
+                    )
+                }
             }
         };
 
@@ -444,19 +462,16 @@ fn evaluate_internal(
         })
     });
 
-    match result {
-        Ok(eval_result) => eval_result,
-        Err(panic_err) => {
-            let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
-                format!("Evaluation panic: {}", s)
-            } else if let Some(s) = panic_err.downcast_ref::<String>() {
-                format!("Evaluation panic: {}", s)
-            } else {
-                "Evaluation panic: unknown error".to_string()
-            };
-            EvaluationResult::error(ErrorCode::General, msg)
-        }
-    }
+    result.unwrap_or_else(|panic_err| {
+        let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+            format!("Evaluation panic: {}", s)
+        } else if let Some(s) = panic_err.downcast_ref::<String>() {
+            format!("Evaluation panic: {}", s)
+        } else {
+            "Evaluation panic: unknown error".to_string()
+        };
+        EvaluationResult::error(ErrorCode::General, msg)
+    })
 }
 
 /// Evaluates a boolean feature flag against the provided context.
@@ -480,20 +495,28 @@ fn evaluate_internal(
 /// - `flag_key_ptr` and `context_ptr` point to valid memory
 /// - The memory regions are valid UTF-8
 /// - The caller will free the returned memory using `dealloc`
+/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
 #[no_mangle]
 pub extern "C" fn evaluate_boolean(
-    flag_key_ptr: *const u8,
+    flag_key_ptr: *mut u8,
     flag_key_len: u32,
-    context_ptr: *const u8,
+    context_ptr: *mut u8,
     context_len: u32,
 ) -> u64 {
     let result = evaluate_typed_internal(
-        flag_key_ptr,
+        flag_key_ptr as *const u8,
         flag_key_len,
-        context_ptr,
+        context_ptr as *const u8,
         context_len,
         |eval, key, ctx| eval.evaluate_bool(key, ctx),
     );
+
+    // Free input buffers - saves 2 WASM calls per evaluation
+    wasm_dealloc(flag_key_ptr, flag_key_len);
+    if !context_ptr.is_null() && context_len > 0 {
+        wasm_dealloc(context_ptr, context_len);
+    }
+
     string_to_memory(&result.to_json_string())
 }
 
@@ -518,20 +541,28 @@ pub extern "C" fn evaluate_boolean(
 /// - `flag_key_ptr` and `context_ptr` point to valid memory
 /// - The memory regions are valid UTF-8
 /// - The caller will free the returned memory using `dealloc`
+/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
 #[no_mangle]
 pub extern "C" fn evaluate_string(
-    flag_key_ptr: *const u8,
+    flag_key_ptr: *mut u8,
     flag_key_len: u32,
-    context_ptr: *const u8,
+    context_ptr: *mut u8,
     context_len: u32,
 ) -> u64 {
     let result = evaluate_typed_internal(
-        flag_key_ptr,
+        flag_key_ptr as *const u8,
         flag_key_len,
-        context_ptr,
+        context_ptr as *const u8,
         context_len,
         |eval, key, ctx| eval.evaluate_string(key, ctx),
     );
+
+    // Free input buffers
+    wasm_dealloc(flag_key_ptr, flag_key_len);
+    if !context_ptr.is_null() && context_len > 0 {
+        wasm_dealloc(context_ptr, context_len);
+    }
+
     string_to_memory(&result.to_json_string())
 }
 
@@ -556,20 +587,28 @@ pub extern "C" fn evaluate_string(
 /// - `flag_key_ptr` and `context_ptr` point to valid memory
 /// - The memory regions are valid UTF-8
 /// - The caller will free the returned memory using `dealloc`
+/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
 #[no_mangle]
 pub extern "C" fn evaluate_integer(
-    flag_key_ptr: *const u8,
+    flag_key_ptr: *mut u8,
     flag_key_len: u32,
-    context_ptr: *const u8,
+    context_ptr: *mut u8,
     context_len: u32,
 ) -> u64 {
     let result = evaluate_typed_internal(
-        flag_key_ptr,
+        flag_key_ptr as *const u8,
         flag_key_len,
-        context_ptr,
+        context_ptr as *const u8,
         context_len,
         |eval, key, ctx| eval.evaluate_int(key, ctx),
     );
+
+    // Free input buffers
+    wasm_dealloc(flag_key_ptr, flag_key_len);
+    if !context_ptr.is_null() && context_len > 0 {
+        wasm_dealloc(context_ptr, context_len);
+    }
+
     string_to_memory(&result.to_json_string())
 }
 
@@ -594,20 +633,28 @@ pub extern "C" fn evaluate_integer(
 /// - `flag_key_ptr` and `context_ptr` point to valid memory
 /// - The memory regions are valid UTF-8
 /// - The caller will free the returned memory using `dealloc`
+/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
 #[no_mangle]
 pub extern "C" fn evaluate_float(
-    flag_key_ptr: *const u8,
+    flag_key_ptr: *mut u8,
     flag_key_len: u32,
-    context_ptr: *const u8,
+    context_ptr: *mut u8,
     context_len: u32,
 ) -> u64 {
     let result = evaluate_typed_internal(
-        flag_key_ptr,
+        flag_key_ptr as *const u8,
         flag_key_len,
-        context_ptr,
+        context_ptr as *const u8,
         context_len,
         |eval, key, ctx| eval.evaluate_float(key, ctx),
     );
+
+    // Free input buffers
+    wasm_dealloc(flag_key_ptr, flag_key_len);
+    if !context_ptr.is_null() && context_len > 0 {
+        wasm_dealloc(context_ptr, context_len);
+    }
+
     string_to_memory(&result.to_json_string())
 }
 
@@ -632,20 +679,28 @@ pub extern "C" fn evaluate_float(
 /// - `flag_key_ptr` and `context_ptr` point to valid memory
 /// - The memory regions are valid UTF-8
 /// - The caller will free the returned memory using `dealloc`
+/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
 #[no_mangle]
 pub extern "C" fn evaluate_object(
-    flag_key_ptr: *const u8,
+    flag_key_ptr: *mut u8,
     flag_key_len: u32,
-    context_ptr: *const u8,
+    context_ptr: *mut u8,
     context_len: u32,
 ) -> u64 {
     let result = evaluate_typed_internal(
-        flag_key_ptr,
+        flag_key_ptr as *const u8,
         flag_key_len,
-        context_ptr,
+        context_ptr as *const u8,
         context_len,
         |eval, key, ctx| eval.evaluate_object(key, ctx),
     );
+
+    // Free input buffers
+    wasm_dealloc(flag_key_ptr, flag_key_len);
+    if !context_ptr.is_null() && context_len > 0 {
+        wasm_dealloc(context_ptr, context_len);
+    }
+
     string_to_memory(&result.to_json_string())
 }
 
@@ -686,24 +741,28 @@ where
             }
         };
 
-        let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
-            Ok(s) => s,
-            Err(e) => {
-                return EvaluationResult::error(
-                    ErrorCode::ParseError,
-                    format!("Failed to read context: {}", e),
-                )
-            }
-        };
+        // Fast path: null pointer or zero length means empty context
+        let context: Value = if context_ptr.is_null() || context_len == 0 {
+            Value::Null
+        } else {
+            let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
+                Ok(s) => s,
+                Err(e) => {
+                    return EvaluationResult::error(
+                        ErrorCode::ParseError,
+                        format!("Failed to read context: {}", e),
+                    )
+                }
+            };
 
-        // Parse the context JSON
-        let context: Value = match serde_json::from_str(&context_str) {
-            Ok(v) => v,
-            Err(e) => {
-                return EvaluationResult::error(
-                    ErrorCode::ParseError,
-                    format!("Failed to parse context JSON: {}", e),
-                )
+            match serde_json::from_str(&context_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    return EvaluationResult::error(
+                        ErrorCode::ParseError,
+                        format!("Failed to parse context JSON: {}", e),
+                    )
+                }
             }
         };
 

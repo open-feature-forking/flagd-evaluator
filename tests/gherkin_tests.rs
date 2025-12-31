@@ -6,7 +6,7 @@
 use cucumber::{given, then, when, World};
 use flagd_evaluator::ResolutionReason::Fallback;
 use flagd_evaluator::{
-    evaluation::{ErrorCode, ResolutionReason},
+    types::{ErrorCode, ResolutionReason},
     FlagEvaluator, ValidationMode,
 };
 use serde_json::{json, Value};
@@ -22,7 +22,7 @@ pub struct FlagdWorld {
     /// The current evaluation context
     context: Value,
     /// The last evaluation result
-    last_result: Option<flagd_evaluator::evaluation::EvaluationResult>,
+    last_result: Option<flagd_evaluator::types::EvaluationResult>,
     /// Flag configurations loaded
     flag_configs: HashMap<String, String>,
     /// Current flag key being tested
@@ -269,8 +269,8 @@ async fn when_flag_evaluated(world: &mut FlagdWorld) {
 /// with our semantic reasons. This function exists as a hook for future
 /// compatibility mappings if needed.
 fn map_semantic_result_for_tests(
-    mut result: flagd_evaluator::evaluation::EvaluationResult,
-) -> flagd_evaluator::evaluation::EvaluationResult {
+    mut result: flagd_evaluator::types::EvaluationResult,
+) -> flagd_evaluator::types::EvaluationResult {
     if result.reason == Fallback {
         result.reason = ResolutionReason::Error
     }

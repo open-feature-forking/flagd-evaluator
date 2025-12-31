@@ -191,14 +191,22 @@ public class FlagEvaluator implements AutoCloseable {
         byte[] flagBytes = flagKey.getBytes(StandardCharsets.UTF_8);
         long flagPtr = allocFunction.apply(flagBytes.length)[0];
 
-        byte[] contextBytes = contextJson.getBytes(StandardCharsets.UTF_8);
-        long contextPtr = allocFunction.apply(contextBytes.length)[0];
+        // Optimization: pass null pointer (0) for empty context to skip allocation
+        // The WASM module handles null context as empty object
+        boolean hasContext = contextJson != null && !contextJson.isEmpty() && !contextJson.equals("{}");
+        long contextPtr = 0;
+        int contextLen = 0;
+        if (hasContext) {
+            byte[] contextBytes = contextJson.getBytes(StandardCharsets.UTF_8);
+            contextPtr = allocFunction.apply(contextBytes.length)[0];
+            contextLen = contextBytes.length;
+            memory.write((int) contextPtr, contextBytes);
+        }
 
         try {
             memory.write((int) flagPtr, flagBytes);
-            memory.write((int) contextPtr, contextBytes);
 
-            long packedResult = evaluateFunction.apply(flagPtr, flagBytes.length, contextPtr, contextBytes.length)[0];
+            long packedResult = evaluateFunction.apply(flagPtr, flagBytes.length, contextPtr, contextLen)[0];
             int resultPtr = (int) (packedResult >>> 32);
             int resultLen = (int) (packedResult & 0xFFFFFFFFL);
 
@@ -207,10 +215,9 @@ public class FlagEvaluator implements AutoCloseable {
             return OBJECT_MAPPER.readValue(resultJson, JAVA_TYPE_MAP.get(type));
         } catch (Exception e) {
             throw new EvaluatorException("Failed to evaluate flag: " + flagKey, e);
-        } finally {
-            deallocFunction.apply(flagPtr, flagBytes.length);
-            deallocFunction.apply(contextPtr, contextBytes.length);
         }
+        // Note: input buffers (flagPtr, contextPtr) are freed by WASM internally
+        // Only need to free the result buffer, but that's also managed by WASM
     }
 
     /**
@@ -227,19 +234,17 @@ public class FlagEvaluator implements AutoCloseable {
      */
     public <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, EvaluationContext context) throws EvaluatorException {
         try {
-            String contextJson;
+            // Fast path: empty context passed as null string (WASM handles this efficiently)
             if (context == null || context.isEmpty()) {
-                contextJson = "{}";
-            } else {
-                // Use ThreadLocal buffer for streaming serialization
-                ByteArrayOutputStream buffer = JSON_BUFFER.get();
-                buffer.reset();
-                try (JsonGenerator generator = JSON_FACTORY.createGenerator(buffer)) {
-                    OBJECT_MAPPER.writeValue(generator, context);
-                }
-                contextJson = buffer.toString(StandardCharsets.UTF_8.name());
+                return evaluateFlag(type, flagKey, (String) null);
             }
-            return evaluateFlag(type, flagKey, contextJson);
+            // Use ThreadLocal buffer for streaming serialization
+            ByteArrayOutputStream buffer = JSON_BUFFER.get();
+            buffer.reset();
+            try (JsonGenerator generator = JSON_FACTORY.createGenerator(buffer)) {
+                OBJECT_MAPPER.writeValue(generator, context);
+            }
+            return evaluateFlag(type, flagKey, buffer.toString(StandardCharsets.UTF_8.name()));
         } catch (Exception e) {
             throw new EvaluatorException("Failed to serialize context", e);
         }
