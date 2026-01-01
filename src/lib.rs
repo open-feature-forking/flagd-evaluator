@@ -450,6 +450,45 @@ pub extern "C" fn evaluate_binary(
     bytes_to_memory(&result.to_proto_bytes())
 }
 
+/// Evaluates a feature flag using pre-allocated buffers (no input deallocation).
+///
+/// This is a high-performance variant designed for use with pre-allocated buffers.
+/// Unlike `evaluate` and `evaluate_binary`, this function does NOT deallocate the
+/// input buffers, allowing them to be reused across multiple evaluations.
+///
+/// # Arguments
+/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
+/// * `flag_key_len` - Length of the flag key string
+/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
+/// * `context_len` - Length of the evaluation context JSON string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the protobuf-encoded EvaluationResult.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `flag_key_ptr` and `context_ptr` point to valid memory
+/// - The memory regions are valid UTF-8
+/// - The caller manages the input buffer lifecycle (they are NOT freed by this function)
+/// - The caller will free the returned result memory using `dealloc`
+/// - For empty context, pass context_ptr=0 and context_len=0
+#[no_mangle]
+pub extern "C" fn evaluate_reusable(
+    flag_key_ptr: *const u8,
+    flag_key_len: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> u64 {
+    let result = evaluate_internal(flag_key_ptr, flag_key_len, context_ptr, context_len);
+
+    // NOTE: We do NOT deallocate input buffers here - caller manages them
+    // This allows buffer reuse across multiple evaluations
+
+    // Return protobuf-encoded binary for fastest deserialization
+    bytes_to_memory(&result.to_proto_bytes())
+}
+
 /// Internal implementation of evaluate.
 fn evaluate_internal(
     flag_key_ptr: *const u8,

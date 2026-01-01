@@ -59,6 +59,10 @@ public class FlagEvaluator implements AutoCloseable {
     private static final ThreadLocal<ByteArrayOutputStream> JSON_BUFFER =
         ThreadLocal.withInitial(() -> new ByteArrayOutputStream(8192));
 
+    // Pre-allocated buffer sizes for WASM memory
+    private static final int MAX_FLAG_KEY_SIZE = 256;
+    private static final int MAX_CONTEXT_SIZE = 64 * 1024; // 64KB
+
     static {
         // Register custom serializers/deserializers with the ObjectMapper
         SimpleModule module = new SimpleModule();
@@ -82,9 +86,14 @@ public class FlagEvaluator implements AutoCloseable {
     private final ExportFunction updateStateFunction;
     private final ExportFunction evaluateFunction;
     private final ExportFunction evaluateBinaryFunction;
+    private final ExportFunction evaluateReusableFunction;
     private final ExportFunction allocFunction;
     private final ExportFunction deallocFunction;
     private final Memory memory;
+
+    // Pre-allocated buffers for high-performance evaluation
+    private final long flagKeyBufferPtr;
+    private final long contextBufferPtr;
 
     /**
      * Creates a new flag evaluator with strict validation mode.
@@ -105,9 +114,14 @@ public class FlagEvaluator implements AutoCloseable {
         this.updateStateFunction = wasmInstance.export("update_state");
         this.evaluateFunction = wasmInstance.export("evaluate");
         this.evaluateBinaryFunction = wasmInstance.export("evaluate_binary");
+        this.evaluateReusableFunction = wasmInstance.export("evaluate_reusable");
         this.allocFunction = wasmInstance.export("alloc");
         this.deallocFunction = wasmInstance.export("dealloc");
         this.memory = wasmInstance.memory();
+
+        // Pre-allocate buffers for reusable evaluation (avoids alloc calls per evaluation)
+        this.flagKeyBufferPtr = allocFunction.apply(MAX_FLAG_KEY_SIZE)[0];
+        this.contextBufferPtr = allocFunction.apply(MAX_CONTEXT_SIZE)[0];
 
         // Set validation mode
         ExportFunction setValidationMode = wasmInstance.export("set_validation_mode");
@@ -327,6 +341,89 @@ public class FlagEvaluator implements AutoCloseable {
     }
 
     /**
+     * Evaluates a flag using pre-allocated buffers for maximum performance.
+     *
+     * <p>This is the fastest evaluation method as it:
+     * <ul>
+     *   <li>Uses pre-allocated WASM memory buffers (no alloc calls)</li>
+     *   <li>Returns protobuf binary (faster than JSON parsing)</li>
+     *   <li>Only requires 1 WASM call per evaluation</li>
+     * </ul>
+     *
+     * @param <T>         the type of the flag value
+     * @param type        the class of the expected flag value type
+     * @param flagKey     the key of the flag to evaluate
+     * @param contextJson the evaluation context as JSON (use null or "" for empty context)
+     * @return the evaluation result
+     * @throws EvaluatorException if the evaluation fails
+     */
+    public synchronized <T> EvaluationResult<T> evaluateFlagReusable(Class<T> type, String flagKey, String contextJson) throws EvaluatorException {
+        byte[] flagBytes = flagKey.getBytes(StandardCharsets.UTF_8);
+        if (flagBytes.length > MAX_FLAG_KEY_SIZE) {
+            throw new EvaluatorException("Flag key exceeds maximum size of " + MAX_FLAG_KEY_SIZE + " bytes");
+        }
+
+        // Write flag key to pre-allocated buffer (no alloc call needed!)
+        memory.write((int) flagKeyBufferPtr, flagBytes);
+
+        // Handle context
+        boolean hasContext = contextJson != null && !contextJson.isEmpty();
+        long contextPtr = 0;
+        int contextLen = 0;
+        if (hasContext) {
+            byte[] contextBytes = contextJson.getBytes(StandardCharsets.UTF_8);
+            if (contextBytes.length > MAX_CONTEXT_SIZE) {
+                throw new EvaluatorException("Context exceeds maximum size of " + MAX_CONTEXT_SIZE + " bytes");
+            }
+            // Write context to pre-allocated buffer (no alloc call needed!)
+            memory.write((int) contextBufferPtr, contextBytes);
+            contextPtr = contextBufferPtr;
+            contextLen = contextBytes.length;
+        }
+
+        try {
+            // Single WASM call - no alloc/dealloc overhead!
+            long packedResult = evaluateReusableFunction.apply(flagKeyBufferPtr, flagBytes.length, contextPtr, contextLen)[0];
+            int resultPtr = (int) (packedResult >>> 32);
+            int resultLen = (int) (packedResult & 0xFFFFFFFFL);
+
+            // Read protobuf result and deallocate result buffer
+            byte[] protoBytes = memory.readBytes(resultPtr, resultLen);
+            deallocFunction.apply(resultPtr, resultLen);
+
+            return parseProtoResult(type, protoBytes);
+        } catch (Exception e) {
+            throw new EvaluatorException("Failed to evaluate flag: " + flagKey, e);
+        }
+    }
+
+    /**
+     * Evaluates a flag with EvaluationContext using pre-allocated buffers.
+     *
+     * @param <T>     the type of the flag value
+     * @param type    the class of the expected flag value type
+     * @param flagKey the key of the flag to evaluate
+     * @param context the evaluation context
+     * @return the evaluation result
+     * @throws EvaluatorException if the evaluation fails
+     */
+    public <T> EvaluationResult<T> evaluateFlagReusable(Class<T> type, String flagKey, EvaluationContext context) throws EvaluatorException {
+        try {
+            if (context == null || context.isEmpty()) {
+                return evaluateFlagReusable(type, flagKey, (String) null);
+            }
+            ByteArrayOutputStream buffer = JSON_BUFFER.get();
+            buffer.reset();
+            try (JsonGenerator generator = JSON_FACTORY.createGenerator(buffer)) {
+                OBJECT_MAPPER.writeValue(generator, context);
+            }
+            return evaluateFlagReusable(type, flagKey, buffer.toString(StandardCharsets.UTF_8.name()));
+        } catch (Exception e) {
+            throw new EvaluatorException("Failed to serialize context", e);
+        }
+    }
+
+    /**
      * Parses a protobuf EvaluationResult and converts it to the Java type.
      */
     @SuppressWarnings("unchecked")
@@ -431,8 +528,10 @@ public class FlagEvaluator implements AutoCloseable {
 
     @Override
     public void close() {
+        // Free pre-allocated buffers
+        deallocFunction.apply(flagKeyBufferPtr, MAX_FLAG_KEY_SIZE);
+        deallocFunction.apply(contextBufferPtr, MAX_CONTEXT_SIZE);
         // WASM instances don't need explicit cleanup in Chicory
-        // This method is here to support try-with-resources
     }
 
     /**
