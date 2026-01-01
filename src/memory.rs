@@ -148,6 +148,35 @@ pub fn string_to_memory(s: &str) -> u64 {
     pack_ptr_len(ptr, len)
 }
 
+/// Writes binary data to newly allocated memory and returns a packed pointer+length.
+///
+/// # Arguments
+/// * `data` - The binary data to write to memory
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits).
+/// Returns 0 if allocation fails.
+pub fn bytes_to_memory(data: &[u8]) -> u64 {
+    let len = data.len() as u32;
+
+    // For empty data, allocate 1 byte to ensure non-null pointer
+    let alloc_size = if len == 0 { 1 } else { len };
+    let ptr = wasm_alloc(alloc_size);
+
+    if ptr.is_null() {
+        return 0;
+    }
+
+    // SAFETY: We just allocated this memory and know it's valid
+    if len > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, len as usize);
+        }
+    }
+
+    pack_ptr_len(ptr, len)
+}
+
 /// Writes a string to newly allocated memory, returning a Result for explicit error handling.
 ///
 /// This is the preferred API for Rust callers who want explicit error handling.

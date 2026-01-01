@@ -1,8 +1,5 @@
 package dev.openfeature.flagd.evaluator;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.module.SimpleModule;
-import dev.openfeature.flagd.evaluator.jackson.EvaluationContextSerializer;
 import dev.openfeature.sdk.EvaluationContext;
 import dev.openfeature.sdk.ImmutableContext;
 import dev.openfeature.sdk.LayeredEvaluationContext;
@@ -26,14 +23,7 @@ import static dev.openfeature.flagd.evaluator.FlagEvaluator.OBJECT_MAPPER;
  *
  * <p><b>Running the benchmark:</b>
  * <pre>
- * mvn test-compile exec:java -Dexec.classpathScope=test \
- *   -Dexec.mainClass=org.openjdk.jmh.Main \
- *   -Dexec.args="FlagEvaluatorJmhBenchmark"
- * </pre>
- *
- * <p>Or create a benchmark JAR:
- * <pre>
- * mvn clean package
+ * ./mvnw clean package
  * java -jar target/benchmarks.jar FlagEvaluatorJmhBenchmark
  * </pre>
  */
