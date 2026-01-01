@@ -3,8 +3,11 @@
 //! This module provides data structures for parsing and working with flagd feature flag
 //! configurations as defined in the [flagd specification](https://flagd.dev/reference/flag-definitions/).
 
+use crate::operators::create_evaluator;
+use datalogic_rs::CompiledLogic;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Represents a feature flag according to the flagd specification.
 ///
@@ -31,7 +34,7 @@ use std::collections::HashMap;
 /// assert_eq!(flag.state, "ENABLED");
 /// assert_eq!(flag.default_variant, Some("on".to_string()));
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeatureFlag {
     /// The key/name of the feature flag
@@ -52,9 +55,25 @@ pub struct FeatureFlag {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub targeting: Option<serde_json::Value>,
 
+    /// Pre-compiled targeting logic for fast evaluation (skipped during serialization)
+    #[serde(skip)]
+    pub compiled_targeting: Option<Arc<CompiledLogic>>,
+
     /// Optional metadata associated with the flag
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl PartialEq for FeatureFlag {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare all fields except compiled_targeting (which is derived from targeting)
+        self.key == other.key
+            && self.state == other.state
+            && self.default_variant == other.default_variant
+            && self.variants == other.variants
+            && self.targeting == other.targeting
+            && self.metadata == other.metadata
+    }
 }
 
 impl FeatureFlag {
@@ -75,6 +94,7 @@ impl FeatureFlag {
     ///     default_variant: Option::from("on".to_string()),
     ///     variants: HashMap::new(),
     ///     targeting: Some(json!({"==": [1, 1]})),
+    ///     compiled_targeting: None,
     ///     metadata: HashMap::new(),
     /// };
     ///
@@ -110,6 +130,7 @@ impl FeatureFlag {
     ///     default_variant: Option::from("on".to_string()),
     ///     variants: HashMap::new(),
     ///     targeting: Some(json!({"==": [1, 1]})),
+    ///     compiled_targeting: None,
     ///     metadata: HashMap::new(),
     /// };
     ///
@@ -216,6 +237,9 @@ impl ParsingResult {
             .as_object()
             .ok_or_else(|| "'flags' must be an object".to_string())?;
 
+        // Create a shared DataLogic engine for compiling targeting rules
+        let engine = create_evaluator();
+
         // Parse each flag and set its key
         let mut flags = HashMap::new();
         for (flag_name, flag_value) in flags_obj {
@@ -235,6 +259,25 @@ impl ParsingResult {
                             "Failed to resolve $ref in flag '{}': {}",
                             flag_name, e
                         ))
+                    }
+                }
+            }
+
+            // Pre-compile targeting rules for fast evaluation
+            if let Some(ref targeting) = flag.targeting {
+                // Only compile non-empty targeting rules
+                if !targeting.as_object().map(|o| o.is_empty()).unwrap_or(false) {
+                    match engine.compile(targeting) {
+                        Ok(compiled) => {
+                            flag.compiled_targeting = Some(compiled);
+                        }
+                        Err(e) => {
+                            // Log warning but don't fail - fall back to runtime compilation
+                            eprintln!(
+                                "Warning: Failed to pre-compile targeting for flag '{}': {}",
+                                flag_name, e
+                            );
+                        }
                     }
                 }
             }
@@ -550,6 +593,7 @@ mod tests {
             default_variant: Option::from("on".to_string()),
             variants: HashMap::new(),
             targeting: Some(json!({"==": [1, 1]})),
+            compiled_targeting: None,
             metadata: HashMap::new(),
         };
 
@@ -566,6 +610,7 @@ mod tests {
             default_variant: Option::from("on".to_string()),
             variants: HashMap::new(),
             targeting: None,
+            compiled_targeting: None,
             metadata: HashMap::new(),
         };
 
@@ -616,6 +661,7 @@ mod tests {
             default_variant: Option::from("on".to_string()),
             variants: HashMap::new(),
             targeting: None,
+            compiled_targeting: None,
             metadata: HashMap::new(),
         };
 
@@ -625,6 +671,7 @@ mod tests {
             default_variant: Option::from("on".to_string()),
             variants: HashMap::new(),
             targeting: None,
+            compiled_targeting: None,
             metadata: HashMap::new(),
         };
 
@@ -643,6 +690,7 @@ mod tests {
             default_variant: Option::from("on".to_string()),
             variants,
             targeting: Some(json!({"==": [1, 1]})),
+            compiled_targeting: None,
             metadata: HashMap::new(),
         };
 

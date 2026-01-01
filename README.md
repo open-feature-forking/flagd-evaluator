@@ -55,9 +55,51 @@ Download the latest WASM file from the [Releases](https://github.com/open-featur
 cargo build --target wasm32-unknown-unknown --release
 ```
 
+### Java Library (Recommended for Java Projects)
+
+For Java applications, use the standalone Java library that bundles the WASM module and runtime:
+
+```xml
+<dependency>
+    <groupId>dev.openfeature</groupId>
+    <artifactId>flagd-evaluator-java</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+</dependency>
+```
+
+See [`java/README.md`](./java/README.md) for complete documentation and examples.
+
 ## Usage Examples
 
-### Java with Chicory
+### Java Library (Simple)
+
+```java
+import dev.openfeature.flagd.evaluator.FlagEvaluator;
+import dev.openfeature.flagd.evaluator.EvaluationResult;
+
+// Create evaluator
+FlagEvaluator evaluator = new FlagEvaluator();
+
+// Load flags
+String config = """
+{
+  "flags": {
+    "my-flag": {
+      "state": "ENABLED",
+      "defaultVariant": "on",
+      "variants": {"on": true, "off": false}
+    }
+  }
+}
+""";
+evaluator.updateState(config);
+
+// Evaluate
+EvaluationResult result = evaluator.evaluateFlag("my-flag", "{}");
+System.out.println("Value: " + result.getValue());
+```
+
+### Java with Chicory (Advanced)
 
 Add the Chicory dependency to your Maven project:
 

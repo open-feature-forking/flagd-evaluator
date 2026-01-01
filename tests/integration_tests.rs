@@ -286,7 +286,6 @@ fn test_update_state_invalid_flag_structure() {
 
 #[test]
 fn test_evaluators_simple_ref_evaluation() {
-    use flagd_evaluator::evaluation::evaluate_flag;
     use serde_json::json;
     let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
 
@@ -321,26 +320,21 @@ fn test_evaluators_simple_ref_evaluation() {
     let result = evaluator.update_state(config);
     assert!(result.is_ok(), "Failed to update state: {:?}", result);
 
-    // Get the flag
-    let state = evaluator.get_state().unwrap();
-    let flag = state.flags.get("adminFeature").unwrap();
-
     // Test with admin email - should return true
     let context = json!({"email": "admin@example.com"});
-    let eval_result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let eval_result = evaluator.evaluate_flag("adminFeature", &context);
     assert_eq!(eval_result.value, json!(true));
     assert_eq!(eval_result.variant, Some("on".to_string()));
 
     // Test with non-admin email - should return false
     let context = json!({"email": "user@example.com"});
-    let eval_result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let eval_result = evaluator.evaluate_flag("adminFeature", &context);
     assert_eq!(eval_result.value, json!(false));
     assert_eq!(eval_result.variant, Some("off".to_string()));
 }
 
 #[test]
 fn test_evaluators_nested_ref_evaluation() {
-    use flagd_evaluator::evaluation::evaluate_flag;
     use serde_json::json;
 
     let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
@@ -380,33 +374,31 @@ fn test_evaluators_nested_ref_evaluation() {
             }
         }
     }"#;
-    evaluator.update_state(config).unwrap();
-    let state = evaluator.get_state().unwrap();
-    let flag = state.flags.get("premiumFeature").unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
 
     // Test with active admin - should return premium
     let context = json!({"email": "admin@company.com", "status": "active"});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("premiumFeature", &context);
     assert_eq!(result.value, json!("premium"));
     assert_eq!(result.variant, Some("enabled".to_string()));
 
     // Test with non-admin - should return free
     let context = json!({"email": "user@company.com", "status": "active"});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("premiumFeature", &context);
     assert_eq!(result.value, json!("free"));
     assert_eq!(result.variant, Some("disabled".to_string()));
 
     // Test with admin but inactive - should return free
     let context = json!({"email": "admin@company.com", "status": "inactive"});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("premiumFeature", &context);
     assert_eq!(result.value, json!("free"));
     assert_eq!(result.variant, Some("disabled".to_string()));
 }
 
 #[test]
 fn test_evaluators_with_fractional_operator() {
-    use flagd_evaluator::evaluation::evaluate_flag;
-
     use serde_json::json;
 
     let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
@@ -438,14 +430,14 @@ fn test_evaluators_with_fractional_operator() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
-    let state = evaluator.get_state().unwrap();
-    let flag = state.flags.get("experimentFlag").unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
 
     // Test with specific user ID - should consistently return same variant
     let context = json!({"userId": "user-123"});
-    let result1 = evaluate_flag(flag, &context, &state.flag_set_metadata);
-    let result2 = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result1 = evaluator.evaluate_flag("experimentFlag", &context);
+    let result2 = evaluator.evaluate_flag("experimentFlag", &context);
     assert_eq!(result1.value, result2.value);
     assert!(
         result1.value == json!("control-experience")
@@ -455,7 +447,6 @@ fn test_evaluators_with_fractional_operator() {
 
 #[test]
 fn test_evaluators_complex_targeting() {
-    use flagd_evaluator::evaluation::evaluate_flag;
     use serde_json::json;
 
     let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
@@ -501,28 +492,28 @@ fn test_evaluators_complex_targeting() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
-    let state = evaluator.get_state().unwrap();
-    let flag = state.flags.get("vipFeatures").unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
 
     // Premium + active - should get VIP
     let context = json!({"tier": "premium", "lifetime_value": 500, "active": true});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("vipFeatures", &context);
     assert_eq!(result.variant, Some("vip".to_string()));
 
     // High value + active - should get VIP
     let context = json!({"tier": "basic", "lifetime_value": 1500, "active": true});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("vipFeatures", &context);
     assert_eq!(result.variant, Some("vip".to_string()));
 
     // Premium but inactive - should get standard
     let context = json!({"tier": "premium", "lifetime_value": 500, "active": false});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("vipFeatures", &context);
     assert_eq!(result.variant, Some("standard".to_string()));
 
     // Neither premium nor high value - should get standard
     let context = json!({"tier": "basic", "lifetime_value": 100, "active": true});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("vipFeatures", &context);
     assert_eq!(result.variant, Some("standard".to_string()));
 }
 
@@ -561,8 +552,6 @@ fn test_evaluators_missing_ref_in_storage() {
 
 #[test]
 fn test_evaluators_multiple_refs_in_single_flag() {
-    use flagd_evaluator::evaluation::evaluate_flag;
-
     use serde_json::json;
 
     let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
@@ -604,23 +593,23 @@ fn test_evaluators_multiple_refs_in_single_flag() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
-    let state = evaluator.get_state().unwrap();
-    let flag = state.flags.get("accessFlag").unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
 
     // Admin gets full access
     let context = json!({"email": "admin@company.com"});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("accessFlag", &context);
     assert_eq!(result.value, json!("full-access"));
 
     // Manager gets limited access
     let context = json!({"email": "manager@company.com"});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("accessFlag", &context);
     assert_eq!(result.value, json!("limited-access"));
 
     // Regular user gets no access
     let context = json!({"email": "user@company.com"});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("accessFlag", &context);
     assert_eq!(result.value, json!("no-access"));
 }
 
@@ -678,7 +667,9 @@ fn test_update_state_changed_flags_partial_update() {
             }
         }
     }"#;
-    evaluator.update_state(config1).unwrap();
+    evaluator
+        .update_state(config1)
+        .expect("state should be updated");
 
     // Update - modify flag1, keep flag2 same
     let config2 = r#"{
@@ -726,7 +717,9 @@ fn test_update_state_changed_flags_targeting_change() {
             }
         }
     }"#;
-    evaluator.update_state(config1).unwrap();
+    evaluator
+        .update_state(config1)
+        .expect("state should be updated");
 
     // Update with different targeting rule
     let config2 = r#"{
@@ -772,7 +765,9 @@ fn test_update_state_changed_flags_metadata_change() {
             }
         }
     }"#;
-    evaluator.update_state(config1).unwrap();
+    evaluator
+        .update_state(config1)
+        .expect("state should be updated");
 
     // Update with different metadata
     let config2 = r#"{
@@ -812,7 +807,9 @@ fn test_update_state_changed_flags_no_changes() {
     }"#;
 
     // First update
-    evaluator.update_state(config).unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
 
     // Second update with same config
     let response = evaluator.update_state(config).unwrap();
@@ -842,7 +839,9 @@ fn test_update_state_changed_flags_add_and_remove() {
             }
         }
     }"#;
-    evaluator.update_state(config1).unwrap();
+    evaluator
+        .update_state(config1)
+        .expect("state should be updated");
 
     // Remove flag2, add flag3
     let config2 = r#"{
@@ -875,7 +874,6 @@ fn test_update_state_changed_flags_add_and_remove() {
 
 #[test]
 fn test_fractional_single_bucket() {
-    use flagd_evaluator::evaluation::evaluate_flag;
     use serde_json::json;
 
     // Single bucket with 100% weight should always return that bucket
@@ -903,15 +901,11 @@ fn test_fractional_single_bucket() {
         "Should be able to update state: {:?}",
         result
     );
-    let state = evaluator
-        .get_state()
-        .expect("State should be set after update_state");
-    let flag = state.flags.get("singleBucket").expect("Flag should exist");
 
     // Any context should get "on" variant
     for i in 0..10 {
         let context = json!({"targetingKey": format!("user-{}", i)});
-        let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+        let result = evaluator.evaluate_flag("singleBucket", &context);
         assert_eq!(
             result.variant,
             Some("on".to_string()),
@@ -923,7 +917,6 @@ fn test_fractional_single_bucket() {
 
 #[test]
 fn test_fractional_unequal_weights() {
-    use flagd_evaluator::evaluation::evaluate_flag;
     use serde_json::json;
 
     // 90/10 split - most users should get variant A
@@ -945,9 +938,9 @@ fn test_fractional_unequal_weights() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
-    let state = evaluator.get_state().unwrap();
-    let flag = state.flags.get("heavyA").unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
 
     let mut a_count = 0;
     let mut b_count = 0;
@@ -955,7 +948,7 @@ fn test_fractional_unequal_weights() {
     // Test with many users
     for i in 0..100 {
         let context = json!({"targetingKey": format!("test-user-{}", i)});
-        let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+        let result = evaluator.evaluate_flag("heavyA", &context);
         match result.variant.as_deref() {
             Some("a") => a_count += 1,
             Some("b") => b_count += 1,
@@ -989,7 +982,9 @@ fn test_unicode_flag_key() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
     let result = evaluator.evaluate_bool("日本語フラグ", &json!({}));
     assert_eq!(result.value, json!(true));
     assert_eq!(result.variant, Some("オン".to_string()));
@@ -997,7 +992,6 @@ fn test_unicode_flag_key() {
 
 #[test]
 fn test_unicode_in_context() {
-    use flagd_evaluator::evaluation::evaluate_flag;
     use serde_json::json;
 
     let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
@@ -1023,16 +1017,16 @@ fn test_unicode_in_context() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
-    let state = evaluator.get_state().unwrap();
-    let flag = state.flags.get("greetingFlag").unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
 
     let context = json!({"language": "中文"});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("greetingFlag", &context);
     assert_eq!(result.value, json!("你好"));
 
     let context = json!({"language": "日本語"});
-    let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+    let result = evaluator.evaluate_flag("greetingFlag", &context);
     assert_eq!(result.value, json!("こんにちは"));
 }
 
@@ -1052,7 +1046,9 @@ fn test_emoji_in_variant_values() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
     let result = evaluator.evaluate_string("emojiFlag", &json!({}));
     assert_eq!(result.value, json!("😀"));
 }
@@ -1093,7 +1089,9 @@ fn test_empty_variants_map() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
     let result = evaluator.evaluate_flag("emptyVariants", &json!({}));
     // Should return an error since variant doesn't exist
     assert!(result.error_code.is_some());
@@ -1101,7 +1099,6 @@ fn test_empty_variants_map() {
 
 #[test]
 fn test_deeply_nested_targeting() {
-    use flagd_evaluator::evaluation::evaluate_flag;
     use serde_json::json;
 
     let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
@@ -1147,13 +1144,11 @@ fn test_deeply_nested_targeting() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
-    let state = evaluator.get_state().unwrap();
-    let flag = state.flags.get("nestedFlag").unwrap();
+    evaluator.update_state(config).expect("should be working");
 
     for level in 0..=5 {
         let context = json!({"level": level});
-        let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+        let result = evaluator.evaluate_flag("nestedFlag", &context);
         assert_eq!(
             result.value,
             json!(level),
@@ -1178,7 +1173,9 @@ fn test_flag_removal_and_readd() {
             }
         }
     }"#;
-    evaluator.update_state(config1).unwrap();
+    evaluator
+        .update_state(config1)
+        .expect("state should be updated");
 
     // Remove flag
     let config2 = r#"{"flags": {}}"#;
@@ -1200,7 +1197,6 @@ fn test_flag_removal_and_readd() {
 
 #[test]
 fn test_sem_ver_edge_cases() {
-    use flagd_evaluator::evaluation::evaluate_flag;
     use serde_json::json;
 
     let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
@@ -1222,9 +1218,9 @@ fn test_sem_ver_edge_cases() {
         }
     }"#;
 
-    evaluator.update_state(config).unwrap();
-    let state = evaluator.get_state().unwrap();
-    let flag = state.flags.get("versionFlag").unwrap();
+    evaluator
+        .update_state(config)
+        .expect("state should be updated");
 
     // Test various version formats
     let test_cases = vec![
@@ -1238,7 +1234,7 @@ fn test_sem_ver_edge_cases() {
 
     for (version, expected) in test_cases {
         let context = json!({"appVersion": version});
-        let result = evaluate_flag(flag, &context, &state.flag_set_metadata);
+        let result = evaluator.evaluate_flag("versionFlag", &context);
         assert_eq!(
             result.variant,
             Some(expected.to_string()),
