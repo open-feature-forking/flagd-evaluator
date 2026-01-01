@@ -3,12 +3,15 @@ package dev.openfeature.flagd.evaluator.comparison;
 import dev.openfeature.flagd.evaluator.EvaluationResult;
 import dev.openfeature.flagd.evaluator.FlagEvaluator;
 import dev.openfeature.sdk.EvaluationContext;
+import dev.openfeature.sdk.LayeredEvaluationContext;
 import dev.openfeature.sdk.MutableContext;
 import dev.openfeature.sdk.ProviderEvaluation;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 /**
  * JMH benchmark comparing old JsonLogic-based resolver vs new WASM-based evaluator.
@@ -18,12 +21,16 @@ import java.util.concurrent.TimeUnit;
  * - Latency (average time per operation)
  * - Memory allocation (GC behavior)
  *
- * <p>Run with: ./mvnw exec:java@run-jmh-benchmark -Dbenchmark=ResolverComparisonBenchmark
+ * <p>Run with:
+ * <pre>
+ * ./mvnw clean package
+ * java -jar target/benchmarks.jar ResolverComparisonBenchmark
+ * </pre>
  */
 @BenchmarkMode({Mode.Throughput, Mode.AverageTime})
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @State(Scope.Thread)
-@Fork(value = 1, warmups = 1)
+@Fork(value = 3, jvmArgs = {"-Xms2G", "-Xmx2G"})
 @Warmup(iterations = 3, time = 2)
 @Measurement(iterations = 5, time = 2)
 public class ResolverComparisonBenchmark {
@@ -44,47 +51,47 @@ public class ResolverComparisonBenchmark {
 
         // Unified configuration with all flags
         String unifiedConfig = "{\n" +
-            "  \"flags\": {\n" +
-            "    \"simple-flag\": {\n" +
-            "      \"state\": \"ENABLED\",\n" +
-            "      \"defaultVariant\": \"on\",\n" +
-            "      \"variants\": {\n" +
-            "        \"on\": true,\n" +
-            "        \"off\": false\n" +
-            "      }\n" +
-            "    },\n" +
-            "    \"feature-access\": {\n" +
-            "      \"state\": \"ENABLED\",\n" +
-            "      \"defaultVariant\": \"denied\",\n" +
-            "      \"variants\": {\n" +
-            "        \"denied\": false,\n" +
-            "        \"granted\": true\n" +
-            "      },\n" +
-            "      \"targeting\": {\n" +
-            "        \"if\": [\n" +
-            "          {\n" +
-            "            \"and\": [\n" +
-            "              {\n" +
-            "                \"==\": [\n" +
-            "                  { \"var\": \"role\" },\n" +
-            "                  \"admin\"\n" +
-            "                ]\n" +
-            "              },\n" +
-            "              {\n" +
-            "                \"in\": [\n" +
-            "                  { \"var\": \"tier\" },\n" +
-            "                  [\"premium\", \"enterprise\"]\n" +
-            "                ]\n" +
-            "              }\n" +
-            "            ]\n" +
-            "          },\n" +
-            "          \"granted\",\n" +
-            "          null\n" +
-            "        ]\n" +
-            "      }\n" +
-            "    }\n" +
-            "  }\n" +
-            "}";
+                "  \"flags\": {\n" +
+                "    \"simple-flag\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"on\",\n" +
+                "      \"variants\": {\n" +
+                "        \"on\": true,\n" +
+                "        \"off\": false\n" +
+                "      }\n" +
+                "    },\n" +
+                "    \"feature-access\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"denied\",\n" +
+                "      \"variants\": {\n" +
+                "        \"denied\": false,\n" +
+                "        \"granted\": true\n" +
+                "      },\n" +
+                "      \"targeting\": {\n" +
+                "        \"if\": [\n" +
+                "          {\n" +
+                "            \"and\": [\n" +
+                "              {\n" +
+                "                \"==\": [\n" +
+                "                  { \"var\": \"role\" },\n" +
+                "                  \"admin\"\n" +
+                "                ]\n" +
+                "              },\n" +
+                "              {\n" +
+                "                \"in\": [\n" +
+                "                  { \"var\": \"tier\" },\n" +
+                "                  [\"premium\", \"enterprise\"]\n" +
+                "                ]\n" +
+                "              }\n" +
+                "            ]\n" +
+                "          },\n" +
+                "          \"granted\",\n" +
+                "          null\n" +
+                "        ]\n" +
+                "      }\n" +
+                "    }\n" +
+                "  }\n" +
+                "}";
 
         // Pre-load configuration ONCE for both implementations
         oldResolver.loadFlags(unifiedConfig);
@@ -92,12 +99,23 @@ public class ResolverComparisonBenchmark {
 
         // Contexts
         emptyContext = new MutableContext();
-        matchingContext = new MutableContext()
-            .add("role", "admin")
-            .add("tier", "premium");
+        var context = new MutableContext()
+                .add("role", "admin")
+                .add("tier", "premium");
+        var randomDataCtx = new MutableContext();
+        IntStream.range(0, 1000).forEach( i ->
+                randomDataCtx.add(UUID.randomUUID().toString(), UUID.randomUUID().toString())
+        );
+
         nonMatchingContext = new MutableContext()
-            .add("role", "user")
-            .add("tier", "basic");
+                .add("role", "user")
+                .add("tier", "basic");
+        matchingContext = new LayeredEvaluationContext(
+                context,
+                randomDataCtx,
+                nonMatchingContext,
+                emptyContext
+        );
     }
 
     // ========== Simple Flag Evaluation (No Targeting) ==========
@@ -112,26 +130,6 @@ public class ResolverComparisonBenchmark {
     public void newEvaluator_SimpleFlag(Blackhole blackhole) {
         try {
             EvaluationResult<Boolean> result = newEvaluator.evaluateFlag(Boolean.class, "simple-flag", emptyContext);
-            blackhole.consume(result);
-        } catch (Exception e) {
-            throw new RuntimeException("Evaluation failed", e);
-        }
-    }
-
-    @Benchmark
-    public void newEvaluator_SimpleFlag_Binary(Blackhole blackhole) {
-        try {
-            EvaluationResult<Boolean> result = newEvaluator.evaluateFlagBinary(Boolean.class, "simple-flag", emptyContext);
-            blackhole.consume(result);
-        } catch (Exception e) {
-            throw new RuntimeException("Evaluation failed", e);
-        }
-    }
-
-    @Benchmark
-    public void newEvaluator_SimpleFlag_Reusable(Blackhole blackhole) {
-        try {
-            EvaluationResult<Boolean> result = newEvaluator.evaluateFlagReusable(Boolean.class, "simple-flag", emptyContext);
             blackhole.consume(result);
         } catch (Exception e) {
             throw new RuntimeException("Evaluation failed", e);
@@ -156,26 +154,6 @@ public class ResolverComparisonBenchmark {
         }
     }
 
-    @Benchmark
-    public void newEvaluator_TargetingMatch_Binary(Blackhole blackhole) {
-        try {
-            EvaluationResult<Boolean> result = newEvaluator.evaluateFlagBinary(Boolean.class, "feature-access", matchingContext);
-            blackhole.consume(result);
-        } catch (Exception e) {
-            throw new RuntimeException("Evaluation failed", e);
-        }
-    }
-
-    @Benchmark
-    public void newEvaluator_TargetingMatch_Reusable(Blackhole blackhole) {
-        try {
-            EvaluationResult<Boolean> result = newEvaluator.evaluateFlagReusable(Boolean.class, "feature-access", matchingContext);
-            blackhole.consume(result);
-        } catch (Exception e) {
-            throw new RuntimeException("Evaluation failed", e);
-        }
-    }
-
     // ========== Complex Targeting Evaluation (No Match) ==========
 
     @Benchmark
@@ -194,7 +172,7 @@ public class ResolverComparisonBenchmark {
         }
     }
 
-    // ========== Empty Context Tests (No Serialization Overhead) ==========
+    // ========== Empty Context Tests ==========
 
     @Benchmark
     public void oldResolver_EmptyContext(Blackhole blackhole) {

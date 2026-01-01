@@ -26,16 +26,39 @@ enum ErrorCode {
   ERROR_CODE_GENERAL = 4;
 }
 
-// The value can be one of several types
+// The value can be one of several types (matches OpenFeature Value)
 message Value {
   oneof kind {
     bool bool_value = 1;
     string string_value = 2;
     int64 int_value = 3;
     double double_value = 4;
-    // For objects/arrays, we use JSON string (simpler than nested proto)
+    // For complex result values, we use JSON string (simpler than nested proto)
     string json_value = 5;
+    // For context: list of values
+    ListValue list_value = 6;
+    // For context: nested structure (map of values)
+    Struct struct_value = 7;
   }
+}
+
+// A list of values (for context arrays)
+message ListValue {
+  repeated Value values = 1;
+}
+
+// A structured value (for context objects)
+message Struct {
+  map<string, Value> fields = 1;
+}
+
+// Evaluation context passed to the evaluator
+message EvaluationContext {
+  // The targeting key (user identifier)
+  string targeting_key = 1;
+
+  // Context attributes (key-value pairs)
+  map<string, Value> attributes = 2;
 }
 
 // The result of a feature flag evaluation

@@ -2,6 +2,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>dev.openfeature</groupId>
@@ -25,22 +26,26 @@
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <!-- Dependency versions -->
         <chicory.version>1.6.1</chicory.version>
         <jackson.version>2.18.2</jackson.version>
         <junit.version>5.11.4</junit.version>
         <assertj.version>3.27.3</assertj.version>
         <jmh.version>1.37</jmh.version>
-        <protobuf.version>3.25.5</protobuf.version>
     </properties>
 
+    <!-- ===================== -->
+    <!-- Dependencies -->
+    <!-- ===================== -->
+
     <dependencies>
+
+        <!-- Production code -->
         <dependency>
             <groupId>dev.openfeature</groupId>
             <artifactId>sdk</artifactId>
             <version>1.19.2</version>
         </dependency>
-        <!-- Chicory WASM Runtime -->
+
         <dependency>
             <groupId>com.dylibso.chicory</groupId>
             <artifactId>runtime</artifactId>
@@ -57,27 +62,33 @@
             <version>${chicory.version}</version>
         </dependency>
 
-        <!-- Jackson for JSON -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>${jackson.version}</version>
         </dependency>
 
-        <!-- Protobuf for binary protocol -->
+        <!-- JMH -->
         <dependency>
-            <groupId>com.google.protobuf</groupId>
-            <artifactId>protobuf-java</artifactId>
-            <version>${protobuf.version}</version>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+            <version>${jmh.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+            <version>${jmh.version}</version>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- Test dependencies -->
+        <!-- Tests (still allowed, but not benchmarks) -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
+
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
@@ -85,36 +96,22 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- JMH Benchmarking -->
-        <dependency>
-            <groupId>org.openjdk.jmh</groupId>
-            <artifactId>jmh-core</artifactId>
-            <version>${jmh.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.openjdk.jmh</groupId>
-            <artifactId>jmh-generator-annprocess</artifactId>
-            <version>${jmh.version}</version>
-            <scope>test</scope>
-        </dependency>
         <dependency>
             <groupId>io.github.jamsesso</groupId>
             <artifactId>json-logic-java</artifactId>
             <version>1.1.0</version>
-            <scope>test</scope>
         </dependency>
+
     </dependencies>
 
+    <!-- ===================== -->
+    <!-- Build -->
+    <!-- ===================== -->
+
     <build>
-        <extensions>
-            <extension>
-                <groupId>kr.motd.maven</groupId>
-                <artifactId>os-maven-plugin</artifactId>
-                <version>1.7.1</version>
-            </extension>
-        </extensions>
         <plugins>
+
+            <!-- Compiler + JMH annotation processing -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -122,34 +119,52 @@
                 <configuration>
                     <source>11</source>
                     <target>11</target>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.openjdk.jmh</groupId>
+                            <artifactId>jmh-generator-annprocess</artifactId>
+                            <version>${jmh.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
                 </configuration>
             </plugin>
 
+            <!-- Surefire (unit tests only) -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.2</version>
             </plugin>
 
-            <!-- Protobuf code generation -->
+            <!-- Build WASM -->
             <plugin>
-                <groupId>org.xolstice.maven.plugins</groupId>
-                <artifactId>protobuf-maven-plugin</artifactId>
-                <version>0.6.1</version>
-                <configuration>
-                    <protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
-                    <protoSourceRoot>${project.basedir}/../proto</protoSourceRoot>
-                </configuration>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
                 <executions>
                     <execution>
+                        <id>build-wasm</id>
+                        <phase>initialize</phase>
                         <goals>
-                            <goal>compile</goal>
+                            <goal>exec</goal>
                         </goals>
+                        <configuration>
+                            <executable>cargo</executable>
+                            <workingDirectory>${project.basedir}/..</workingDirectory>
+                            <arguments>
+                                <argument>build</argument>
+                                <argument>--target</argument>
+                                <argument>wasm32-unknown-unknown</argument>
+                                <argument>--no-default-features</argument>
+                                <argument>--release</argument>
+                                <argument>--lib</argument>
+                            </arguments>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
 
-            <!-- Copy WASM file from Rust build to resources -->
+            <!-- Copy WASM -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-resources-plugin</artifactId>
@@ -176,51 +191,7 @@
                 </executions>
             </plugin>
 
-            <!-- Build WASM module before copying -->
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.5.0</version>
-                <executions>
-                    <execution>
-                        <id>build-wasm</id>
-                        <phase>initialize</phase>
-                        <goals>
-                            <goal>exec</goal>
-                        </goals>
-                        <configuration>
-                            <executable>cargo</executable>
-                            <workingDirectory>${project.basedir}/..</workingDirectory>
-                            <arguments>
-                                <argument>build</argument>
-                                <argument>--target</argument>
-                                <argument>wasm32-unknown-unknown</argument>
-                                <argument>--no-default-features</argument>
-                                <argument>--release</argument>
-                                <argument>--lib</argument>
-                            </arguments>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <id>run-jmh-benchmark</id>
-                        <goals>
-                            <goal>java</goal>
-                        </goals>
-                        <configuration>
-                            <includePluginDependencies>false</includePluginDependencies>
-                            <classpathScope>test</classpathScope>
-                            <mainClass>org.openjdk.jmh.Main</mainClass>
-                            <arguments>
-                                <argument>FlagEvaluatorJmhBenchmark</argument>
-                                <argument>-f</argument>
-                                <argument>0</argument>
-                            </arguments>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-
-            <!-- AOT compile WASM to Java bytecode -->
+            <!-- Chicory AOT -->
             <plugin>
                 <groupId>com.dylibso.chicory</groupId>
                 <artifactId>chicory-compiler-maven-plugin</artifactId>
@@ -234,12 +205,13 @@
                         <configuration>
                             <wasmFile>${project.build.outputDirectory}/flagd_evaluator.wasm</wasmFile>
                             <name>dev.openfeature.flagd.evaluator.CompiledEvaluator</name>
-                            <!-- Allow interpreter fallback for functions that exceed JVM method size limits -->
                             <interpreterFallback>WARN</interpreterFallback>
                         </configuration>
                     </execution>
                 </executions>
             </plugin>
+
+            <!-- Add generated sources -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>build-helper-maven-plugin</artifactId>
@@ -259,35 +231,31 @@
                     </execution>
                 </executions>
             </plugin>
-            <!-- Source JAR -->
+
+            <!-- JMH fat JAR -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-source-plugin</artifactId>
-                <version>3.3.1</version>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
                 <executions>
                     <execution>
-                        <id>attach-sources</id>
+                        <phase>package</phase>
                         <goals>
-                            <goal>jar-no-fork</goal>
+                            <goal>shade</goal>
                         </goals>
+                        <configuration>
+                            <finalName>benchmarks</finalName>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>org.openjdk.jmh.Main</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
 
-            <!-- Javadoc JAR -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-javadoc-plugin</artifactId>
-                <version>3.11.2</version>
-                <executions>
-                    <execution>
-                        <id>attach-javadocs</id>
-                        <goals>
-                            <goal>jar</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
         </plugins>
     </build>
+
 </project>

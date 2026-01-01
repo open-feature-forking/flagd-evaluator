@@ -143,7 +143,6 @@ pub mod evaluator;
 pub mod memory;
 pub mod model;
 pub mod operators;
-pub mod proto;
 pub mod types;
 pub mod validation;
 
@@ -400,56 +399,6 @@ pub extern "C" fn evaluate(
     string_to_memory(&result.to_json_string())
 }
 
-/// Evaluates a feature flag and returns the result as protobuf binary.
-///
-/// This is a high-performance alternative to `evaluate` that returns protobuf-encoded
-/// binary data instead of JSON, reducing serialization/deserialization overhead.
-///
-/// # Arguments
-/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
-/// * `flag_key_len` - Length of the flag key string
-/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
-/// * `context_len` - Length of the evaluation context JSON string
-///
-/// # Returns
-/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
-/// of the protobuf-encoded EvaluationResult.
-///
-/// # Binary Format
-/// The result is a protobuf-encoded `flagd.evaluation.EvaluationResult` message.
-/// See proto/evaluation.proto for the schema.
-///
-/// # Safety
-/// The caller must ensure:
-/// - `flag_key_ptr` and `context_ptr` point to valid memory
-/// - The memory regions are valid UTF-8
-/// - The caller will free the returned memory using `dealloc`
-/// - The input buffers (flag_key and context) are freed by this function
-/// - For empty context, pass context_ptr=0 and context_len=0 to skip allocation
-#[no_mangle]
-pub extern "C" fn evaluate_binary(
-    flag_key_ptr: *mut u8,
-    flag_key_len: u32,
-    context_ptr: *mut u8,
-    context_len: u32,
-) -> u64 {
-    let result = evaluate_internal(
-        flag_key_ptr as *const u8,
-        flag_key_len,
-        context_ptr as *const u8,
-        context_len,
-    );
-
-    // Free input buffers - caller no longer needs to call dealloc for these
-    wasm_dealloc(flag_key_ptr, flag_key_len);
-    if !context_ptr.is_null() && context_len > 0 {
-        wasm_dealloc(context_ptr, context_len);
-    }
-
-    // Return protobuf-encoded binary instead of JSON
-    bytes_to_memory(&result.to_proto_bytes())
-}
-
 /// Evaluates a feature flag using pre-allocated buffers (no input deallocation).
 ///
 /// This is a high-performance variant designed for use with pre-allocated buffers.
@@ -464,7 +413,7 @@ pub extern "C" fn evaluate_binary(
 ///
 /// # Returns
 /// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
-/// of the protobuf-encoded EvaluationResult.
+/// of the JSON-encoded EvaluationResult string.
 ///
 /// # Safety
 /// The caller must ensure:
@@ -485,8 +434,8 @@ pub extern "C" fn evaluate_reusable(
     // NOTE: We do NOT deallocate input buffers here - caller manages them
     // This allows buffer reuse across multiple evaluations
 
-    // Return protobuf-encoded binary for fastest deserialization
-    bytes_to_memory(&result.to_proto_bytes())
+    // Return JSON string (simple and sufficient for small result payloads)
+    string_to_memory(&result.to_json_string())
 }
 
 /// Internal implementation of evaluate.
@@ -501,44 +450,6 @@ fn evaluate_internal(
 
     // Catch any panics and convert them to error responses
     let result = std::panic::catch_unwind(|| {
-        // SAFETY: The caller guarantees valid memory regions
-        let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
-            Ok(s) => s,
-            Err(e) => {
-                return EvaluationResult::error(
-                    ErrorCode::ParseError,
-                    format!("Failed to read flag key: {}", e),
-                )
-            }
-        };
-
-        // Fast path: null pointer or zero length means empty context
-        // This saves an allocation on the Java side for the common empty context case
-        let context: Value = if context_ptr.is_null() || context_len == 0 {
-            Value::Null
-        } else {
-            let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
-                Ok(s) => s,
-                Err(e) => {
-                    return EvaluationResult::error(
-                        ErrorCode::ParseError,
-                        format!("Failed to read context: {}", e),
-                    )
-                }
-            };
-
-            match serde_json::from_str(&context_str) {
-                Ok(v) => v,
-                Err(e) => {
-                    return EvaluationResult::error(
-                        ErrorCode::ParseError,
-                        format!("Failed to parse context JSON: {}", e),
-                    )
-                }
-            }
-        };
-
-        // Get the singleton evaluator and evaluate the flag
         wasm_evaluator::with_evaluator(|eval| {
             // Check if state is initialized
             if eval.get_state().is_none() {
@@ -547,6 +458,47 @@ fn evaluate_internal(
                     "Flag state not initialized. Call update_state first.",
                 );
             }
+
+            // SAFETY: The caller guarantees valid memory regions
+            let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
+                Ok(s) => s,
+                Err(e) => {
+                    return EvaluationResult::error(
+                        ErrorCode::ParseError,
+                        format!("Failed to read flag key: {}", e),
+                    )
+                }
+            };
+
+            let flag = eval.get_state().unwrap().flags.get(&flag_key);
+
+            // Parse protobuf context
+            let context: Value = if context_ptr.is_null()
+                || context_len == 0
+                || flag.is_some_and(|f| f.targeting.is_none())
+            {
+                Value::Null
+            } else {
+                let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return EvaluationResult::error(
+                            ErrorCode::ParseError,
+                            format!("Failed to read context: {}", e),
+                        )
+                    }
+                };
+
+                match serde_json::from_str(&context_str) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return EvaluationResult::error(
+                            ErrorCode::ParseError,
+                            format!("Failed to parse context JSON: {}", e),
+                        )
+                    }
+                }
+            };
 
             // Evaluate using the evaluator instance
             eval.evaluate_flag(&flag_key, &context)
@@ -563,328 +515,6 @@ fn evaluate_internal(
         };
         EvaluationResult::error(ErrorCode::General, msg)
     })
-}
-
-/// Evaluates a boolean feature flag against the provided context.
-///
-/// This function retrieves a flag from the previously stored state (set via `update_state`)
-/// and evaluates it as a boolean flag. If the resolved value is not a boolean, it returns
-/// a TYPE_MISMATCH error.
-///
-/// # Arguments
-/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
-/// * `flag_key_len` - Length of the flag key string
-/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
-/// * `context_len` - Length of the evaluation context JSON string
-///
-/// # Returns
-/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
-/// of the EvaluationResult JSON string.
-///
-/// # Safety
-/// The caller must ensure:
-/// - `flag_key_ptr` and `context_ptr` point to valid memory
-/// - The memory regions are valid UTF-8
-/// - The caller will free the returned memory using `dealloc`
-/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
-#[no_mangle]
-pub extern "C" fn evaluate_boolean(
-    flag_key_ptr: *mut u8,
-    flag_key_len: u32,
-    context_ptr: *mut u8,
-    context_len: u32,
-) -> u64 {
-    let result = evaluate_typed_internal(
-        flag_key_ptr as *const u8,
-        flag_key_len,
-        context_ptr as *const u8,
-        context_len,
-        |eval, key, ctx| eval.evaluate_bool(key, ctx),
-    );
-
-    // Free input buffers - saves 2 WASM calls per evaluation
-    wasm_dealloc(flag_key_ptr, flag_key_len);
-    if !context_ptr.is_null() && context_len > 0 {
-        wasm_dealloc(context_ptr, context_len);
-    }
-
-    string_to_memory(&result.to_json_string())
-}
-
-/// Evaluates a string feature flag against the provided context.
-///
-/// This function retrieves a flag from the previously stored state (set via `update_state`)
-/// and evaluates it as a string flag. If the resolved value is not a string, it returns
-/// a TYPE_MISMATCH error.
-///
-/// # Arguments
-/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
-/// * `flag_key_len` - Length of the flag key string
-/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
-/// * `context_len` - Length of the evaluation context JSON string
-///
-/// # Returns
-/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
-/// of the EvaluationResult JSON string.
-///
-/// # Safety
-/// The caller must ensure:
-/// - `flag_key_ptr` and `context_ptr` point to valid memory
-/// - The memory regions are valid UTF-8
-/// - The caller will free the returned memory using `dealloc`
-/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
-#[no_mangle]
-pub extern "C" fn evaluate_string(
-    flag_key_ptr: *mut u8,
-    flag_key_len: u32,
-    context_ptr: *mut u8,
-    context_len: u32,
-) -> u64 {
-    let result = evaluate_typed_internal(
-        flag_key_ptr as *const u8,
-        flag_key_len,
-        context_ptr as *const u8,
-        context_len,
-        |eval, key, ctx| eval.evaluate_string(key, ctx),
-    );
-
-    // Free input buffers
-    wasm_dealloc(flag_key_ptr, flag_key_len);
-    if !context_ptr.is_null() && context_len > 0 {
-        wasm_dealloc(context_ptr, context_len);
-    }
-
-    string_to_memory(&result.to_json_string())
-}
-
-/// Evaluates an integer feature flag against the provided context.
-///
-/// This function retrieves a flag from the previously stored state (set via `update_state`)
-/// and evaluates it as an integer flag. If the resolved value is not an integer, it returns
-/// a TYPE_MISMATCH error.
-///
-/// # Arguments
-/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
-/// * `flag_key_len` - Length of the flag key string
-/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
-/// * `context_len` - Length of the evaluation context JSON string
-///
-/// # Returns
-/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
-/// of the EvaluationResult JSON string.
-///
-/// # Safety
-/// The caller must ensure:
-/// - `flag_key_ptr` and `context_ptr` point to valid memory
-/// - The memory regions are valid UTF-8
-/// - The caller will free the returned memory using `dealloc`
-/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
-#[no_mangle]
-pub extern "C" fn evaluate_integer(
-    flag_key_ptr: *mut u8,
-    flag_key_len: u32,
-    context_ptr: *mut u8,
-    context_len: u32,
-) -> u64 {
-    let result = evaluate_typed_internal(
-        flag_key_ptr as *const u8,
-        flag_key_len,
-        context_ptr as *const u8,
-        context_len,
-        |eval, key, ctx| eval.evaluate_int(key, ctx),
-    );
-
-    // Free input buffers
-    wasm_dealloc(flag_key_ptr, flag_key_len);
-    if !context_ptr.is_null() && context_len > 0 {
-        wasm_dealloc(context_ptr, context_len);
-    }
-
-    string_to_memory(&result.to_json_string())
-}
-
-/// Evaluates a float feature flag against the provided context.
-///
-/// This function retrieves a flag from the previously stored state (set via `update_state`)
-/// and evaluates it as a float flag. If the resolved value is not a number, it returns
-/// a TYPE_MISMATCH error.
-///
-/// # Arguments
-/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
-/// * `flag_key_len` - Length of the flag key string
-/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
-/// * `context_len` - Length of the evaluation context JSON string
-///
-/// # Returns
-/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
-/// of the EvaluationResult JSON string.
-///
-/// # Safety
-/// The caller must ensure:
-/// - `flag_key_ptr` and `context_ptr` point to valid memory
-/// - The memory regions are valid UTF-8
-/// - The caller will free the returned memory using `dealloc`
-/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
-#[no_mangle]
-pub extern "C" fn evaluate_float(
-    flag_key_ptr: *mut u8,
-    flag_key_len: u32,
-    context_ptr: *mut u8,
-    context_len: u32,
-) -> u64 {
-    let result = evaluate_typed_internal(
-        flag_key_ptr as *const u8,
-        flag_key_len,
-        context_ptr as *const u8,
-        context_len,
-        |eval, key, ctx| eval.evaluate_float(key, ctx),
-    );
-
-    // Free input buffers
-    wasm_dealloc(flag_key_ptr, flag_key_len);
-    if !context_ptr.is_null() && context_len > 0 {
-        wasm_dealloc(context_ptr, context_len);
-    }
-
-    string_to_memory(&result.to_json_string())
-}
-
-/// Evaluates an object feature flag against the provided context.
-///
-/// This function retrieves a flag from the previously stored state (set via `update_state`)
-/// and evaluates it as an object flag. If the resolved value is not an object, it returns
-/// a TYPE_MISMATCH error.
-///
-/// # Arguments
-/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
-/// * `flag_key_len` - Length of the flag key string
-/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
-/// * `context_len` - Length of the evaluation context JSON string
-///
-/// # Returns
-/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
-/// of the EvaluationResult JSON string.
-///
-/// # Safety
-/// The caller must ensure:
-/// - `flag_key_ptr` and `context_ptr` point to valid memory
-/// - The memory regions are valid UTF-8
-/// - The caller will free the returned memory using `dealloc`
-/// - The input buffers (flag_key and context) are freed by this function - caller should NOT dealloc them
-#[no_mangle]
-pub extern "C" fn evaluate_object(
-    flag_key_ptr: *mut u8,
-    flag_key_len: u32,
-    context_ptr: *mut u8,
-    context_len: u32,
-) -> u64 {
-    let result = evaluate_typed_internal(
-        flag_key_ptr as *const u8,
-        flag_key_len,
-        context_ptr as *const u8,
-        context_len,
-        |eval, key, ctx| eval.evaluate_object(key, ctx),
-    );
-
-    // Free input buffers
-    wasm_dealloc(flag_key_ptr, flag_key_len);
-    if !context_ptr.is_null() && context_len > 0 {
-        wasm_dealloc(context_ptr, context_len);
-    }
-
-    string_to_memory(&result.to_json_string())
-}
-
-/// Internal helper function for type-specific evaluation.
-///
-/// This function handles the common logic for all typed evaluation functions:
-/// parsing inputs and calling the type-specific evaluator method on the singleton.
-///
-/// # Arguments
-/// * `flag_key_ptr` - Pointer to the flag key string
-/// * `flag_key_len` - Length of the flag key string
-/// * `context_ptr` - Pointer to the context JSON string
-/// * `context_len` - Length of the context JSON string
-/// * `evaluator_fn` - Function that calls the appropriate method on FlagEvaluator
-fn evaluate_typed_internal<F>(
-    flag_key_ptr: *const u8,
-    flag_key_len: u32,
-    context_ptr: *const u8,
-    context_len: u32,
-    evaluator_fn: F,
-) -> EvaluationResult
-where
-    F: Fn(&evaluator::FlagEvaluator, &str, &Value) -> EvaluationResult,
-{
-    // Initialize panic hook for better error messages
-    init_panic_hook();
-
-    // Catch any panics and convert them to error responses
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // SAFETY: The caller guarantees valid memory regions
-        let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
-            Ok(s) => s,
-            Err(e) => {
-                return EvaluationResult::error(
-                    ErrorCode::ParseError,
-                    format!("Failed to read flag key: {}", e),
-                )
-            }
-        };
-
-        // Fast path: null pointer or zero length means empty context
-        let context: Value = if context_ptr.is_null() || context_len == 0 {
-            Value::Null
-        } else {
-            let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
-                Ok(s) => s,
-                Err(e) => {
-                    return EvaluationResult::error(
-                        ErrorCode::ParseError,
-                        format!("Failed to read context: {}", e),
-                    )
-                }
-            };
-
-            match serde_json::from_str(&context_str) {
-                Ok(v) => v,
-                Err(e) => {
-                    return EvaluationResult::error(
-                        ErrorCode::ParseError,
-                        format!("Failed to parse context JSON: {}", e),
-                    )
-                }
-            }
-        };
-
-        // Get the singleton evaluator and evaluate using the type-specific method
-        wasm_evaluator::with_evaluator(|eval| {
-            // Check if state is initialized
-            if eval.get_state().is_none() {
-                return EvaluationResult::error(
-                    ErrorCode::FlagNotFound,
-                    "Flag state not initialized. Call update_state first.",
-                );
-            }
-
-            // Call the type-specific evaluator method
-            evaluator_fn(eval, &flag_key, &context)
-        })
-    }));
-
-    match result {
-        Ok(eval_result) => eval_result,
-        Err(panic_err) => {
-            let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
-                format!("Evaluation panic: {}", s)
-            } else if let Some(s) = panic_err.downcast_ref::<String>() {
-                format!("Evaluation panic: {}", s)
-            } else {
-                "Evaluation panic: unknown error".to_string()
-            };
-            EvaluationResult::error(ErrorCode::General, msg)
-        }
-    }
 }
 
 #[cfg(test)]
