@@ -118,6 +118,16 @@ public class ResolverComparisonBenchmark {
         }
     }
 
+    @Benchmark
+    public void newEvaluator_SimpleFlag_Binary(Blackhole blackhole) {
+        try {
+            EvaluationResult<Boolean> result = newEvaluator.evaluateFlagBinary(Boolean.class, "simple-flag", emptyContext);
+            blackhole.consume(result);
+        } catch (Exception e) {
+            throw new RuntimeException("Evaluation failed", e);
+        }
+    }
+
     // ========== Complex Targeting Evaluation (Match) ==========
 
     @Benchmark
@@ -130,6 +140,16 @@ public class ResolverComparisonBenchmark {
     public void newEvaluator_TargetingMatch(Blackhole blackhole) {
         try {
             EvaluationResult<Boolean> result = newEvaluator.evaluateFlag(Boolean.class, "feature-access", matchingContext);
+            blackhole.consume(result);
+        } catch (Exception e) {
+            throw new RuntimeException("Evaluation failed", e);
+        }
+    }
+
+    @Benchmark
+    public void newEvaluator_TargetingMatch_Binary(Blackhole blackhole) {
+        try {
+            EvaluationResult<Boolean> result = newEvaluator.evaluateFlagBinary(Boolean.class, "feature-access", matchingContext);
             blackhole.consume(result);
         } catch (Exception e) {
             throw new RuntimeException("Evaluation failed", e);

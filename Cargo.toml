@@ -29,6 +29,11 @@ thiserror = "2.0"
 ahash = { version = "0.8.12", default-features = false, features = ["compile-time-rng"] }
 # Enable wasm_js feature for getrandom in WASM builds (required for wasm32-unknown-unknown)
 getrandom = { version = "0.3", features = ["wasm_js"] }
+# Protobuf support for binary protocol (faster than JSON)
+prost = "0.13"
+
+[build-dependencies]
+prost-build = "0.13"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

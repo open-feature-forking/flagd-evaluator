@@ -160,6 +160,53 @@ public class FlagEvaluatorJmhBenchmark {
     }
 
     /**
+     * Benchmark: Flag evaluation with binary protocol (protobuf).
+     * Measures baseline performance using the faster binary protocol.
+     */
+    @Benchmark
+    public void evaluateWithSimpleContextBinary(Blackhole blackhole) {
+        try {
+            String simpleContext = "{\"targetingKey\": \"user-123\"}";
+
+            EvaluationResult<Boolean> result = evaluator.evaluateFlagBinary(Boolean.class, "benchmark-flag", simpleContext);
+
+            blackhole.consume(result.getValue());
+            blackhole.consume(result.getVariant());
+        } catch (Exception e) {
+            throw new RuntimeException("Benchmark failed", e);
+        }
+    }
+
+    /**
+     * Benchmark: Flag evaluation with layered context using binary protocol.
+     * Measures throughput of binary flag evaluations with realistic context sizes.
+     */
+    @Benchmark
+    public void evaluateWithLayeredContextBinary(RandomState randomState, Blackhole blackhole) {
+        try {
+            // Create random invocation context
+            EvaluationContext invocationContext = createRandomContext(randomState.random);
+
+            // Build layered context: API -> Transaction -> Client -> Invocation
+            LayeredEvaluationContext layeredContext = new LayeredEvaluationContext(
+                apiContext,
+                transactionContext,
+                clientContext,
+                invocationContext
+            );
+
+            // Perform evaluation using binary protocol
+            EvaluationResult<Boolean> result = evaluator.evaluateFlagBinary(Boolean.class, "benchmark-flag", layeredContext);
+
+            // Consume result to prevent dead code elimination
+            blackhole.consume(result.getValue());
+            blackhole.consume(result.getVariant());
+        } catch (Exception e) {
+            throw new RuntimeException("Benchmark failed", e);
+        }
+    }
+
+    /**
      * Benchmark: Context serialization only.
      * Measures the overhead of serializing layered contexts to JSON.
      */

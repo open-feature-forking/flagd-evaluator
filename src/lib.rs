@@ -143,6 +143,7 @@ pub mod evaluator;
 pub mod memory;
 pub mod model;
 pub mod operators;
+pub mod proto;
 pub mod types;
 pub mod validation;
 
@@ -176,7 +177,8 @@ use serde_json::Value;
 pub use error::{ErrorType, EvaluatorError};
 pub use evaluator::{FlagEvaluator, ValidationMode};
 pub use memory::{
-    pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
+    bytes_to_memory, pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len,
+    wasm_alloc, wasm_dealloc,
 };
 pub use model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 pub use operators::create_evaluator;
@@ -396,6 +398,56 @@ pub extern "C" fn evaluate(
     }
 
     string_to_memory(&result.to_json_string())
+}
+
+/// Evaluates a feature flag and returns the result as protobuf binary.
+///
+/// This is a high-performance alternative to `evaluate` that returns protobuf-encoded
+/// binary data instead of JSON, reducing serialization/deserialization overhead.
+///
+/// # Arguments
+/// * `flag_key_ptr` - Pointer to the flag key string in WASM memory
+/// * `flag_key_len` - Length of the flag key string
+/// * `context_ptr` - Pointer to the evaluation context JSON string in WASM memory
+/// * `context_len` - Length of the evaluation context JSON string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the protobuf-encoded EvaluationResult.
+///
+/// # Binary Format
+/// The result is a protobuf-encoded `flagd.evaluation.EvaluationResult` message.
+/// See proto/evaluation.proto for the schema.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `flag_key_ptr` and `context_ptr` point to valid memory
+/// - The memory regions are valid UTF-8
+/// - The caller will free the returned memory using `dealloc`
+/// - The input buffers (flag_key and context) are freed by this function
+/// - For empty context, pass context_ptr=0 and context_len=0 to skip allocation
+#[no_mangle]
+pub extern "C" fn evaluate_binary(
+    flag_key_ptr: *mut u8,
+    flag_key_len: u32,
+    context_ptr: *mut u8,
+    context_len: u32,
+) -> u64 {
+    let result = evaluate_internal(
+        flag_key_ptr as *const u8,
+        flag_key_len,
+        context_ptr as *const u8,
+        context_len,
+    );
+
+    // Free input buffers - caller no longer needs to call dealloc for these
+    wasm_dealloc(flag_key_ptr, flag_key_len);
+    if !context_ptr.is_null() && context_len > 0 {
+        wasm_dealloc(context_ptr, context_len);
+    }
+
+    // Return protobuf-encoded binary instead of JSON
+    bytes_to_memory(&result.to_proto_bytes())
 }
 
 /// Internal implementation of evaluate.
