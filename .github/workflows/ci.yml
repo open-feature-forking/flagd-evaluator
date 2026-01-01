@@ -185,3 +185,11 @@ jobs:
           name: java-test-results
           path: java/target/surefire-reports/
           retention-days: 30
+
+      - name: Upload Java JAR artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-library
+          path: |
+            java/target/*.jar
+          retention-days: 30
