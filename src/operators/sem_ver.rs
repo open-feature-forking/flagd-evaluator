@@ -186,35 +186,13 @@ impl PartialOrd for SemVer {
     }
 }
 
-/// Evaluates the sem_ver operator for semantic version comparison.
+/// Evaluates the sem_ver operator for semantic version comparison (internal use).
 ///
 /// The sem_ver operator compares semantic versions according to the
 /// [semver.org](https://semver.org/) specification.
 ///
-/// # Arguments
-/// * `version` - The version string to compare
-/// * `operator` - The comparison operator ("=", "!=", "<", "<=", ">", ">=", "^", "~")
-/// * `target` - The target version to compare against
-///
-/// # Returns
-/// `true` if the comparison is satisfied, `false` otherwise
-///
-/// # Supported Operators
-/// - `"="` - Equal to
-/// - `"!="` - Not equal to
-/// - `"<"` - Less than
-/// - `"<="` - Less than or equal to
-/// - `">"` - Greater than
-/// - `">="` - Greater than or equal to
-/// - `"^"` - Caret range (compatible with - allows patch and minor updates)
-/// - `"~"` - Tilde range (allows patch updates only)
-///
-/// # Example
-/// ```json
-/// {"sem_ver": [{"var": "version"}, ">=", "2.0.0"]}
-/// ```
-/// Returns `true` if version is "2.0.0" or higher
-pub fn sem_ver(version: &str, operator: &str, target: &str) -> Result<bool, String> {
+/// Note: This is an internal helper. Use the `sem_ver` operator in JSON Logic rules instead.
+pub(crate) fn sem_ver(version: &str, operator: &str, target: &str) -> Result<bool, String> {
     let version = SemVer::parse(version)?;
     let target = SemVer::parse(target)?;
 

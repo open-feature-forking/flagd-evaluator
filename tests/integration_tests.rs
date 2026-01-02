@@ -3,9 +3,8 @@
 //! These tests verify the complete evaluation flow including memory management,
 //! JSON parsing, custom operators, and error handling.
 
-use flagd_evaluator::{
-    alloc, dealloc, pack_ptr_len, unpack_ptr_len, FlagEvaluator, ValidationMode,
-};
+use flagd_evaluator::{alloc, dealloc, FlagEvaluator, ValidationMode};
+use flagd_evaluator::memory::{pack_ptr_len, unpack_ptr_len};
 
 // ============================================================================
 // Memory Management

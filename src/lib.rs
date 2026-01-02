@@ -173,16 +173,21 @@ pub fn get_current_time() -> u64 {
 
 use serde_json::Value;
 
+// Internal imports for WASM layer
+use memory::{
+    pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len, wasm_alloc, wasm_dealloc,
+};
+
 pub use error::{ErrorType, EvaluatorError};
 pub use evaluator::{FlagEvaluator, ValidationMode};
-pub use memory::{
-    bytes_to_memory, pack_ptr_len, string_from_memory, string_to_memory, unpack_ptr_len,
-    wasm_alloc, wasm_dealloc,
-};
 pub use model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 pub use operators::create_evaluator;
 pub use types::{ErrorCode, EvaluationResult, ResolutionReason};
 pub use validation::{validate_flags_config, ValidationError, ValidationResult};
+
+// Note: Memory utility functions (bytes_to_memory, pack_ptr_len, etc.) are kept
+// internal to the WASM layer and not re-exported at the crate root.
+// They remain available in the `memory` module for advanced WASM integration use cases.
 
 /// Re-exports for external access to allocation functions.
 ///
@@ -230,8 +235,8 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
 /// The caller must ensure:
 /// - The mode value is either 0 (Strict) or 1 (Permissive)
 /// - The caller will free the returned memory using `dealloc`
-#[export_name = "set_validation_mode"]
-pub extern "C" fn set_validation_mode_wasm(mode: u32) -> u64 {
+#[no_mangle]
+pub extern "C" fn set_validation_mode(mode: u32) -> u64 {
     let validation_mode = match mode {
         0 => ValidationMode::Strict,
         1 => ValidationMode::Permissive,
@@ -402,8 +407,8 @@ pub extern "C" fn evaluate(
 /// Evaluates a feature flag using pre-allocated buffers (no input deallocation).
 ///
 /// This is a high-performance variant designed for use with pre-allocated buffers.
-/// Unlike `evaluate` and `evaluate_binary`, this function does NOT deallocate the
-/// input buffers, allowing them to be reused across multiple evaluations.
+/// Unlike `evaluate`, this function does NOT deallocate the input buffers,
+/// allowing them to be reused across multiple evaluations.
 ///
 /// # Arguments
 /// * `flag_key_ptr` - Pointer to the flag key string in WASM memory

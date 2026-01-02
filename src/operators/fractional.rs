@@ -91,26 +91,14 @@ impl Operator for FractionalOperator {
     }
 }
 
-/// Evaluates the fractional operator for consistent bucket assignment.
+/// Evaluates the fractional operator for consistent bucket assignment (internal use).
 ///
 /// The fractional operator takes a bucket key (typically a user ID) and
 /// a list of bucket definitions with percentages. It uses consistent hashing
 /// to always assign the same bucket key to the same bucket.
 ///
-/// # Arguments
-/// * `bucket_key` - The key to use for bucket assignment (e.g., user ID)
-/// * `buckets` - Array of [name, percentage, name, percentage, ...] values
-///
-/// # Returns
-/// The name of the selected bucket, or an error if the input is invalid
-///
-/// # Example
-/// ```json
-/// {"fractional": ["user123", ["control", 50, "treatment", 50]]}
-/// ```
-/// This will consistently assign "user123" to either "control" or "treatment"
-/// based on its hash value.
-pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String> {
+/// Note: This is an internal helper. Use the `fractional` operator in JSON Logic rules instead.
+pub(crate) fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String> {
     if buckets.is_empty() {
         return Err("Fractional operator requires at least one bucket".to_string());
     }
