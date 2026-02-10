@@ -223,9 +223,7 @@ impl FlagEvaluator {
         flag_key: String,
         context: &Bound<'_, PyDict>,
     ) -> PyResult<PyObject> {
-        // Convert context to JSON Value
         let context_value: Value = pythonize::depythonize(context.as_any())?;
-
         let result = self.evaluate_optimized(&flag_key, &context_value);
 
         // Convert result to Python dict
