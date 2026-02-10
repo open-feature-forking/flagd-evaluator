@@ -19,7 +19,10 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Thread-safe flag evaluator using the flagd-evaluator WASM module.
@@ -97,6 +100,15 @@ public class FlagEvaluator implements AutoCloseable {
     // Cache of pre-evaluated results for static/disabled flags (replaced atomically on updateState)
     private volatile Map<String, EvaluationResult<Object>> preEvaluatedCache = Collections.emptyMap();
 
+    // Per-flag required context keys for host-side filtering (read/written inside synchronized methods)
+    private Map<String, Set<String>> requiredContextKeysCache = Collections.emptyMap();
+
+    // Flag key to numeric index mapping (read/written inside synchronized methods)
+    private Map<String, Integer> flagIndexCache = Collections.emptyMap();
+
+    // WASM export for index-based evaluation (may be null if WASM module doesn't support it)
+    private final ExportFunction evaluateByIndexFunction;
+
     /**
      * Creates a new flag evaluator with strict validation mode.
      *
@@ -118,6 +130,15 @@ public class FlagEvaluator implements AutoCloseable {
         this.allocFunction = wasmInstance.export("alloc");
         this.deallocFunction = wasmInstance.export("dealloc");
         this.memory = wasmInstance.memory();
+
+        // Bind evaluate_by_index if available (newer WASM modules)
+        ExportFunction evalByIndex = null;
+        try {
+            evalByIndex = wasmInstance.export("evaluate_by_index");
+        } catch (Exception e) {
+            // Older WASM module without evaluate_by_index — fall back to string-based eval
+        }
+        this.evaluateByIndexFunction = evalByIndex;
 
         // Pre-allocate buffers for evaluation (avoids alloc calls per evaluation)
         this.flagKeyBufferPtr = allocFunction.apply(MAX_FLAG_KEY_SIZE)[0];
@@ -170,6 +191,22 @@ public class FlagEvaluator implements AutoCloseable {
             Map<String, EvaluationResult<Object>> preEval = result.getPreEvaluated();
             this.preEvaluatedCache = (preEval != null) ? preEval : Collections.emptyMap();
 
+            // Update required context keys cache
+            Map<String, List<String>> reqKeys = result.getRequiredContextKeys();
+            if (reqKeys != null) {
+                Map<String, Set<String>> keySets = new HashMap<>(reqKeys.size());
+                for (Map.Entry<String, List<String>> entry : reqKeys.entrySet()) {
+                    keySets.put(entry.getKey(), new HashSet<>(entry.getValue()));
+                }
+                this.requiredContextKeysCache = keySets;
+            } else {
+                this.requiredContextKeysCache = Collections.emptyMap();
+            }
+
+            // Update flag index cache
+            Map<String, Integer> indices = result.getFlagIndices();
+            this.flagIndexCache = (indices != null) ? indices : Collections.emptyMap();
+
             return result;
         } catch (Exception e) {
             throw new EvaluatorException("Failed to update state", e);
@@ -217,6 +254,13 @@ public class FlagEvaluator implements AutoCloseable {
             return (EvaluationResult<T>) (EvaluationResult<?>) cached;
         }
 
+        return evaluateFlagInternal(type, flagKey, contextJson);
+    }
+
+    /**
+     * Internal evaluation using flag key string and evaluate_reusable WASM export.
+     */
+    private <T> EvaluationResult<T> evaluateFlagInternal(Class<T> type, String flagKey, String contextJson) throws EvaluatorException {
         byte[] flagBytes = flagKey.getBytes(StandardCharsets.UTF_8);
         if (flagBytes.length > MAX_FLAG_KEY_SIZE) {
             throw new EvaluatorException("Flag key exceeds maximum size of " + MAX_FLAG_KEY_SIZE + " bytes");
@@ -255,6 +299,39 @@ public class FlagEvaluator implements AutoCloseable {
     }
 
     /**
+     * Evaluates a flag using the numeric index path (evaluate_by_index WASM export).
+     *
+     * <p>This avoids flag key string serialization and uses O(1) Vec lookup on the Rust side.
+     * The context must already be pre-enriched with {@code $flagd.*} and {@code targetingKey}.
+     */
+    private <T> EvaluationResult<T> evaluateByIndex(Class<T> type, int flagIndex, String contextJson) throws EvaluatorException {
+        long contextPtr = 0;
+        int contextLen = 0;
+        if (contextJson != null && !contextJson.isEmpty()) {
+            byte[] contextBytes = contextJson.getBytes(StandardCharsets.UTF_8);
+            if (contextBytes.length > MAX_CONTEXT_SIZE) {
+                throw new EvaluatorException("Context exceeds maximum size of " + MAX_CONTEXT_SIZE + " bytes");
+            }
+            memory.write((int) contextBufferPtr, contextBytes);
+            contextPtr = contextBufferPtr;
+            contextLen = contextBytes.length;
+        }
+
+        try {
+            long packedResult = evaluateByIndexFunction.apply(flagIndex, contextPtr, contextLen)[0];
+            int resultPtr = (int) (packedResult >>> 32);
+            int resultLen = (int) (packedResult & 0xFFFFFFFFL);
+
+            String resultJson = memory.readString(resultPtr, resultLen);
+            deallocFunction.apply(resultPtr, resultLen);
+
+            return OBJECT_MAPPER.readValue(resultJson, JAVA_TYPE_MAP.get(type));
+        } catch (Exception e) {
+            throw new EvaluatorException("Failed to evaluate flag by index: " + flagIndex, e);
+        }
+    }
+
+    /**
      * Evaluates a flag with an EvaluationContext.
      *
      * <p>This method serializes the context to JSON and delegates to the main evaluation method.
@@ -266,19 +343,45 @@ public class FlagEvaluator implements AutoCloseable {
      * @return the evaluation result containing value, variant, reason, and metadata
      * @throws EvaluatorException if the evaluation or serialization fails
      */
-    public <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, EvaluationContext context) throws EvaluatorException {
+    @SuppressWarnings("unchecked")
+    public synchronized <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, EvaluationContext context) throws EvaluatorException {
         try {
+            // Fast path: return cached result for static/disabled flags
+            EvaluationResult<Object> cached = preEvaluatedCache.get(flagKey);
+            if (cached != null) {
+                return (EvaluationResult<T>) (EvaluationResult<?>) cached;
+            }
+
             // Fast path: empty context
             if (context == null || context.isEmpty()) {
-                return evaluateFlag(type, flagKey, (String) null);
+                return evaluateFlagInternal(type, flagKey, (String) null);
             }
-            // Use ThreadLocal buffer for streaming serialization
-            ByteArrayOutputStream buffer = JSON_BUFFER.get();
-            buffer.reset();
-            try (JsonGenerator generator = JSON_FACTORY.createGenerator(buffer)) {
-                OBJECT_MAPPER.writeValue(generator, context);
+
+            // Check if we can use filtered serialization
+            Set<String> requiredKeys = requiredContextKeysCache.get(flagKey);
+            String contextJson;
+            if (requiredKeys != null) {
+                // Filtered path: only serialize keys the targeting rule references
+                contextJson = EvaluationContextSerializer.serializeFiltered(context, requiredKeys, flagKey);
+            } else {
+                // Full serialization path (flag uses {"var": ""} or older WASM module)
+                ByteArrayOutputStream buffer = JSON_BUFFER.get();
+                buffer.reset();
+                try (JsonGenerator generator = JSON_FACTORY.createGenerator(buffer)) {
+                    OBJECT_MAPPER.writeValue(generator, context);
+                }
+                contextJson = buffer.toString(StandardCharsets.UTF_8.name());
             }
-            return evaluateFlag(type, flagKey, buffer.toString(StandardCharsets.UTF_8.name()));
+
+            // Check if we can use index-based evaluation
+            Integer flagIndex = flagIndexCache.get(flagKey);
+            if (flagIndex != null && evaluateByIndexFunction != null && requiredKeys != null) {
+                // Index-based path: avoids flag key string overhead
+                return evaluateByIndex(type, flagIndex, contextJson);
+            }
+
+            // Fall back to string-based evaluation
+            return evaluateFlagInternal(type, flagKey, contextJson);
         } catch (EvaluatorException e) {
             throw e;
         } catch (Exception e) {

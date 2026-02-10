@@ -10,8 +10,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -349,6 +351,76 @@ class EvaluationContextSerializerTest {
         Map<String, Object> result = objectMapper.readValue(json, Map.class);
 
         assertThat(result).containsEntry("targetingKey", "user-456");
+        assertThat(result).containsEntry("email", "test@example.com");
+    }
+
+    @Test
+    void testSerializeFilteredIncludesOnlyRequiredKeys() throws Exception {
+        MutableContext context = new MutableContext("user-789")
+            .add("email", "admin@example.com")
+            .add("name", "Admin")
+            .add("age", 30)
+            .add("country", "US")
+            .add("department", "engineering");
+
+        Set<String> requiredKeys = new HashSet<>(Arrays.asList("email", "targetingKey"));
+
+        String json = EvaluationContextSerializer.serializeFiltered(context, requiredKeys, "myFlag");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = objectMapper.readValue(json, Map.class);
+
+        // Should include only the required keys
+        assertThat(result).containsEntry("email", "admin@example.com");
+        assertThat(result).containsEntry("targetingKey", "user-789");
+
+        // Should NOT include unrequested keys
+        assertThat(result).doesNotContainKey("name");
+        assertThat(result).doesNotContainKey("age");
+        assertThat(result).doesNotContainKey("country");
+        assertThat(result).doesNotContainKey("department");
+
+        // Should include $flagd enrichment
+        assertThat(result).containsKey("$flagd");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> flagd = (Map<String, Object>) result.get("$flagd");
+        assertThat(flagd).containsEntry("flagKey", "myFlag");
+        assertThat(flagd).containsKey("timestamp");
+    }
+
+    @Test
+    void testSerializeFilteredAlwaysIncludesTargetingKey() throws Exception {
+        MutableContext context = new MutableContext("user-abc")
+            .add("email", "test@example.com");
+
+        // Required keys don't include targetingKey explicitly
+        Set<String> requiredKeys = new HashSet<>(Arrays.asList("email"));
+
+        String json = EvaluationContextSerializer.serializeFiltered(context, requiredKeys, "testFlag");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = objectMapper.readValue(json, Map.class);
+
+        // targetingKey should always be included
+        assertThat(result).containsEntry("targetingKey", "user-abc");
+        assertThat(result).containsEntry("email", "test@example.com");
+        assertThat(result).containsKey("$flagd");
+    }
+
+    @Test
+    void testSerializeFilteredWithEmptyTargetingKey() throws Exception {
+        MutableContext context = new MutableContext()
+            .add("email", "test@example.com");
+
+        Set<String> requiredKeys = new HashSet<>(Arrays.asList("email", "targetingKey"));
+
+        String json = EvaluationContextSerializer.serializeFiltered(context, requiredKeys, "testFlag");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = objectMapper.readValue(json, Map.class);
+
+        // targetingKey should default to empty string
+        assertThat(result).containsEntry("targetingKey", "");
         assertThat(result).containsEntry("email", "test@example.com");
     }
 }
