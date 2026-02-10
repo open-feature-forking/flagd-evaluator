@@ -1,9 +1,7 @@
 package dev.openfeature.flagd.evaluator;
 
-import dev.openfeature.flagd.evaluator.comparison.MinimalInProcessResolver;
 import dev.openfeature.sdk.EvaluationContext;
 import dev.openfeature.sdk.MutableContext;
-import dev.openfeature.sdk.ProviderEvaluation;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 
@@ -126,32 +124,6 @@ public class ConcurrentFlagEvaluatorBenchmark {
         public void tearDown() {
             if (evaluator != null) {
                 evaluator.close();
-            }
-        }
-    }
-
-    @State(Scope.Benchmark)
-    public static class SharedComparisonState {
-        FlagEvaluator newEvaluator;
-        MinimalInProcessResolver oldResolver;
-
-        @Setup(Level.Trial)
-        public void setup() {
-            try {
-                newEvaluator = new FlagEvaluator(FlagEvaluator.ValidationMode.PERMISSIVE);
-                newEvaluator.updateState(FLAG_CONFIG);
-
-                oldResolver = new MinimalInProcessResolver();
-                oldResolver.loadFlags(FLAG_CONFIG);
-            } catch (Exception e) {
-                throw new RuntimeException("Failed to setup comparison state", e);
-            }
-        }
-
-        @TearDown(Level.Trial)
-        public void tearDown() {
-            if (newEvaluator != null) {
-                newEvaluator.close();
             }
         }
     }
@@ -437,66 +409,6 @@ public class ConcurrentFlagEvaluatorBenchmark {
                 bh.consume(result.getValue());
                 bh.consume(result.getVariant());
             }
-        } catch (Exception e) {
-            throw new RuntimeException("Benchmark failed", e);
-        }
-    }
-
-    // ========================================================================
-    // Old vs New Comparison Under Concurrency
-    // ========================================================================
-
-    /**
-     * Old JsonLogic resolver: simple flag evaluation under concurrent load.
-     */
-    @Benchmark
-    @Threads(4)
-    public void oldResolver_ConcurrentSimple(SharedComparisonState state, ThreadContext ctx, Blackhole bh) {
-        EvaluationContext context = new MutableContext()
-            .add("targetingKey", "user-" + ctx.random.nextInt(10000));
-        ProviderEvaluation<Boolean> result = state.oldResolver.booleanEvaluation(
-            "simple-bool", false, context);
-        bh.consume(result);
-    }
-
-    /**
-     * New WASM evaluator: simple flag evaluation under concurrent load.
-     */
-    @Benchmark
-    @Threads(4)
-    public void newEvaluator_ConcurrentSimple(SharedComparisonState state, ThreadContext ctx, Blackhole bh) {
-        try {
-            EvaluationResult<Boolean> result = state.newEvaluator.evaluateFlag(
-                Boolean.class, "simple-bool", ctx.simpleContextJson);
-            bh.consume(result.getValue());
-            bh.consume(result.getVariant());
-        } catch (Exception e) {
-            throw new RuntimeException("Benchmark failed", e);
-        }
-    }
-
-    /**
-     * Old JsonLogic resolver: targeting evaluation under concurrent load.
-     */
-    @Benchmark
-    @Threads(4)
-    public void oldResolver_ConcurrentTargeting(SharedComparisonState state, ThreadContext ctx, Blackhole bh) {
-        ProviderEvaluation<Boolean> result = state.oldResolver.booleanEvaluation(
-            "targeted-access", false, ctx.matchingContext);
-        bh.consume(result);
-    }
-
-    /**
-     * New WASM evaluator: targeting evaluation under concurrent load.
-     */
-    @Benchmark
-    @Threads(4)
-    public void newEvaluator_ConcurrentTargeting(SharedComparisonState state, ThreadContext ctx, Blackhole bh) {
-        try {
-            EvaluationResult<Boolean> result = state.newEvaluator.evaluateFlag(
-                Boolean.class, "targeted-access", ctx.matchingContext);
-            bh.consume(result.getValue());
-            bh.consume(result.getVariant());
         } catch (Exception e) {
             throw new RuntimeException("Benchmark failed", e);
         }
