@@ -324,7 +324,7 @@ class TestConcurrentBenchmarks:
 
 
 class TestComparisonBenchmarks:
-    """Compare native flagd-evaluator against a pure-Python JSON Logic lib."""
+    """Compare native flagd-evaluator against panzi-json-logic (used by flagd Python provider)."""
 
     def test_bench_native_json_logic(self, benchmark):
         """Baseline: evaluate a simple rule with the native evaluator."""
@@ -336,13 +336,13 @@ class TestComparisonBenchmarks:
         assert result["success"] is True
         assert result["result"] is True
 
-    def test_bench_pure_python_json_logic(self, benchmark):
-        """Compare: evaluate the same rule with json-logic-utils (pure Python)."""
-        json_logic_utils = pytest.importorskip("json_logic_utils")
+    def test_bench_panzi_json_logic(self, benchmark):
+        """Compare: evaluate the same rule with panzi-json-logic (flagd Python provider)."""
+        from json_logic import jsonLogic
 
         rule = {"==": [{"var": "tier"}, "premium"]}
         data = {"tier": "premium"}
-        result = benchmark(json_logic_utils.jsonLogic, rule, data)
+        result = benchmark(jsonLogic, rule, data)
         assert result is True
 
     def test_bench_native_simple_small_context(self, benchmark, small_context):
@@ -354,12 +354,12 @@ class TestComparisonBenchmarks:
         assert result["success"] is True
         assert result["result"] is True
 
-    def test_bench_pure_python_simple_small_context(self, benchmark, small_context):
-        """Pure Python: simple rule with small 5-attribute context."""
-        json_logic_utils = pytest.importorskip("json_logic_utils")
+    def test_bench_panzi_simple_small_context(self, benchmark, small_context):
+        """panzi-json-logic: simple rule with small 5-attribute context."""
+        from json_logic import jsonLogic
 
         rule = {"==": [{"var": "tier"}, "premium"]}
-        result = benchmark(json_logic_utils.jsonLogic, rule, small_context)
+        result = benchmark(jsonLogic, rule, small_context)
         assert result is True
 
     def test_bench_native_simple_large_context(self, benchmark, large_context):
@@ -371,12 +371,12 @@ class TestComparisonBenchmarks:
         assert result["success"] is True
         assert result["result"] is True
 
-    def test_bench_pure_python_simple_large_context(self, benchmark, large_context):
-        """Pure Python: simple rule with large 100+ attribute context."""
-        json_logic_utils = pytest.importorskip("json_logic_utils")
+    def test_bench_panzi_simple_large_context(self, benchmark, large_context):
+        """panzi-json-logic: simple rule with large 100+ attribute context."""
+        from json_logic import jsonLogic
 
         rule = {"==": [{"var": "tier"}, "premium"]}
-        result = benchmark(json_logic_utils.jsonLogic, rule, large_context)
+        result = benchmark(jsonLogic, rule, large_context)
         assert result is True
 
     def test_bench_native_complex_targeting(self, benchmark):
@@ -405,9 +405,9 @@ class TestComparisonBenchmarks:
         assert result["success"] is True
         assert result["result"] == "standard"
 
-    def test_bench_pure_python_complex_targeting(self, benchmark):
-        """Pure Python: complex nested if/and/or targeting rule."""
-        json_logic_utils = pytest.importorskip("json_logic_utils")
+    def test_bench_panzi_complex_targeting(self, benchmark):
+        """panzi-json-logic: complex nested if/and/or targeting rule."""
+        from json_logic import jsonLogic
 
         rule = {
             "if": [
@@ -427,5 +427,5 @@ class TestComparisonBenchmarks:
             ]
         }
         data = {"tier": "premium", "score": 85}
-        result = benchmark(json_logic_utils.jsonLogic, rule, data)
+        result = benchmark(jsonLogic, rule, data)
         assert result == "standard"
