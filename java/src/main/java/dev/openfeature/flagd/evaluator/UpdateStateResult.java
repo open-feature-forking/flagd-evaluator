@@ -2,6 +2,7 @@ package dev.openfeature.flagd.evaluator;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Result of updating flag state.
@@ -14,6 +15,8 @@ public class UpdateStateResult {
     private String error;
 
     private List<String> changedFlags;
+
+    private Map<String, EvaluationResult<Object>> preEvaluated;
 
     public UpdateStateResult() {
     }
@@ -57,6 +60,22 @@ public class UpdateStateResult {
 
     public void setChangedFlags(List<String> changedFlags) {
         this.changedFlags = changedFlags;
+    }
+
+    /**
+     * Gets the pre-evaluated results for static and disabled flags.
+     *
+     * <p>These flags don't require targeting evaluation, so their results are
+     * computed during {@code updateState()} to allow host-side caching.
+     *
+     * @return map of flag key to pre-evaluated result, or null if none
+     */
+    public Map<String, EvaluationResult<Object>> getPreEvaluated() {
+        return preEvaluated;
+    }
+
+    public void setPreEvaluated(Map<String, EvaluationResult<Object>> preEvaluated) {
+        this.preEvaluated = preEvaluated;
     }
 
     @Override

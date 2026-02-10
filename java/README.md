@@ -270,32 +270,53 @@ At runtime:
 ## Performance
 
 - **Startup**: WASM module compiled once during class loading (~100ms)
-- **Evaluation**: ~13,000 ops/s with realistic layered contexts (JIT compiled)
 - **Memory**: ~3MB for WASM module + Chicory runtime
-- **Object Churn**: ~12.8 KB allocated per layered evaluation, ~6.9 KB per simple evaluation
+- **Static flags**: Near-zero cost via pre-evaluation cache (see below)
+
+### Pre-evaluation Cache (Issue #60)
+
+Static flags (no targeting rules) and disabled flags are pre-evaluated during `updateState()`. Their results are cached on the Java side, so `evaluateFlag()` returns instantly without crossing the WASM boundary. This eliminates the ~4.4µs WASM overhead for the most common flag types.
+
+### WASM vs Native JsonLogic Comparison
+
+JMH benchmark comparing this WASM-based evaluator against a native Java JsonLogic implementation (`json-logic-java`):
+
+| Scenario | Native JsonLogic | WASM Evaluator | Ratio |
+|---|---|---|---|
+| **Simple flag (no targeting)** | 0.022 µs/op | 4.41 µs/op | ~200x |
+| **Targeting match** | 7.85 µs/op | 26.29 µs/op | ~3.4x |
+| **Targeting no-match** | 3.55 µs/op | 15.21 µs/op | ~4x |
+
+> **Note**: Simple flags now bypass WASM entirely via the pre-evaluation cache, effectively matching native performance.
+
+**Context size impact** (targeting evaluation with varying context sizes):
+
+| Context Size | Native JsonLogic | WASM Evaluator | Ratio |
+|---|---|---|---|
+| Empty | 3.55 µs/op | 15.21 µs/op | ~4x |
+| Small (5 attributes) | 6.34 µs/op | 27.10 µs/op | ~4x |
+| Large (100+ attributes) | 24.02 µs/op | 166.72 µs/op | ~7x |
+
+The WASM overhead comes from JSON serialization across the WASM boundary. For targeting rules with large contexts, serialization dominates the cost.
 
 ### Benchmarks
 
 The library includes JMH (Java Microbenchmark Harness) benchmarks for performance tracking:
 
 ```bash
-# Run JMH benchmarks
+# Run comparison benchmark (WASM vs native JsonLogic)
+./mvnw exec:java@run-jmh-benchmark -Dbenchmark=ResolverComparisonBenchmark
+
+# Run evaluator benchmarks
 ./mvnw exec:java@run-jmh-benchmark
 ```
 
-**Benchmark Results** (example from development machine):
+**Evaluator Benchmark Results** (example from development machine):
 ```
 Benchmark                                              Mode  Cnt       Score        Error  Units
 FlagEvaluatorJmhBenchmark.evaluateWithLayeredContext  thrpt    5   13035.383 ±   4173.375  ops/s
 FlagEvaluatorJmhBenchmark.evaluateWithSimpleContext   thrpt    5   14748.099 ±   2689.011  ops/s
 FlagEvaluatorJmhBenchmark.serializeLayeredContext     thrpt    5  222863.374 ± 151002.720  ops/s
-```
-
-**Object Churn (GC allocation rates)**:
-```
-Benchmark                                              Alloc Rate     Alloc/Op
-evaluateWithLayeredContext                             159.6 MB/sec   12.8 KB/op
-evaluateWithSimpleContext                              97.8 MB/sec    6.9 KB/op
 ```
 
 **Benchmark Scenarios:**

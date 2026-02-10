@@ -110,6 +110,7 @@ impl FlagEvaluator {
                         success: false,
                         error: Some(validation_error.to_json_string()),
                         changed_flags: None,
+                        pre_evaluated: None,
                     });
                 }
             }
@@ -131,12 +132,16 @@ impl FlagEvaluator {
                     success: false,
                     error: Some(e),
                     changed_flags: None,
+                    pre_evaluated: None,
                 });
             }
         };
 
         // Detect changed flags
         let changed_flags = self.detect_changed_flags(&new_parsing_result);
+
+        // Pre-evaluate static and disabled flags (no targeting rules needed)
+        let pre_evaluated = self.pre_evaluate_static_flags(&new_parsing_result);
 
         // Store the new state
         self.state = Some(new_parsing_result);
@@ -145,6 +150,11 @@ impl FlagEvaluator {
             success: true,
             error: None,
             changed_flags: Some(changed_flags),
+            pre_evaluated: if pre_evaluated.is_empty() {
+                None
+            } else {
+                Some(pre_evaluated)
+            },
         })
     }
 
@@ -506,6 +516,51 @@ impl FlagEvaluator {
     // =========================================================================
     // Helper methods
     // =========================================================================
+
+    /// Pre-evaluates static and disabled flags that don't require targeting evaluation.
+    ///
+    /// These results can be cached by the host (e.g., Java) to skip the WASM boundary
+    /// entirely for flags that always return the same result regardless of context.
+    fn pre_evaluate_static_flags(
+        &self,
+        parsing_result: &ParsingResult,
+    ) -> HashMap<String, EvaluationResult> {
+        let empty_context = JsonValue::Object(Map::new());
+        let mut results = HashMap::new();
+
+        for (flag_key, flag) in &parsing_result.flags {
+            // Pre-evaluate disabled flags
+            if flag.state == "DISABLED" {
+                let result = self.evaluate_flag_internal(
+                    flag,
+                    flag_key,
+                    &empty_context,
+                    &parsing_result.flag_set_metadata,
+                );
+                results.insert(flag_key.clone(), result);
+                continue;
+            }
+
+            // Pre-evaluate static flags (no targeting rules)
+            let is_static = match &flag.targeting {
+                None => true,
+                Some(JsonValue::Object(map)) if map.is_empty() => true,
+                _ => false,
+            };
+
+            if is_static {
+                let result = self.evaluate_flag_internal(
+                    flag,
+                    flag_key,
+                    &empty_context,
+                    &parsing_result.flag_set_metadata,
+                );
+                results.insert(flag_key.clone(), result);
+            }
+        }
+
+        results
+    }
 
     /// Detects which flags have changed between the current and new state.
     fn detect_changed_flags(&self, new_state: &ParsingResult) -> Vec<String> {
