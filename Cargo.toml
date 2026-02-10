@@ -38,6 +38,19 @@ cucumber = "0.22.1"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 async-trait = "0.1"
 glob = "0.3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "evaluation"
+harness = false
+
+[[bench]]
+name = "operators"
+harness = false
+
+[[bench]]
+name = "state"
+harness = false
 
 [profile.release]
 # Optimize for speed instead of size for better runtime performance
