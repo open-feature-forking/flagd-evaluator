@@ -2,6 +2,7 @@
 /target/
 /dist/
 /python/tests/__pycache__
+/python/benchmarks/__pycache__
 
 # Cargo.lock is tracked to ensure reproducible WASM builds.
 # The WASM binary's import names include hashes that must match Java host functions.
