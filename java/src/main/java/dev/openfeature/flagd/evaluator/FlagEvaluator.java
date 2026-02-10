@@ -17,6 +17,7 @@ import dev.openfeature.sdk.Value;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -93,6 +94,9 @@ public class FlagEvaluator implements AutoCloseable {
     private final long flagKeyBufferPtr;
     private final long contextBufferPtr;
 
+    // Cache of pre-evaluated results for static/disabled flags (replaced atomically on updateState)
+    private volatile Map<String, EvaluationResult<Object>> preEvaluatedCache = Collections.emptyMap();
+
     /**
      * Creates a new flag evaluator with strict validation mode.
      *
@@ -160,7 +164,13 @@ public class FlagEvaluator implements AutoCloseable {
 
             String resultJson = memory.readString(resultPtr, resultLen);
 
-            return OBJECT_MAPPER.readValue(resultJson, UpdateStateResult.class);
+            UpdateStateResult result = OBJECT_MAPPER.readValue(resultJson, UpdateStateResult.class);
+
+            // Update the pre-evaluated cache (atomic replacement)
+            Map<String, EvaluationResult<Object>> preEval = result.getPreEvaluated();
+            this.preEvaluatedCache = (preEval != null) ? preEval : Collections.emptyMap();
+
+            return result;
         } catch (Exception e) {
             throw new EvaluatorException("Failed to update state", e);
         } finally {
@@ -199,7 +209,14 @@ public class FlagEvaluator implements AutoCloseable {
      * @return the evaluation result containing value, variant, reason, and metadata
      * @throws EvaluatorException if the evaluation fails
      */
+    @SuppressWarnings("unchecked")
     public synchronized <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, String contextJson) throws EvaluatorException {
+        // Fast path: return cached result for static/disabled flags
+        EvaluationResult<Object> cached = preEvaluatedCache.get(flagKey);
+        if (cached != null) {
+            return (EvaluationResult<T>) (EvaluationResult<?>) cached;
+        }
+
         byte[] flagBytes = flagKey.getBytes(StandardCharsets.UTF_8);
         if (flagBytes.length > MAX_FLAG_KEY_SIZE) {
             throw new EvaluatorException("Flag key exceeds maximum size of " + MAX_FLAG_KEY_SIZE + " bytes");
