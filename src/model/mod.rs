@@ -7,7 +7,9 @@ mod feature_flag;
 
 pub use feature_flag::{FeatureFlag, ParsingResult};
 
+use crate::types::EvaluationResult;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Response from updating flag state indicating which flags have changed.
 ///
@@ -25,4 +27,12 @@ pub struct UpdateStateResponse {
     /// List of flag keys that were changed (added, removed, or mutated)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_flags: Option<Vec<String>>,
+
+    /// Pre-evaluated results for static and disabled flags.
+    ///
+    /// These flags don't require targeting evaluation, so their results are
+    /// computed during `update_state()` to allow host-side caching and avoid
+    /// WASM boundary overhead on every evaluation call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pre_evaluated: Option<HashMap<String, EvaluationResult>>,
 }
