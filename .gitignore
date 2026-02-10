@@ -3,8 +3,8 @@
 /dist/
 /python/tests/__pycache__
 
-# Cargo lock file (library)
-Cargo.lock
+# Cargo.lock is tracked to ensure reproducible WASM builds.
+# The WASM binary's import names include hashes that must match Java host functions.
 
 # IDE and editor files
 .idea/
