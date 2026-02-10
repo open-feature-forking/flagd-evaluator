@@ -140,6 +140,33 @@ def _build_flag_config():
                     ]
                 },
             },
+            # Complex targeting flag (nested if/and/or)
+            "complex-targeting": {
+                "state": "ENABLED",
+                "defaultVariant": "basic",
+                "variants": {
+                    "premium": "premium-tier",
+                    "standard": "standard-tier",
+                    "basic": "basic-tier",
+                },
+                "targeting": {
+                    "if": [
+                        {"and": [
+                            {"==": [{"var": "tier"}, "premium"]},
+                            {">": [{"var": "score"}, 90]},
+                        ]},
+                        "premium",
+                        {"if": [
+                            {"or": [
+                                {"==": [{"var": "tier"}, "standard"]},
+                                {">": [{"var": "score"}, 50]},
+                            ]},
+                            "standard",
+                            "basic",
+                        ]},
+                    ]
+                },
+            },
         }
     }
 
@@ -156,6 +183,18 @@ def evaluator():
     ev = FlagEvaluator()
     ev.update_state(_build_flag_config())
     return ev
+
+
+@pytest.fixture
+def small_context():
+    """Evaluation context with 5 attributes."""
+    return {
+        "targetingKey": "user-123",
+        "tier": "premium",
+        "role": "admin",
+        "region": "us-east",
+        "score": 85,
+    }
 
 
 @pytest.fixture
