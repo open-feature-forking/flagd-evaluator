@@ -52,6 +52,14 @@ harness = false
 name = "state"
 harness = false
 
+[[bench]]
+name = "concurrency"
+harness = false
+
+[[bench]]
+name = "comparison"
+harness = false
+
 [profile.release]
 # Optimize for speed instead of size for better runtime performance
 opt-level = 2
