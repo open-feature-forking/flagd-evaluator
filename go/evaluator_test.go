@@ -612,6 +612,146 @@ func TestTypedEvaluators(t *testing.T) {
 	}
 }
 
+// TestGenerationGuard exercises the race between cache.Load() and pool acquire.
+//
+// Without the generation check, this sequence causes wrong results:
+//   1. Goroutine loads cache snap V1 (flag indices: probe=0, padA=1, padB=2)
+//   2. UpdateState swaps to V2 (flag indices shift: padC=0, padD=1, probe=2)
+//   3. Goroutine gets V2 instance but uses V1 index 0 → evaluates padC instead of probe
+//
+// The test alternates between two configs with different flag sets, causing
+// indices to shift. Evaluator goroutines verify the result is always valid
+// for the "probe" flag and never a value leaked from a padding flag.
+func TestGenerationGuard(t *testing.T) {
+	// Small pool to increase contention window
+	e, err := NewFlagEvaluator(WithPermissiveValidation(), WithPoolSize(2))
+	if err != nil {
+		t.Fatalf("failed to create evaluator: %v", err)
+	}
+	t.Cleanup(func() { e.Close() })
+
+	// Config A: padA and padB occupy low indices, probe is at a higher index.
+	// probe targets on "tier" == "premium" → variant "yes" (value "AAA")
+	configA := `{
+		"flags": {
+			"aaa-pad-1": {
+				"state": "ENABLED",
+				"defaultVariant": "v",
+				"variants": { "v": "PADDING_A1" }
+			},
+			"aaa-pad-2": {
+				"state": "ENABLED",
+				"defaultVariant": "v",
+				"variants": { "v": "PADDING_A2" }
+			},
+			"probe": {
+				"state": "ENABLED",
+				"defaultVariant": "no",
+				"variants": { "yes": "AAA", "no": "default-A" },
+				"targeting": {
+					"if": [{ "==": [{ "var": "tier" }, "premium"] }, "yes", null]
+				}
+			}
+		}
+	}`
+
+	// Config B: different padding flags shift indices. probe should return "BBB".
+	configB := `{
+		"flags": {
+			"zzz-pad-3": {
+				"state": "ENABLED",
+				"defaultVariant": "v",
+				"variants": { "v": "PADDING_B3" }
+			},
+			"zzz-pad-4": {
+				"state": "ENABLED",
+				"defaultVariant": "v",
+				"variants": { "v": "PADDING_B4" }
+			},
+			"zzz-pad-5": {
+				"state": "ENABLED",
+				"defaultVariant": "v",
+				"variants": { "v": "PADDING_B5" }
+			},
+			"probe": {
+				"state": "ENABLED",
+				"defaultVariant": "no",
+				"variants": { "yes": "BBB", "no": "default-B" },
+				"targeting": {
+					"if": [{ "==": [{ "var": "tier" }, "premium"] }, "yes", null]
+				}
+			}
+		}
+	}`
+
+	// Valid results for "probe" across either config
+	validValues := map[interface{}]bool{
+		"AAA":       true,
+		"BBB":       true,
+		"default-A": true,
+		"default-B": true,
+	}
+
+	// Initialize with config A
+	if _, err := e.UpdateState(configA); err != nil {
+		t.Fatalf("initial UpdateState failed: %v", err)
+	}
+
+	const (
+		numEvaluators  = 8
+		numUpdates     = 50
+		evalsPerUpdate = 20
+	)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	errs := make(chan string, numEvaluators*numUpdates*evalsPerUpdate)
+
+	// Evaluator goroutines: continuously evaluate "probe" and verify results
+	for g := 0; g < numEvaluators; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			ctx := map[string]interface{}{"tier": "premium", "targetingKey": "user-1"}
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				result, err := e.EvaluateFlag("probe", ctx)
+				if err != nil {
+					errs <- fmt.Sprintf("goroutine %d: EvaluateFlag error: %v", id, err)
+					continue
+				}
+				if !validValues[result.Value] {
+					errs <- fmt.Sprintf(
+						"goroutine %d: INVALID value %q (variant=%s reason=%s) — possible stale index",
+						id, result.Value, result.Variant, result.Reason,
+					)
+				}
+			}
+		}(g)
+	}
+
+	// Updater: rapidly alternate configs to maximize the race window
+	for i := 0; i < numUpdates; i++ {
+		if i%2 == 0 {
+			e.UpdateState(configB)
+		} else {
+			e.UpdateState(configA)
+		}
+	}
+
+	close(stop)
+	wg.Wait()
+	close(errs)
+
+	for msg := range errs {
+		t.Error(msg)
+	}
+}
+
 // ---- Test helpers ----
 
 func assertEqual(t *testing.T, expected, actual interface{}) {

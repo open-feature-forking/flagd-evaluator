@@ -30,7 +30,7 @@ type Option func(*evaluatorConfig)
 
 type evaluatorConfig struct {
 	permissiveValidation bool
-	compilationCache     interface{} // wazero.CompilationCache
+	poolSize             int
 }
 
 // WithPermissiveValidation configures the evaluator to accept invalid flag
@@ -38,6 +38,15 @@ type evaluatorConfig struct {
 func WithPermissiveValidation() Option {
 	return func(c *evaluatorConfig) {
 		c.permissiveValidation = true
+	}
+}
+
+// WithPoolSize sets the number of WASM instances in the evaluation pool.
+// More instances allow more parallel targeting evaluations.
+// Defaults to runtime.NumCPU().
+func WithPoolSize(n int) Option {
+	return func(c *evaluatorConfig) {
+		c.poolSize = n
 	}
 }
 

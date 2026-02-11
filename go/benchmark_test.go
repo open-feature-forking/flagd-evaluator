@@ -622,6 +622,137 @@ func BenchmarkC6_ReadWriteContention(b *testing.B) {
 }
 
 // ====================================================================
+// T: Throughput benchmarks — 1000 evaluations per op across N goroutines.
+// Exposes mutex contention by measuring aggregate throughput scaling.
+// ====================================================================
+
+const throughputOps = 1000
+
+// T1: Pre-evaluated (static) flag, 1 goroutine baseline
+func BenchmarkT1_PreEval_1G(b *testing.B) {
+	benchThroughput(b, 1, "static-flag", emptyCtx, mixedConfig)
+}
+
+// T2: Pre-evaluated (static) flag, 4 goroutines
+func BenchmarkT2_PreEval_4G(b *testing.B) {
+	benchThroughput(b, 4, "static-flag", emptyCtx, mixedConfig)
+}
+
+// T3: Pre-evaluated (static) flag, 16 goroutines
+func BenchmarkT3_PreEval_16G(b *testing.B) {
+	benchThroughput(b, 16, "static-flag", emptyCtx, mixedConfig)
+}
+
+// T4: Targeting flag, 1 goroutine baseline
+func BenchmarkT4_Targeting_1G(b *testing.B) {
+	benchThroughput(b, 1, "targeting-flag", smallCtx, mixedConfig)
+}
+
+// T5: Targeting flag, 4 goroutines
+func BenchmarkT5_Targeting_4G(b *testing.B) {
+	benchThroughput(b, 4, "targeting-flag", smallCtx, mixedConfig)
+}
+
+// T6: Targeting flag, 16 goroutines
+func BenchmarkT6_Targeting_16G(b *testing.B) {
+	benchThroughput(b, 16, "targeting-flag", smallCtx, mixedConfig)
+}
+
+// T7: Mixed workload (static + targeting + disabled), 1 goroutine
+func BenchmarkT7_Mixed_1G(b *testing.B) {
+	benchThroughputMixed(b, 1)
+}
+
+// T8: Mixed workload, 4 goroutines
+func BenchmarkT8_Mixed_4G(b *testing.B) {
+	benchThroughputMixed(b, 4)
+}
+
+// T9: Mixed workload, 16 goroutines
+func BenchmarkT9_Mixed_16G(b *testing.B) {
+	benchThroughputMixed(b, 16)
+}
+
+const mixedConfig = `{
+	"flags": {
+		"static-flag": {
+			"state": "ENABLED",
+			"defaultVariant": "on",
+			"variants": { "on": true, "off": false }
+		},
+		"targeting-flag": {
+			"state": "ENABLED",
+			"defaultVariant": "off",
+			"variants": { "on": true, "off": false },
+			"targeting": { "if": [{ "==": [{ "var": "tier" }, "premium"] }, "on", "off"] }
+		},
+		"disabled-flag": {
+			"state": "DISABLED",
+			"defaultVariant": "off",
+			"variants": { "on": true, "off": false }
+		}
+	}
+}`
+
+// benchThroughput runs throughputOps evaluations split across n goroutines per b.N op.
+func benchThroughput(b *testing.B, goroutines int, flagKey string, ctx map[string]interface{}, config string) {
+	b.Helper()
+	e := newBenchEvaluator(b)
+	e.UpdateState(config)
+
+	opsPerG := throughputOps / goroutines
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			go func() {
+				defer wg.Done()
+				for j := 0; j < opsPerG; j++ {
+					e.EvaluateFlag(flagKey, ctx)
+				}
+			}()
+		}
+		wg.Wait()
+	}
+}
+
+// benchThroughputMixed runs throughputOps evaluations of mixed flag types across n goroutines.
+func benchThroughputMixed(b *testing.B, goroutines int) {
+	b.Helper()
+	e := newBenchEvaluator(b)
+	e.UpdateState(mixedConfig)
+
+	flags := []struct {
+		key string
+		ctx map[string]interface{}
+	}{
+		{"static-flag", emptyCtx},
+		{"targeting-flag", smallCtx},
+		{"disabled-flag", emptyCtx},
+	}
+
+	opsPerG := throughputOps / goroutines
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			go func(gIdx int) {
+				defer wg.Done()
+				for j := 0; j < opsPerG; j++ {
+					f := flags[(gIdx+j)%3]
+					e.EvaluateFlag(f.key, f.ctx)
+				}
+			}(g)
+		}
+		wg.Wait()
+	}
+}
+
+// ====================================================================
 // Helpers
 // ====================================================================
 

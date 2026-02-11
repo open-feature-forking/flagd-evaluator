@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -10,18 +11,12 @@ import (
 
 // EvaluateFlag evaluates a flag and returns the full result.
 func (e *FlagEvaluator) EvaluateFlag(flagKey string, ctx map[string]interface{}) (*EvaluationResult, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	return e.evaluateFlagLocked(flagKey, ctx)
+	return e.evaluateFlag(flagKey, ctx)
 }
 
 // EvaluateBool evaluates a boolean flag. Returns defaultValue on error.
 func (e *FlagEvaluator) EvaluateBool(flagKey string, ctx map[string]interface{}, defaultValue bool) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	result, err := e.evaluateFlagLocked(flagKey, ctx)
+	result, err := e.evaluateFlag(flagKey, ctx)
 	if err != nil || result.IsError() || result.Value == nil {
 		return defaultValue
 	}
@@ -33,10 +28,7 @@ func (e *FlagEvaluator) EvaluateBool(flagKey string, ctx map[string]interface{},
 
 // EvaluateString evaluates a string flag. Returns defaultValue on error.
 func (e *FlagEvaluator) EvaluateString(flagKey string, ctx map[string]interface{}, defaultValue string) string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	result, err := e.evaluateFlagLocked(flagKey, ctx)
+	result, err := e.evaluateFlag(flagKey, ctx)
 	if err != nil || result.IsError() || result.Value == nil {
 		return defaultValue
 	}
@@ -48,10 +40,7 @@ func (e *FlagEvaluator) EvaluateString(flagKey string, ctx map[string]interface{
 
 // EvaluateInt evaluates an integer flag. Returns defaultValue on error.
 func (e *FlagEvaluator) EvaluateInt(flagKey string, ctx map[string]interface{}, defaultValue int64) int64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	result, err := e.evaluateFlagLocked(flagKey, ctx)
+	result, err := e.evaluateFlag(flagKey, ctx)
 	if err != nil || result.IsError() || result.Value == nil {
 		return defaultValue
 	}
@@ -64,10 +53,7 @@ func (e *FlagEvaluator) EvaluateInt(flagKey string, ctx map[string]interface{}, 
 
 // EvaluateFloat evaluates a float flag. Returns defaultValue on error.
 func (e *FlagEvaluator) EvaluateFloat(flagKey string, ctx map[string]interface{}, defaultValue float64) float64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	result, err := e.evaluateFlagLocked(flagKey, ctx)
+	result, err := e.evaluateFlag(flagKey, ctx)
 	if err != nil || result.IsError() || result.Value == nil {
 		return defaultValue
 	}
@@ -77,9 +63,53 @@ func (e *FlagEvaluator) EvaluateFloat(flagKey string, ctx map[string]interface{}
 	return defaultValue
 }
 
-// evaluateFlagLocked is the internal evaluation pipeline. Caller must hold mu.
-func (e *FlagEvaluator) evaluateFlagLocked(flagKey string, ctx map[string]interface{}) (result *EvaluationResult, err error) {
-	// Recover from WASM panics (__wbindgen_throw)
+// evaluateFlag is the internal evaluation pipeline.
+func (e *FlagEvaluator) evaluateFlag(flagKey string, ctx map[string]interface{}) (*EvaluationResult, error) {
+	// Load caches atomically (lock-free)
+	snap := e.cache.Load()
+
+	// Fast path: pre-evaluated cache hit (static/disabled flags)
+	if cached, ok := snap.preEvaluated[flagKey]; ok {
+		return cached, nil
+	}
+
+	// Acquire an instance from the pool
+	inst := <-e.pool
+	defer func() { e.pool <- inst }()
+
+	// If an UpdateState completed between cache.Load() and pool acquire,
+	// the snap has stale indices. Reload to match the instance's generation.
+	if snap.generation != inst.generation {
+		snap = e.cache.Load()
+		// Re-check pre-eval cache — flag may now be static
+		if cached, ok := snap.preEvaluated[flagKey]; ok {
+			return cached, nil
+		}
+	}
+
+	// Determine context serialization strategy
+	var contextBytes []byte
+	requiredKeys := snap.requiredCtxKey[flagKey]
+	if requiredKeys != nil && len(ctx) > 0 {
+		contextBytes = serializeFilteredContext(ctx, requiredKeys, flagKey)
+	} else if len(ctx) > 0 {
+		var err error
+		contextBytes, err = json.Marshal(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal context: %w", err)
+		}
+	}
+
+	// Evaluate using the instance
+	flagIndex, hasIndex := snap.flagIndex[flagKey]
+	if hasIndex && inst.evalByIndexFn != nil && requiredKeys != nil {
+		return evaluateByIndex(e.ctx, inst, flagIndex, contextBytes)
+	}
+	return evaluateReusable(e.ctx, inst, flagKey, contextBytes)
+}
+
+// evaluateByIndex calls the evaluate_by_index WASM export on a specific instance.
+func evaluateByIndex(ctx context.Context, inst *wasmInstance, flagIndex uint32, contextBytes []byte) (result *EvaluationResult, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = nil
@@ -87,100 +117,70 @@ func (e *FlagEvaluator) evaluateFlagLocked(flagKey string, ctx map[string]interf
 		}
 	}()
 
-	// Fast path: pre-evaluated cache hit (static/disabled flags)
-	if cached, ok := e.preEvaluatedCache[flagKey]; ok {
-		return cached, nil
-	}
-
-	// Determine context serialization strategy
-	var contextBytes []byte
-	requiredKeys := e.requiredContextKeys[flagKey]
-	if requiredKeys != nil && len(ctx) > 0 {
-		// Filtered path: only serialize keys the targeting rule references
-		contextBytes = serializeFilteredContext(ctx, requiredKeys, flagKey)
-	} else if len(ctx) > 0 {
-		// Full serialization path
-		var jsonErr error
-		contextBytes, jsonErr = json.Marshal(ctx)
-		if jsonErr != nil {
-			return nil, fmt.Errorf("failed to marshal context: %w", jsonErr)
-		}
-	}
-
-	// Choose evaluation path
-	flagIndex, hasIndex := e.flagIndexCache[flagKey]
-	if hasIndex && e.evalByIndexFn != nil && requiredKeys != nil {
-		// Index-based evaluation (fastest WASM path)
-		return e.evaluateByIndex(flagIndex, contextBytes)
-	}
-
-	// String-based evaluation with pre-allocated buffer
-	return e.evaluateReusable(flagKey, contextBytes)
-}
-
-// evaluateByIndex calls the evaluate_by_index WASM export.
-func (e *FlagEvaluator) evaluateByIndex(flagIndex uint32, contextBytes []byte) (*EvaluationResult, error) {
-	var contextPtr uint32
-	var contextLen uint32
-
+	var contextPtr, contextLen uint32
 	if len(contextBytes) > 0 {
-		if err := writeToPreallocBuffer(e.module, e.contextBufPtr, maxContextSize, contextBytes); err != nil {
+		if err := writeToPreallocBuffer(inst.module, inst.contextBufPtr, maxContextSize, contextBytes); err != nil {
 			return nil, err
 		}
-		contextPtr = e.contextBufPtr
+		contextPtr = inst.contextBufPtr
 		contextLen = uint32(len(contextBytes))
 	}
 
-	results, err := e.evalByIndexFn.Call(e.ctx, uint64(flagIndex), uint64(contextPtr), uint64(contextLen))
+	results, err := inst.evalByIndexFn.Call(ctx, uint64(flagIndex), uint64(contextPtr), uint64(contextLen))
 	if err != nil {
 		return nil, fmt.Errorf("evaluate_by_index call failed: %w", err)
 	}
 
-	return e.readEvalResult(results[0])
+	return readEvalResult(ctx, inst, results[0])
 }
 
-// evaluateReusable calls the evaluate_reusable WASM export.
-func (e *FlagEvaluator) evaluateReusable(flagKey string, contextBytes []byte) (*EvaluationResult, error) {
+// evaluateReusable calls the evaluate_reusable WASM export on a specific instance.
+func evaluateReusable(ctx context.Context, inst *wasmInstance, flagKey string, contextBytes []byte) (result *EvaluationResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = fmt.Errorf("WASM panic: %v", r)
+		}
+	}()
+
 	flagBytes := []byte(flagKey)
-	if err := writeToPreallocBuffer(e.module, e.flagKeyBufPtr, maxFlagKeySize, flagBytes); err != nil {
+	if err := writeToPreallocBuffer(inst.module, inst.flagKeyBufPtr, maxFlagKeySize, flagBytes); err != nil {
 		return nil, fmt.Errorf("flag key too large: %w", err)
 	}
 
-	var contextPtr uint32
-	var contextLen uint32
-
+	var contextPtr, contextLen uint32
 	if len(contextBytes) > 0 {
-		if err := writeToPreallocBuffer(e.module, e.contextBufPtr, maxContextSize, contextBytes); err != nil {
+		if err := writeToPreallocBuffer(inst.module, inst.contextBufPtr, maxContextSize, contextBytes); err != nil {
 			return nil, err
 		}
-		contextPtr = e.contextBufPtr
+		contextPtr = inst.contextBufPtr
 		contextLen = uint32(len(contextBytes))
 	}
 
-	results, err := e.evalReusableFn.Call(e.ctx,
-		uint64(e.flagKeyBufPtr), uint64(len(flagBytes)),
+	results, err := inst.evalReusableFn.Call(ctx,
+		uint64(inst.flagKeyBufPtr), uint64(len(flagBytes)),
 		uint64(contextPtr), uint64(contextLen))
 	if err != nil {
 		return nil, fmt.Errorf("evaluate_reusable call failed: %w", err)
 	}
 
-	return e.readEvalResult(results[0])
+	return readEvalResult(ctx, inst, results[0])
 }
 
-// readEvalResult reads and unmarshals an evaluation result from a packed u64.
-func (e *FlagEvaluator) readEvalResult(packed uint64) (*EvaluationResult, error) {
+// readEvalResult reads and parses an evaluation result from a packed u64.
+func readEvalResult(ctx context.Context, inst *wasmInstance, packed uint64) (*EvaluationResult, error) {
 	resultPtr, resultLen := unpackPtrLen(packed)
-	resultBytes, err := readFromWasm(e.module, resultPtr, resultLen)
+	resultBytes, err := readFromWasm(inst.module, resultPtr, resultLen)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read evaluation result: %w", err)
 	}
-	e.deallocFn.Call(e.ctx, uint64(resultPtr), uint64(resultLen))
+	inst.deallocFn.Call(ctx, uint64(resultPtr), uint64(resultLen))
 
-	var result EvaluationResult
-	if err := json.Unmarshal(resultBytes, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal evaluation result: %w", err)
+	result, err := parseEvalResult(resultBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse evaluation result: %w", err)
 	}
-	return &result, nil
+	return result, nil
 }
 
 // serializeFilteredContext builds a JSON context with only the required keys,
