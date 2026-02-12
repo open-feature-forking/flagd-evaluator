@@ -113,6 +113,21 @@ jobs:
           path: target/wasm32-unknown-unknown/release/flagd_evaluator.wasm
           retention-days: 30
 
+  test-go:
+    name: Test Go Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: go/go.sum
+
+      - name: Run Go tests
+        run: cd go && go test -v ./...
+
   test-python:
     name: Test Python Bindings
     runs-on: ubuntu-latest
