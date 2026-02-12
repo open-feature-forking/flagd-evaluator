@@ -59,6 +59,11 @@
           "type": "build",
           "section": "Build System",
           "hidden": false
+        },
+        {
+          "type": "infra",
+          "section": "Infrastructure",
+          "hidden": false
         }
       ]
     }

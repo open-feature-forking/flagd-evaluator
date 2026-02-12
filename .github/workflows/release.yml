@@ -22,6 +22,7 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -29,6 +30,75 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # Build WASM and commit it to the release PR branch
+  update-wasm-on-release-pr:
+    name: Update WASM on Release PR
+    needs: release-please
+    if: needs.release-please.outputs.pr != '' && needs.release-please.outputs.release_created != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get PR branch
+        id: pr-info
+        run: |
+          PR_JSON='${{ needs.release-please.outputs.pr }}'
+          BRANCH=$(echo "$PR_JSON" | jq -r '.headBranchName')
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-pr-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-pr-
+
+      - name: Build WASM
+        run: cargo build --target wasm32-unknown-unknown --no-default-features --release --lib
+
+      - name: Copy WASM to repo root
+        run: |
+          cp target/wasm32-unknown-unknown/release/flagd_evaluator.wasm ./flagd_evaluator.wasm
+          SIZE=$(stat -c%s flagd_evaluator.wasm)
+          echo "WASM file size: $SIZE bytes ($(echo "scale=2; $SIZE / 1024" | bc) KB)"
+          sha256sum flagd_evaluator.wasm
+
+      - name: Copy WASM to go/ for release tag
+        run: |
+          if [ -d go ]; then
+            cp flagd_evaluator.wasm go/flagd_evaluator.wasm
+            echo "Copied WASM to go/ for go:embed"
+          fi
+
+      - name: Commit WASM binary
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add flagd_evaluator.wasm
+          if [ -d go ]; then
+            git add -f go/flagd_evaluator.wasm
+          fi
+          if git diff --cached --quiet; then
+            echo "WASM binary is already up to date"
+          else
+            git commit -m "chore: update WASM binary for release"
+            git push
+          fi
 
   build-java:
     name: Build Java Library

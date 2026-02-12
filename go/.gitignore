@@ -1,0 +1,4 @@
+# WASM binary is built via go generate or make, not committed.
+# The canonical WASM binary lives at the repo root (flagd_evaluator.wasm)
+# and is committed only during release-please releases.
+flagd_evaluator.wasm
