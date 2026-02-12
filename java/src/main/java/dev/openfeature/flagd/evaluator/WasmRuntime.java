@@ -148,7 +148,7 @@ public final class WasmRuntime {
     private static HostFunction createNew0() {
         return new HostFunction(
                 "__wbindgen_placeholder__",
-                "__wbg_new_0_73afc35eb544e539",
+                "__wbg_new_0_23cedd11d9b40c9d",
                 FunctionType.of(List.of(), List.of(ValType.I32)),
                 (Instance instance, long... args) -> {
                     // Return a dummy reference
@@ -164,7 +164,7 @@ public final class WasmRuntime {
     private static HostFunction createGetTime() {
         return new HostFunction(
                 "__wbindgen_placeholder__",
-                "__wbg_getTime_1e3cd1391c5c3995",
+                "__wbg_getTime_ad1e9878a735af08",
                 FunctionType.of(List.of(ValType.I32), List.of(ValType.F64)),
                 (Instance instance, long... args) -> {
                     // Return current time in milliseconds
@@ -178,7 +178,7 @@ public final class WasmRuntime {
     private static HostFunction createWbindgenThrow() {
         return new HostFunction(
                 "__wbindgen_placeholder__",
-                "__wbg___wbindgen_throw_be289d5034ed271b",
+                "__wbg___wbindgen_throw_dd24417ed36fc46e",
                 FunctionType.of(List.of(ValType.I32, ValType.I32), List.of()),
                 (Instance instance, long... args) -> {
                     // Throw exception - read the error message from memory
