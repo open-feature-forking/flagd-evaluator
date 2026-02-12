@@ -8,7 +8,7 @@ use crate::model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 use crate::operators::create_evaluator;
 use crate::types::{ErrorCode, EvaluationResult, ResolutionReason};
 use crate::validation::validate_flags_config;
-use datalogic_rs::DataLogic;
+use datalogic_rs::{CompiledLogic, CompiledNode, DataLogic, OpCode};
 use serde_json::{Map, Value as JsonValue, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -54,6 +54,8 @@ pub struct FlagEvaluator {
     validation_mode: ValidationMode,
     /// The DataLogic engine with custom operators (created once, reused for all evaluations)
     logic: DataLogic,
+    /// Index-to-flag-key mapping for O(1) evaluate_by_index lookups
+    flag_index_map: Vec<String>,
 }
 
 impl std::fmt::Debug for FlagEvaluator {
@@ -62,6 +64,7 @@ impl std::fmt::Debug for FlagEvaluator {
             .field("state", &self.state)
             .field("validation_mode", &self.validation_mode)
             .field("logic", &"<DataLogic>")
+            .field("flag_index_map", &self.flag_index_map)
             .finish()
     }
 }
@@ -77,6 +80,7 @@ impl FlagEvaluator {
             state: None,
             validation_mode,
             logic: create_evaluator(),
+            flag_index_map: Vec::new(),
         }
     }
 
@@ -111,6 +115,8 @@ impl FlagEvaluator {
                         error: Some(validation_error.to_json_string()),
                         changed_flags: None,
                         pre_evaluated: None,
+                        required_context_keys: None,
+                        flag_indices: None,
                     });
                 }
             }
@@ -133,6 +139,8 @@ impl FlagEvaluator {
                     error: Some(e),
                     changed_flags: None,
                     pre_evaluated: None,
+                    required_context_keys: None,
+                    flag_indices: None,
                 });
             }
         };
@@ -142,6 +150,13 @@ impl FlagEvaluator {
 
         // Pre-evaluate static and disabled flags (no targeting rules needed)
         let pre_evaluated = self.pre_evaluate_static_flags(&new_parsing_result);
+
+        // Build required_context_keys and flag_indices for targeting flags
+        let (required_context_keys, flag_indices, index_to_key) =
+            Self::build_optimization_maps(&new_parsing_result);
+
+        // Store the index-to-key mapping for evaluate_by_index lookups
+        self.flag_index_map = index_to_key;
 
         // Store the new state
         self.state = Some(new_parsing_result);
@@ -154,6 +169,16 @@ impl FlagEvaluator {
                 None
             } else {
                 Some(pre_evaluated)
+            },
+            required_context_keys: if required_context_keys.is_empty() {
+                None
+            } else {
+                Some(required_context_keys)
+            },
+            flag_indices: if flag_indices.is_empty() {
+                None
+            } else {
+                Some(flag_indices)
             },
         })
     }
@@ -178,6 +203,7 @@ impl FlagEvaluator {
     /// Clears the flag state.
     pub fn clear_state(&mut self) {
         self.state = None;
+        self.flag_index_map.clear();
     }
 
     // =========================================================================
@@ -676,6 +702,257 @@ impl FlagEvaluator {
         }
     }
 
+    /// Evaluates a flag by its numeric index (from `flag_indices` in `UpdateStateResponse`).
+    ///
+    /// This is a fast path that avoids flag key string handling by using O(1) Vec lookup.
+    /// The context is expected to be pre-enriched with `$flagd.*` and `targetingKey` by the host.
+    pub fn evaluate_flag_by_index(&self, index: u32, context: &JsonValue) -> EvaluationResult {
+        let flag_key = match self.flag_index_map.get(index as usize) {
+            Some(key) => key,
+            None => {
+                return EvaluationResult::error(
+                    ErrorCode::FlagNotFound,
+                    format!("No flag at index {}", index),
+                );
+            }
+        };
+
+        self.evaluate_flag_pre_enriched(flag_key, context)
+    }
+
+    /// Evaluates a flag with a pre-enriched context (skips `enrich_context` if `$flagd` is present).
+    ///
+    /// The host is expected to have added `$flagd.flagKey`, `$flagd.timestamp`, and `targetingKey`.
+    pub fn evaluate_flag_pre_enriched(
+        &self,
+        flag_key: &str,
+        context: &JsonValue,
+    ) -> EvaluationResult {
+        // If context already has $flagd, skip enrichment
+        let is_pre_enriched = context
+            .as_object()
+            .map(|o| o.contains_key("$flagd"))
+            .unwrap_or(false);
+
+        if is_pre_enriched {
+            self.evaluate_with_type_check_pre_enriched(flag_key, context, None)
+        } else {
+            self.evaluate_with_type_check(flag_key, context, None)
+        }
+    }
+
+    /// Internal evaluation that skips context enrichment (context already has `$flagd`).
+    fn evaluate_with_type_check_pre_enriched(
+        &self,
+        flag_key: &str,
+        context: &JsonValue,
+        expected_type: Option<ExpectedType>,
+    ) -> EvaluationResult {
+        let state = match &self.state {
+            Some(s) => s,
+            None => {
+                return EvaluationResult::error(ErrorCode::General, "No flag configuration loaded");
+            }
+        };
+
+        let flag = match state.flags.get(flag_key) {
+            Some(f) => f,
+            None => {
+                let flag_set_metadata =
+                    Self::merge_metadata(&state.flag_set_metadata, &HashMap::new());
+                return EvaluationResult {
+                    value: JsonValue::Null,
+                    variant: None,
+                    reason: ResolutionReason::FlagNotFound,
+                    error_code: Some(ErrorCode::FlagNotFound),
+                    error_message: Some(format!("Flag '{}' not found in configuration", flag_key)),
+                    flag_metadata: flag_set_metadata,
+                };
+            }
+        };
+
+        let result = self.evaluate_flag_internal_pre_enriched(
+            flag,
+            flag_key,
+            context,
+            &state.flag_set_metadata,
+        );
+
+        match expected_type {
+            Some(expected) => self.apply_type_check(result, expected),
+            None => result,
+        }
+    }
+
+    /// Core flag evaluation logic that skips context enrichment.
+    fn evaluate_flag_internal_pre_enriched(
+        &self,
+        flag: &FeatureFlag,
+        flag_key: &str,
+        context: &JsonValue,
+        flag_set_metadata: &HashMap<String, JsonValue>,
+    ) -> EvaluationResult {
+        // Check if flag is disabled
+        if flag.state == "DISABLED" {
+            let merged_metadata = Self::merge_metadata(flag_set_metadata, &flag.metadata);
+            return EvaluationResult {
+                value: JsonValue::Null,
+                variant: None,
+                reason: ResolutionReason::Disabled,
+                error_code: Some(ErrorCode::FlagNotFound),
+                error_message: Some(format!("flag: {} is disabled", flag_key)),
+                flag_metadata: merged_metadata,
+            };
+        }
+
+        // Check for empty targeting
+        let is_empty_targeting = match &flag.targeting {
+            None => true,
+            Some(JsonValue::Object(map)) if map.is_empty() => true,
+            _ => false,
+        };
+
+        if is_empty_targeting {
+            return match flag.default_variant.as_ref() {
+                None => EvaluationResult::fallback(flag_key),
+                Some(value) if value.is_empty() => EvaluationResult::fallback(flag_key),
+                Some(default_variant) => match flag.variants.get(default_variant) {
+                    Some(value) => {
+                        let result =
+                            EvaluationResult::static_result(value.clone(), default_variant.clone());
+                        Self::with_lazy_metadata(flag_set_metadata, &flag.metadata, result)
+                    }
+                    None => EvaluationResult::error(
+                        ErrorCode::General,
+                        format!(
+                            "Default variant '{}' not found in flag variants",
+                            default_variant
+                        ),
+                    ),
+                },
+            };
+        }
+
+        // Use context directly (already enriched by host)
+        let eval_result = if let Some(ref compiled) = flag.compiled_targeting {
+            self.logic.evaluate_owned(compiled, context.clone())
+        } else {
+            let targeting = flag.targeting.as_ref().unwrap();
+            let rule_str = targeting.to_string();
+            let context_str = context.to_string();
+            self.logic.evaluate_json(&rule_str, &context_str)
+        };
+
+        // Same result processing as evaluate_flag_internal
+        match eval_result {
+            Ok(result) => {
+                if result.is_null() {
+                    return match flag.default_variant.as_ref() {
+                        None => EvaluationResult::fallback(flag_key),
+                        Some(value) if value.is_empty() => EvaluationResult::fallback(flag_key),
+                        Some(default_variant) => match flag.variants.get(default_variant) {
+                            Some(value) => {
+                                let result = EvaluationResult::default_result(
+                                    value.clone(),
+                                    default_variant.clone(),
+                                );
+                                Self::with_lazy_metadata(flag_set_metadata, &flag.metadata, result)
+                            }
+                            None => EvaluationResult::error(
+                                ErrorCode::General,
+                                format!(
+                                    "Default variant '{}' not found in flag variants",
+                                    default_variant
+                                ),
+                            ),
+                        },
+                    };
+                }
+
+                let variant_name = match result {
+                    JsonValue::String(s) => s,
+                    other => match other.as_str() {
+                        Some(s) => s.to_string(),
+                        None => other.to_string().trim_matches('"').to_string(),
+                    },
+                };
+
+                if variant_name.is_empty() {
+                    return match flag.default_variant.as_ref() {
+                        None => EvaluationResult::fallback(flag_key),
+                        Some(default_variant) if default_variant.is_empty() => {
+                            EvaluationResult::fallback(flag_key)
+                        }
+                        Some(_) => EvaluationResult::error(
+                            ErrorCode::General,
+                            format!(
+                                "Targeting rule returned empty variant name for flag '{}'",
+                                flag_key
+                            ),
+                        ),
+                    };
+                }
+
+                match flag.variants.get(&variant_name) {
+                    Some(value) => {
+                        let result = EvaluationResult::targeting_match(value.clone(), variant_name);
+                        Self::with_lazy_metadata(flag_set_metadata, &flag.metadata, result)
+                    }
+                    None => EvaluationResult::error(
+                        ErrorCode::General,
+                        format!(
+                            "Targeting rule returned variant '{}' which is not defined in flag variants",
+                            variant_name
+                        ),
+                    ),
+                }
+            }
+            Err(e) => {
+                EvaluationResult::error(ErrorCode::ParseError, format!("Evaluation error: {}", e))
+            }
+        }
+    }
+
+    /// Builds required_context_keys and flag_indices maps from parsed flag config.
+    ///
+    /// Returns (required_context_keys, flag_indices, index_to_key_vec).
+    #[allow(clippy::type_complexity)]
+    fn build_optimization_maps(
+        parsing_result: &ParsingResult,
+    ) -> (
+        HashMap<String, Vec<String>>,
+        HashMap<String, u32>,
+        Vec<String>,
+    ) {
+        let mut required_context_keys = HashMap::new();
+        let mut flag_indices = HashMap::new();
+        let mut index_to_key = Vec::new();
+
+        // Sort keys for stable index assignment
+        let mut flag_keys: Vec<&String> = parsing_result.flags.keys().collect();
+        flag_keys.sort();
+
+        for (index, flag_key) in flag_keys.iter().enumerate() {
+            let flag = &parsing_result.flags[*flag_key];
+
+            // Assign index to all flags (not just targeting ones)
+            flag_indices.insert((*flag_key).clone(), index as u32);
+            index_to_key.push((*flag_key).clone());
+
+            // Extract required context keys for flags with compiled targeting
+            if let Some(ref compiled) = flag.compiled_targeting {
+                if let Some(keys) = extract_required_context_keys(compiled) {
+                    let mut sorted_keys: Vec<String> = keys.into_iter().collect();
+                    sorted_keys.sort();
+                    required_context_keys.insert((*flag_key).clone(), sorted_keys);
+                }
+                // None means "send all context" (rule uses {"var": ""})
+            }
+        }
+
+        (required_context_keys, flag_indices, index_to_key)
+    }
+
     /// Helper function to get a human-readable type name from a JSON value.
     fn type_name(value: &JsonValue) -> &'static str {
         match value {
@@ -709,4 +986,119 @@ enum ExpectedType {
     Integer,
     Float,
     Object,
+}
+
+/// Extracts the set of user-context keys that a compiled targeting rule references.
+///
+/// Returns `None` if the rule uses `{"var": ""}` (entire context access),
+/// meaning the host must send the full context. Returns `Some(keys)` otherwise.
+///
+/// The returned keys are top-level context field names (first path segment),
+/// excluding `$flagd.*` paths (injected by enrichment) and internal prefixes.
+/// `targetingKey` is always included since the fractional operator uses it.
+pub fn extract_required_context_keys(compiled: &CompiledLogic) -> Option<HashSet<String>> {
+    let mut keys = HashSet::new();
+    // Always include targetingKey (used by fractional operator)
+    keys.insert("targetingKey".to_string());
+
+    if walk_node_for_vars(&compiled.root, &mut keys) {
+        Some(keys)
+    } else {
+        // Rule accesses entire context — host must send everything
+        None
+    }
+}
+
+/// Recursively walks a CompiledNode tree to collect referenced variable paths.
+///
+/// Returns `false` if we encounter an empty-path var (meaning "send all context").
+fn walk_node_for_vars(node: &CompiledNode, keys: &mut HashSet<String>) -> bool {
+    match node {
+        CompiledNode::Value { .. } => true,
+
+        CompiledNode::Array { nodes } => {
+            for n in nodes.iter() {
+                if !walk_node_for_vars(n, keys) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        CompiledNode::BuiltinOperator { opcode, args } => {
+            // For Var and Exists opcodes, extract the variable path from the first arg
+            if *opcode == OpCode::Var || *opcode == OpCode::Exists {
+                if let Some(first_arg) = args.first() {
+                    if let Some(var_path) = extract_var_path(first_arg) {
+                        if var_path.is_empty() {
+                            // {"var": ""} — entire context access
+                            return false;
+                        }
+                        // Extract top-level key (everything before first '.')
+                        let first_key = var_path.split('.').next().unwrap_or(&var_path).to_string();
+                        // Skip $flagd paths (injected by enrichment, not from user context)
+                        if !first_key.starts_with("$flagd") {
+                            keys.insert(first_key);
+                        }
+                    }
+                }
+            }
+            // Walk all args (including default values in var args[1])
+            for arg in args.iter() {
+                if !walk_node_for_vars(arg, keys) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        CompiledNode::CustomOperator { args, .. } => {
+            for arg in args.iter() {
+                if !walk_node_for_vars(arg, keys) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        CompiledNode::StructuredObject { fields } => {
+            for (_, field_node) in fields.iter() {
+                if !walk_node_for_vars(field_node, keys) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+}
+
+/// Extracts the variable path string from a CompiledNode that represents a var argument.
+///
+/// In datalogic-rs 4.0, `{"var": "email"}` compiles to
+/// `BuiltinOperator { opcode: Var, args: [Value { value: "email" }] }`.
+/// This function extracts "email" from the first argument.
+fn extract_var_path(node: &CompiledNode) -> Option<String> {
+    match node {
+        CompiledNode::Value { value } => {
+            // String path: {"var": "email"} or {"var": "user.name"}
+            if let Some(s) = value.as_str() {
+                Some(s.to_string())
+            } else if value.is_null() {
+                // {"var": null} is equivalent to {"var": ""}
+                Some(String::new())
+            } else {
+                // Numeric or array path — treat as needing full context for safety
+                None
+            }
+        }
+        CompiledNode::Array { nodes } => {
+            // {"var": ["path"]} — extract from first element
+            if let Some(first) = nodes.first() {
+                extract_var_path(first)
+            } else {
+                Some(String::new())
+            }
+        }
+        _ => None, // Dynamic var path — can't determine statically
+    }
 }

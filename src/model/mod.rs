@@ -35,4 +35,19 @@ pub struct UpdateStateResponse {
     /// WASM boundary overhead on every evaluation call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_evaluated: Option<HashMap<String, EvaluationResult>>,
+
+    /// Per-flag required context keys for host-side filtering.
+    ///
+    /// When present, the host should only serialize the listed context keys
+    /// (plus `$flagd.*` enrichment and `targetingKey`) before calling evaluate.
+    /// `None` for a flag means "send all context" (e.g., the rule uses `{"var": ""}`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_context_keys: Option<HashMap<String, Vec<String>>>,
+
+    /// Flag key to numeric index mapping for `evaluate_by_index`.
+    ///
+    /// Allows the host to call `evaluate_by_index(index, ...)` instead of
+    /// passing flag key strings, avoiding string serialization overhead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flag_indices: Option<HashMap<String, u32>>,
 }

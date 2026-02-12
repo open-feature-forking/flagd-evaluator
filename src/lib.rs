@@ -438,6 +438,97 @@ pub extern "C" fn evaluate_reusable(
     string_to_memory(&result.to_json_string())
 }
 
+/// Evaluates a feature flag by numeric index with pre-enriched context.
+///
+/// This is a high-performance variant that:
+/// - Uses O(1) Vec index lookup instead of string-based HashMap lookup
+/// - Expects the context to be pre-enriched with `$flagd.*` and `targetingKey` by the host
+/// - Does NOT deallocate input buffers (caller manages them)
+///
+/// # Arguments
+/// * `flag_index` - Numeric index from the `flagIndices` map returned by `update_state`
+/// * `context_ptr` - Pointer to the pre-enriched evaluation context JSON string
+/// * `context_len` - Length of the context string
+///
+/// # Returns
+/// A packed u64 containing the pointer (upper 32 bits) and length (lower 32 bits)
+/// of the JSON-encoded EvaluationResult string.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `context_ptr` points to valid memory (or is null with context_len=0)
+/// - The memory region is valid UTF-8
+/// - The caller manages the input buffer lifecycle (NOT freed by this function)
+/// - The caller will free the returned result memory using `dealloc`
+#[no_mangle]
+pub extern "C" fn evaluate_by_index(
+    flag_index: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> u64 {
+    let result = evaluate_by_index_internal(flag_index, context_ptr, context_len);
+    string_to_memory(&result.to_json_string())
+}
+
+/// Internal implementation of evaluate_by_index.
+fn evaluate_by_index_internal(
+    flag_index: u32,
+    context_ptr: *const u8,
+    context_len: u32,
+) -> EvaluationResult {
+    init_panic_hook();
+
+    let result = std::panic::catch_unwind(|| {
+        wasm_evaluator::with_evaluator(|eval| {
+            if eval.get_state().is_none() {
+                return EvaluationResult::error(
+                    ErrorCode::FlagNotFound,
+                    "Flag state not initialized. Call update_state first.",
+                );
+            }
+
+            // Parse context (pre-enriched by host)
+            let context: Value = if context_ptr.is_null() || context_len == 0 {
+                Value::Null
+            } else {
+                // SAFETY: The caller guarantees valid memory regions
+                let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return EvaluationResult::error(
+                            ErrorCode::ParseError,
+                            format!("Failed to read context: {}", e),
+                        )
+                    }
+                };
+
+                match serde_json::from_str(&context_str) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return EvaluationResult::error(
+                            ErrorCode::ParseError,
+                            format!("Failed to parse context JSON: {}", e),
+                        )
+                    }
+                }
+            };
+
+            eval.evaluate_flag_by_index(flag_index, &context)
+        })
+    });
+
+    result.unwrap_or_else(|panic_err| {
+        let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+            format!("Evaluation panic: {}", s)
+        } else if let Some(s) = panic_err.downcast_ref::<String>() {
+            format!("Evaluation panic: {}", s)
+        } else {
+            "Evaluation panic: unknown error".to_string()
+        };
+        EvaluationResult::error(ErrorCode::General, msg)
+    })
+}
+
 /// Internal implementation of evaluate.
 fn evaluate_internal(
     flag_key_ptr: *const u8,
@@ -1297,5 +1388,406 @@ mod wasm_tests {
 
         let result = evaluate_wasm("unicodeFlag", "{}");
         assert_eq!(result.value, json!("Hello 👋 World 🌍"));
+    }
+
+    #[test]
+    fn test_wasm_evaluate_by_index() {
+        reset_wasm_evaluator();
+
+        let config = r#"{
+            "flags": {
+                "boolFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "role"}, "admin"]},
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let response_json = update_state_wasm(config);
+        let response: Value = serde_json::from_str(&response_json).unwrap();
+        assert!(response["success"].as_bool().unwrap());
+
+        // Get the flag index from the response
+        let flag_indices = response["flagIndices"].as_object().unwrap();
+        let bool_flag_index = flag_indices["boolFlag"].as_u64().unwrap() as u32;
+
+        // Test with pre-enriched context (matching)
+        let context = json!({
+            "role": "admin",
+            "targetingKey": "user-1",
+            "$flagd": {
+                "flagKey": "boolFlag",
+                "timestamp": 1234567890
+            }
+        });
+        let context_str = context.to_string();
+        let context_bytes = context_str.as_bytes();
+
+        let result = evaluate_by_index_internal(
+            bool_flag_index,
+            context_bytes.as_ptr(),
+            context_bytes.len() as u32,
+        );
+        assert_eq!(result.value, json!(true));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+
+        // Test with non-matching context
+        let context2 = json!({
+            "role": "user",
+            "targetingKey": "user-2",
+            "$flagd": {
+                "flagKey": "boolFlag",
+                "timestamp": 1234567890
+            }
+        });
+        let context2_str = context2.to_string();
+        let context2_bytes = context2_str.as_bytes();
+
+        let result2 = evaluate_by_index_internal(
+            bool_flag_index,
+            context2_bytes.as_ptr(),
+            context2_bytes.len() as u32,
+        );
+        assert_eq!(result2.value, json!(false));
+    }
+
+    #[test]
+    fn test_wasm_evaluate_by_index_invalid_index() {
+        reset_wasm_evaluator();
+
+        let config = r#"{
+            "flags": {
+                "flag1": {
+                    "state": "ENABLED",
+                    "variants": {"on": true},
+                    "defaultVariant": "on"
+                }
+            }
+        }"#;
+
+        update_state_wasm(config);
+
+        let result = evaluate_by_index_internal(999, std::ptr::null(), 0);
+        assert_eq!(result.reason, ResolutionReason::Error);
+        assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
+    }
+}
+
+// ============================================================================
+// Context Key Extraction and Index Mapping Tests
+// ============================================================================
+
+#[cfg(test)]
+mod optimization_tests {
+    use super::*;
+    use crate::evaluator::extract_required_context_keys;
+    use serde_json::json;
+
+    #[test]
+    fn test_extract_keys_simple_var() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+        let config = r#"{
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true, "off": false},
+                    "defaultVariant": "off",
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "email"}, "admin@example.com"]},
+                            "on",
+                            "off"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let response = evaluator.update_state(config).unwrap();
+        let keys = response.required_context_keys.unwrap();
+        let flag_keys = keys.get("testFlag").unwrap();
+        assert!(flag_keys.contains(&"email".to_string()));
+        assert!(flag_keys.contains(&"targetingKey".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keys_multiple_vars() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+        let config = r#"{
+            "flags": {
+                "complexFlag": {
+                    "state": "ENABLED",
+                    "variants": {"premium": true, "standard": false, "basic": false},
+                    "defaultVariant": "basic",
+                    "targeting": {
+                        "if": [
+                            {"starts_with": [{"var": "email"}, "admin@"]},
+                            "premium",
+                            {
+                                "if": [
+                                    {"sem_ver": [{"var": "appVersion"}, ">=", "2.0.0"]},
+                                    "standard",
+                                    "basic"
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let response = evaluator.update_state(config).unwrap();
+        let keys = response.required_context_keys.unwrap();
+        let flag_keys = keys.get("complexFlag").unwrap();
+        assert!(flag_keys.contains(&"email".to_string()));
+        assert!(flag_keys.contains(&"appVersion".to_string()));
+        assert!(flag_keys.contains(&"targetingKey".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keys_ignores_flagd_paths() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+        let config = r#"{
+            "flags": {
+                "enrichedFlag": {
+                    "state": "ENABLED",
+                    "variants": {"yes": true, "no": false},
+                    "defaultVariant": "no",
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "$flagd.flagKey"}, "enrichedFlag"]},
+                            "yes",
+                            "no"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let response = evaluator.update_state(config).unwrap();
+        let keys = response.required_context_keys.unwrap();
+        let flag_keys = keys.get("enrichedFlag").unwrap();
+        // Should only have targetingKey, not $flagd
+        assert!(!flag_keys.contains(&"$flagd".to_string()));
+        assert!(flag_keys.contains(&"targetingKey".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keys_empty_var_returns_none() {
+        // When a rule uses {"var": ""}, it accesses the entire context
+        // so we can't filter keys
+        let engine = create_evaluator();
+        let rule = json!({"var": ""});
+        let compiled = engine.compile(&rule).unwrap();
+        let result = extract_required_context_keys(&compiled);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_flag_indices_assigned() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+        let config = r#"{
+            "flags": {
+                "flagB": {
+                    "state": "ENABLED",
+                    "variants": {"on": true},
+                    "defaultVariant": "on"
+                },
+                "flagA": {
+                    "state": "ENABLED",
+                    "variants": {"off": false},
+                    "defaultVariant": "off"
+                }
+            }
+        }"#;
+
+        let response = evaluator.update_state(config).unwrap();
+        let indices = response.flag_indices.unwrap();
+
+        // Indices should be assigned in sorted order
+        assert_eq!(*indices.get("flagA").unwrap(), 0);
+        assert_eq!(*indices.get("flagB").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_evaluate_by_index_matches_evaluate_flag() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+        let config = r#"{
+            "flags": {
+                "targetedFlag": {
+                    "state": "ENABLED",
+                    "variants": {"admin": "admin-value", "user": "user-value"},
+                    "defaultVariant": "user",
+                    "targeting": {
+                        "if": [
+                            {"==": [{"var": "role"}, "admin"]},
+                            "admin",
+                            "user"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let response = evaluator.update_state(config).unwrap();
+        let indices = response.flag_indices.unwrap();
+        let index = *indices.get("targetedFlag").unwrap();
+
+        // Create pre-enriched context
+        let context = json!({
+            "role": "admin",
+            "targetingKey": "user-1",
+            "$flagd": {
+                "flagKey": "targetedFlag",
+                "timestamp": 1234567890
+            }
+        });
+
+        let result_by_index = evaluator.evaluate_flag_by_index(index, &context);
+        let result_by_key = evaluator.evaluate_flag("targetedFlag", &json!({"role": "admin"}));
+
+        assert_eq!(result_by_index.value, result_by_key.value);
+        assert_eq!(result_by_index.variant, result_by_key.variant);
+        assert_eq!(result_by_index.reason, result_by_key.reason);
+    }
+
+    #[test]
+    fn test_evaluate_flag_pre_enriched() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+        let config = r#"{
+            "flags": {
+                "myFlag": {
+                    "state": "ENABLED",
+                    "variants": {"yes": "found-key", "no": "no-key"},
+                    "defaultVariant": "no",
+                    "targeting": {
+                        "if": [
+                            {"!=": [{"var": "targetingKey"}, ""]},
+                            "yes",
+                            "no"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+
+        // Pre-enriched context (has $flagd)
+        let context = json!({
+            "targetingKey": "user-123",
+            "$flagd": {
+                "flagKey": "myFlag",
+                "timestamp": 1234567890
+            }
+        });
+
+        let result = evaluator.evaluate_flag_pre_enriched("myFlag", &context);
+        assert_eq!(result.value, json!("found-key"));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+    }
+
+    #[test]
+    fn test_evaluate_flag_pre_enriched_falls_back_to_normal() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+        let config = r#"{
+            "flags": {
+                "myFlag": {
+                    "state": "ENABLED",
+                    "variants": {"yes": "found-key", "no": "no-key"},
+                    "defaultVariant": "no",
+                    "targeting": {
+                        "if": [
+                            {"!=": [{"var": "targetingKey"}, ""]},
+                            "yes",
+                            "no"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        evaluator.update_state(config).unwrap();
+
+        // Context without $flagd — should fall back to normal enrichment
+        let context = json!({"targetingKey": "user-456"});
+        let result = evaluator.evaluate_flag_pre_enriched("myFlag", &context);
+        assert_eq!(result.value, json!("found-key"));
+        assert_eq!(result.reason, ResolutionReason::TargetingMatch);
+    }
+
+    #[test]
+    fn test_static_flags_not_in_required_context_keys() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+        let config = r#"{
+            "flags": {
+                "staticFlag": {
+                    "state": "ENABLED",
+                    "variants": {"on": true},
+                    "defaultVariant": "on"
+                },
+                "targetedFlag": {
+                    "state": "ENABLED",
+                    "variants": {"a": "val-a", "b": "val-b"},
+                    "defaultVariant": "a",
+                    "targeting": {
+                        "if": [{"==": [{"var": "tier"}, "premium"]}, "b", "a"]
+                    }
+                }
+            }
+        }"#;
+
+        let response = evaluator.update_state(config).unwrap();
+        let keys = response.required_context_keys.unwrap();
+
+        // Static flags should not appear in required_context_keys
+        assert!(!keys.contains_key("staticFlag"));
+        // Targeted flags should
+        assert!(keys.contains_key("targetedFlag"));
+        let targeted_keys = keys.get("targetedFlag").unwrap();
+        assert!(targeted_keys.contains(&"tier".to_string()));
+    }
+
+    #[test]
+    fn test_fractional_operator_includes_targeting_key() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+
+        let config = r#"{
+            "flags": {
+                "abTestFlag": {
+                    "state": "ENABLED",
+                    "variants": {"control": "control", "treatment": "treatment"},
+                    "defaultVariant": "control",
+                    "targeting": {
+                        "fractional": [
+                            ["control", 50],
+                            ["treatment", 50]
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let response = evaluator.update_state(config).unwrap();
+        let keys = response.required_context_keys.unwrap();
+        let flag_keys = keys.get("abTestFlag").unwrap();
+        // targetingKey is always included
+        assert!(flag_keys.contains(&"targetingKey".to_string()));
     }
 }

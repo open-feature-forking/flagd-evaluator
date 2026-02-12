@@ -18,6 +18,10 @@ public class UpdateStateResult {
 
     private Map<String, EvaluationResult<Object>> preEvaluated;
 
+    private Map<String, java.util.List<String>> requiredContextKeys;
+
+    private Map<String, Integer> flagIndices;
+
     public UpdateStateResult() {
     }
 
@@ -76,6 +80,39 @@ public class UpdateStateResult {
 
     public void setPreEvaluated(Map<String, EvaluationResult<Object>> preEvaluated) {
         this.preEvaluated = preEvaluated;
+    }
+
+    /**
+     * Gets the required context keys per flag for host-side filtering.
+     *
+     * <p>When present for a flag, the host should only serialize these context keys
+     * (plus {@code $flagd.*} enrichment and {@code targetingKey}) before calling evaluate.
+     * If a flag is absent from this map, send the full context.
+     *
+     * @return map of flag key to required context keys, or null if not available
+     */
+    public Map<String, java.util.List<String>> getRequiredContextKeys() {
+        return requiredContextKeys;
+    }
+
+    public void setRequiredContextKeys(Map<String, java.util.List<String>> requiredContextKeys) {
+        this.requiredContextKeys = requiredContextKeys;
+    }
+
+    /**
+     * Gets the flag key to numeric index mapping for {@code evaluate_by_index}.
+     *
+     * <p>Allows calling the WASM {@code evaluate_by_index(index, ...)} export
+     * instead of passing flag key strings.
+     *
+     * @return map of flag key to numeric index, or null if not available
+     */
+    public Map<String, Integer> getFlagIndices() {
+        return flagIndices;
+    }
+
+    public void setFlagIndices(Map<String, Integer> flagIndices) {
+        this.flagIndices = flagIndices;
     }
 
     @Override

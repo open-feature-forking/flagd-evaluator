@@ -248,4 +248,149 @@ class FlagEvaluatorTest {
         assertThat(result2.isSuccess()).isTrue();
         assertThat(result2.getChangedFlags()).containsExactlyInAnyOrder("flag-a", "flag-b");
     }
+
+    @Test
+    void testUpdateStateReturnsRequiredContextKeys() throws EvaluatorException {
+        String config = "{\n" +
+                "  \"flags\": {\n" +
+                "    \"targeted-flag\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"off\",\n" +
+                "      \"variants\": { \"on\": true, \"off\": false },\n" +
+                "      \"targeting\": {\n" +
+                "        \"if\": [\n" +
+                "          { \"==\": [{ \"var\": \"email\" }, \"admin@example.com\"] },\n" +
+                "          \"on\", \"off\"\n" +
+                "        ]\n" +
+                "      }\n" +
+                "    },\n" +
+                "    \"static-flag\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"on\",\n" +
+                "      \"variants\": { \"on\": true }\n" +
+                "    }\n" +
+                "  }\n" +
+                "}";
+
+        UpdateStateResult result = evaluator.updateState(config);
+        assertThat(result.isSuccess()).isTrue();
+
+        // Should have required context keys for the targeted flag
+        assertThat(result.getRequiredContextKeys()).isNotNull();
+        assertThat(result.getRequiredContextKeys()).containsKey("targeted-flag");
+        assertThat(result.getRequiredContextKeys().get("targeted-flag")).contains("email", "targetingKey");
+
+        // Static flags should not be in required context keys
+        assertThat(result.getRequiredContextKeys()).doesNotContainKey("static-flag");
+    }
+
+    @Test
+    void testUpdateStateReturnsFlagIndices() throws EvaluatorException {
+        String config = "{\n" +
+                "  \"flags\": {\n" +
+                "    \"flagB\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"on\",\n" +
+                "      \"variants\": { \"on\": true }\n" +
+                "    },\n" +
+                "    \"flagA\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"off\",\n" +
+                "      \"variants\": { \"off\": false }\n" +
+                "    }\n" +
+                "  }\n" +
+                "}";
+
+        UpdateStateResult result = evaluator.updateState(config);
+        assertThat(result.isSuccess()).isTrue();
+
+        // Should have indices for all flags
+        assertThat(result.getFlagIndices()).isNotNull();
+        assertThat(result.getFlagIndices()).containsKey("flagA");
+        assertThat(result.getFlagIndices()).containsKey("flagB");
+        // Indices should be assigned in sorted order
+        assertThat(result.getFlagIndices().get("flagA")).isEqualTo(0);
+        assertThat(result.getFlagIndices().get("flagB")).isEqualTo(1);
+    }
+
+    @Test
+    void testFilteredContextEvaluation() throws EvaluatorException {
+        // This test verifies that filtered context serialization produces correct results
+        // The flag uses only "email" from the context, but we pass many attributes
+        String config = "{\n" +
+                "  \"flags\": {\n" +
+                "    \"email-flag\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"default\",\n" +
+                "      \"variants\": { \"default\": false, \"premium\": true },\n" +
+                "      \"targeting\": {\n" +
+                "        \"if\": [\n" +
+                "          { \"==\": [{ \"var\": \"email\" }, \"admin@example.com\"] },\n" +
+                "          \"premium\", null\n" +
+                "        ]\n" +
+                "      }\n" +
+                "    }\n" +
+                "  }\n" +
+                "}";
+
+        evaluator.updateState(config);
+
+        // Create a "large" context with many attributes - only email matters
+        MutableContext context = new MutableContext("user-123");
+        context.add("email", "admin@example.com");
+        context.add("name", "Admin User");
+        context.add("age", 30);
+        context.add("country", "US");
+        context.add("tier", "premium");
+        context.add("department", "engineering");
+
+        // Should match via filtered context path
+        EvaluationResult<Boolean> result = evaluator.evaluateFlag(Boolean.class, "email-flag", context);
+        assertThat(result.getValue()).isEqualTo(true);
+        assertThat(result.getVariant()).isEqualTo("premium");
+        assertThat(result.getReason()).isEqualTo("TARGETING_MATCH");
+
+        // Non-matching email
+        MutableContext context2 = new MutableContext("user-456");
+        context2.add("email", "regular@example.com");
+        context2.add("name", "Regular User");
+        context2.add("age", 25);
+
+        result = evaluator.evaluateFlag(Boolean.class, "email-flag", context2);
+        assertThat(result.getValue()).isEqualTo(false);
+        assertThat(result.getVariant()).isEqualTo("default");
+    }
+
+    @Test
+    void testPreEvaluatedCacheStillWorks() throws EvaluatorException {
+        // Verify that pre-evaluated (static/disabled) flags still use the cache
+        String config = "{\n" +
+                "  \"flags\": {\n" +
+                "    \"static-flag\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"on\",\n" +
+                "      \"variants\": { \"on\": true, \"off\": false }\n" +
+                "    },\n" +
+                "    \"disabled-flag\": {\n" +
+                "      \"state\": \"DISABLED\",\n" +
+                "      \"defaultVariant\": \"on\",\n" +
+                "      \"variants\": { \"on\": true, \"off\": false }\n" +
+                "    }\n" +
+                "  }\n" +
+                "}";
+
+        evaluator.updateState(config);
+
+        // These should be served from cache (no WASM call)
+        MutableContext context = new MutableContext("user-1");
+        context.add("anything", "value");
+
+        EvaluationResult<Boolean> staticResult = evaluator.evaluateFlag(Boolean.class, "static-flag", context);
+        assertThat(staticResult.getValue()).isEqualTo(true);
+        assertThat(staticResult.getReason()).isEqualTo("STATIC");
+
+        EvaluationResult<Boolean> disabledResult = evaluator.evaluateFlag(Boolean.class, "disabled-flag", context);
+        assertThat(disabledResult.getValue()).isNull();
+        assertThat(disabledResult.getReason()).isEqualTo("DISABLED");
+    }
 }
