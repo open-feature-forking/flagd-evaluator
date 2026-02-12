@@ -1,21 +1,15 @@
 package dev.openfeature.flagd.evaluator;
 
-import com.dylibso.chicory.compiler.InterpreterFallback;
-import com.dylibso.chicory.compiler.MachineFactoryCompiler;
 import com.dylibso.chicory.runtime.HostFunction;
 import com.dylibso.chicory.runtime.Instance;
-import com.dylibso.chicory.runtime.Machine;
 import com.dylibso.chicory.runtime.Memory;
 import com.dylibso.chicory.runtime.Store;
-import com.dylibso.chicory.wasm.Parser;
 import com.dylibso.chicory.wasm.WasmModule;
+import com.dylibso.chicory.wasm.types.FunctionImport;
 import com.dylibso.chicory.wasm.types.FunctionType;
 import com.dylibso.chicory.wasm.types.ValType;
-import java.io.IOException;
-import java.io.InputStream;
 import java.security.SecureRandom;
 import java.util.List;
-import java.util.function.Function;
 
 /**
  * Runtime environment for the flagd-evaluator WASM module.
@@ -23,247 +17,179 @@ import java.util.function.Function;
  * <p>This class handles:
  * <ul>
  *   <li>Loading and compiling the WASM module from classpath
- *   <li>Providing 9 required host functions for the WASM module
+ *   <li>Providing required host functions for the WASM module
  *   <li>Creating configured WASM instances with AOT compilation
  * </ul>
  *
- * <p>The WASM module is loaded once during class initialization and compiled
- * using Chicory's JIT compiler for optimal performance.
+ * <p>Host functions are registered dynamically by inspecting the WASM module's import
+ * section. This eliminates hardcoded wasm-bindgen hash suffixes that break when Rust
+ * dependencies change. Functions are matched by stable prefix patterns:
+ * <ul>
+ *   <li>{@code host::get_current_time_unix_seconds} — Unix timestamp
+ *   <li>{@code __wbg_getRandomValues_*} — cryptographic entropy
+ *   <li>{@code __wbg_new_0_*} / {@code __wbg_getTime_*} — Date shim (legacy)
+ *   <li>{@code __wbindgen_throw_*} — error propagation
+ *   <li>All other wasm-bindgen imports — no-ops
+ * </ul>
  */
 public final class WasmRuntime {
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
-
 
     private WasmRuntime() {
         // Utility class - prevent instantiation
     }
 
     /**
-     * Create a Store with all required host functions for the flagd-evaluator WASM module.
-     *
-     * <p>The WASM module requires exactly 9 host functions:
-     *
-     * <p><b>CRITICAL (2):</b>
-     * <ul>
-     *   <li>get_current_time_unix_seconds: Provides Unix timestamp for $flagd.timestamp context enrichment
-     *   <li>getRandomValues: Provides cryptographic entropy for ahash (used by boon JSON schema validation)
-     * </ul>
-     *
-     * <p><b>LEGACY (2):</b>
-     * <ul>
-     *   <li>new_0/getTime: Legacy Date-based timestamp (kept for backward compatibility, may be removed)
-     * </ul>
-     *
-     * <p><b>ERROR HANDLING (1):</b>
-     * <ul>
-     *   <li>throw: Allows WASM to throw exceptions to Java
-     * </ul>
-     *
-     * <p><b>NO-OPS (4):</b>
-     * <ul>
-     *   <li>describe: Type description (wasm-bindgen artifact, no-op)
-     *   <li>object_drop_ref: Object reference counting (wasm-bindgen artifact, no-op)
-     *   <li>externref_table_grow/set_null: External reference table management (wasm-bindgen artifacts, no-ops)
-     * </ul>
-     *
-     * @return a Store configured with all required host functions
-     */
-    public static Store createStoreWithHostFunctions() {
-        Store store = new Store();
-        store.addFunction(
-                // CRITICAL: Custom host function for timestamp
-                createGetCurrentTimeUnixSeconds(),
-
-                // CRITICAL: Random entropy for ahash in boon
-                createGetRandomValues(),
-
-                // LEGACY: Date-based timestamp (may be removed in future)
-                createNew0(),
-                createGetTime(),
-
-                // ERROR HANDLING
-                createWbindgenThrow(),
-
-                // NO-OPS: wasm-bindgen artifacts
-                createDescribe(),
-                createObjectDropRef(),
-                createExternrefTableGrow(),
-                createExternrefTableSetNull());
-        return store;
-    }
-
-    /**
      * Create a configured WASM instance ready for flag evaluation.
      *
-     * <p>The instance is created with all required host functions and uses
-     * Chicory's JIT compiler for optimal performance.
+     * <p>Loads the WASM module, inspects its imports, dynamically registers matching
+     * host functions, and builds the instance with Chicory's JIT compiler.
      *
      * @return a WASM instance ready for use
      */
     public static Instance createInstance() {
-        Store store = createStoreWithHostFunctions();
-        return Instance.builder(CompiledEvaluator.load())
+        WasmModule module = CompiledEvaluator.load();
+        Store store = createStoreWithHostFunctions(module);
+        return Instance.builder(module)
                 .withImportValues(store.toImportValues())
                 .withMachineFactory(CompiledEvaluator::create)
                 .build();
     }
 
-    // ========================================================================
-    // Host Function Implementations
-    // ========================================================================
-
     /**
-     * CRITICAL: Provides random bytes for hash table seeding.
+     * Create a Store with host functions matched to the WASM module's actual imports.
      *
-     * <p>This is called by getrandom (used by ahash in boon validation).
-     * Without proper random bytes, the WASM module will panic.
-     */
-    private static HostFunction createGetRandomValues() {
-        return new HostFunction(
-                "__wbindgen_placeholder__",
-                "__wbg_getRandomValues_1c61fac11405ffdc",
-                FunctionType.of(List.of(ValType.I32, ValType.I32), List.of()),
-                (Instance instance, long... args) -> {
-                    // CRITICAL: This is called by getrandom to get entropy for ahash
-                    // ahash uses this for hash table seed generation in boon validation
-                    int bufferPtr = (int) args[1]; // Pointer to buffer in WASM memory
-
-                    // The WASM code expects a 32-byte buffer at bufferPtr
-                    // Fill it with cryptographically secure random bytes
-                    byte[] randomBytes = new byte[32];
-                    SECURE_RANDOM.nextBytes(randomBytes);
-
-                    Memory memory = instance.memory();
-                    memory.write(bufferPtr, randomBytes);
-
-                    return null;
-                });
-    }
-
-    /**
-     * Creates a new Date object.
-     * Used for $flagd.timestamp in evaluation context.
-     */
-    private static HostFunction createNew0() {
-        return new HostFunction(
-                "__wbindgen_placeholder__",
-                "__wbg_new_0_23cedd11d9b40c9d",
-                FunctionType.of(List.of(), List.of(ValType.I32)),
-                (Instance instance, long... args) -> {
-                    // Return a dummy reference
-                    return new long[] {0L};
-                });
-    }
-
-    /**
-     * Gets timestamp from Date object.
-     * Returns current time in milliseconds as f64.
-     * Used for $flagd.timestamp in evaluation context.
-     */
-    private static HostFunction createGetTime() {
-        return new HostFunction(
-                "__wbindgen_placeholder__",
-                "__wbg_getTime_ad1e9878a735af08",
-                FunctionType.of(List.of(ValType.I32), List.of(ValType.F64)),
-                (Instance instance, long... args) -> {
-                    // Return current time in milliseconds
-                    return new long[] {Double.doubleToRawLongBits((double) System.currentTimeMillis())};
-                });
-    }
-
-    /**
-     * Throws an exception with a message from WASM memory.
-     */
-    private static HostFunction createWbindgenThrow() {
-        return new HostFunction(
-                "__wbindgen_placeholder__",
-                "__wbg___wbindgen_throw_dd24417ed36fc46e",
-                FunctionType.of(List.of(ValType.I32, ValType.I32), List.of()),
-                (Instance instance, long... args) -> {
-                    // Throw exception - read the error message from memory
-                    int ptr = (int) args[0];
-                    int len = (int) args[1];
-                    Memory memory = instance.memory();
-                    String message = memory.readString(ptr, len);
-                    throw new RuntimeException("WASM threw: " + message);
-                });
-    }
-
-    /**
-     * Manages externref table growth.
-     * No-op in our context as we don't use externrefs.
-     */
-    private static HostFunction createExternrefTableGrow() {
-        return new HostFunction(
-                "__wbindgen_externref_xform__",
-                "__wbindgen_externref_table_grow",
-                FunctionType.of(List.of(ValType.I32), List.of(ValType.I32)),
-                (Instance instance, long... args) -> {
-                    // Return previous size
-                    return new long[] {128L};
-                });
-    }
-
-    /**
-     * Sets externref table entry to null.
-     * No-op in our context as we don't use externrefs.
-     */
-    private static HostFunction createExternrefTableSetNull() {
-        return new HostFunction(
-                "__wbindgen_externref_xform__",
-                "__wbindgen_externref_table_set_null",
-                FunctionType.of(List.of(ValType.I32), List.of()),
-                (Instance instance, long... args) -> {
-                    // No-op: We don't maintain an externref table
-                    return null;
-                });
-    }
-
-    /**
-     * Drops an object reference.
-     * No-op in our context as we don't track JS objects.
-     */
-    private static HostFunction createObjectDropRef() {
-        return new HostFunction(
-                "__wbindgen_placeholder__",
-                "__wbindgen_object_drop_ref",
-                FunctionType.of(List.of(ValType.I32), List.of()),
-                (Instance instance, long... args) -> {
-                    // No-op: We're not tracking JS objects in Java
-                    return null;
-                });
-    }
-
-    /**
-     * Describes a type.
-     * No-op in our context as type description isn't needed at runtime.
-     */
-    private static HostFunction createDescribe() {
-        return new HostFunction(
-                "__wbindgen_placeholder__",
-                "__wbindgen_describe",
-                FunctionType.of(List.of(ValType.I32), List.of()),
-                (Instance instance, long... args) -> {
-                    // No-op: Type description not needed at runtime
-                    return null;
-                });
-    }
-
-    /**
-     * CRITICAL: Provides the current Unix timestamp.
+     * <p>Iterates the module's import section and registers handlers based on
+     * prefix matching, so wasm-bindgen hash changes don't require code updates.
      *
-     * <p>This is the main host function required for $flagd.timestamp context enrichment.
-     * Returns Unix timestamp in seconds since epoch (1970-01-01 00:00:00 UTC).
+     * @param module the loaded WASM module to inspect
+     * @return a Store configured with all required host functions
      */
-    private static HostFunction createGetCurrentTimeUnixSeconds() {
-        return new HostFunction(
-                "host",
-                "get_current_time_unix_seconds",
-                FunctionType.of(List.of(), List.of(ValType.I64)),
-                (Instance instance, long... args) -> {
-                    long currentTimeSeconds = System.currentTimeMillis() / 1000;
-                    return new long[] {currentTimeSeconds};
+    static Store createStoreWithHostFunctions(WasmModule module) {
+        Store store = new Store();
+
+        module.importSection().stream()
+                .filter(FunctionImport.class::isInstance)
+                .map(FunctionImport.class::cast)
+                .forEach(fi -> {
+                    HostFunction hf = createHostFunction(fi.module(), fi.name());
+                    if (hf != null) {
+                        store.addFunction(hf);
+                    }
                 });
+
+        return store;
+    }
+
+    // ========================================================================
+    // Dynamic Host Function Matching
+    // ========================================================================
+
+    /**
+     * Create a host function for the given import, matched by module and name prefix.
+     *
+     * @return a HostFunction implementation, or null if unrecognized
+     */
+    private static HostFunction createHostFunction(String module, String name) {
+        if ("host".equals(module)) {
+            return createStableHostFunction(name);
+        }
+        if ("__wbindgen_placeholder__".equals(module)) {
+            return createWbindgenFunction(module, name);
+        }
+        if ("__wbindgen_externref_xform__".equals(module)) {
+            return createExternrefFunction(module, name);
+        }
+        return null;
+    }
+
+    /**
+     * Create a handler for stable host:: imports (known names, no hashes).
+     */
+    private static HostFunction createStableHostFunction(String name) {
+        if ("get_current_time_unix_seconds".equals(name)) {
+            return new HostFunction(
+                    "host", name,
+                    FunctionType.of(List.of(), List.of(ValType.I64)),
+                    (Instance instance, long... args) -> {
+                        long currentTimeSeconds = System.currentTimeMillis() / 1000;
+                        return new long[] {currentTimeSeconds};
+                    });
+        }
+        // Unknown host function — register a no-op to avoid link errors
+        return null;
+    }
+
+    /**
+     * Create a handler for __wbindgen_placeholder__ imports, matched by name prefix.
+     * The hash suffix is ignored so these survive dependency updates.
+     */
+    private static HostFunction createWbindgenFunction(String module, String name) {
+        if (name.startsWith("__wbg_getRandomValues_")) {
+            // Cryptographic entropy for ahash (boon validation hash table seeding)
+            return new HostFunction(
+                    module, name,
+                    FunctionType.of(List.of(ValType.I32, ValType.I32), List.of()),
+                    (Instance instance, long... args) -> {
+                        int bufferPtr = (int) args[1];
+                        byte[] randomBytes = new byte[32];
+                        SECURE_RANDOM.nextBytes(randomBytes);
+                        instance.memory().write(bufferPtr, randomBytes);
+                        return null;
+                    });
+        }
+        if (name.startsWith("__wbg_new_0_")) {
+            // Date constructor shim — return dummy reference
+            return new HostFunction(
+                    module, name,
+                    FunctionType.of(List.of(), List.of(ValType.I32)),
+                    (Instance instance, long... args) -> new long[] {0L});
+        }
+        if (name.startsWith("__wbg_getTime_")) {
+            // Date.getTime shim — return current time in milliseconds as f64
+            return new HostFunction(
+                    module, name,
+                    FunctionType.of(List.of(ValType.I32), List.of(ValType.F64)),
+                    (Instance instance, long... args) -> {
+                        return new long[] {
+                            Double.doubleToRawLongBits((double) System.currentTimeMillis())
+                        };
+                    });
+        }
+        if (name.contains("__wbindgen_throw")) {
+            // Error propagation — read message from WASM memory and throw
+            return new HostFunction(
+                    module, name,
+                    FunctionType.of(List.of(ValType.I32, ValType.I32), List.of()),
+                    (Instance instance, long... args) -> {
+                        int ptr = (int) args[0];
+                        int len = (int) args[1];
+                        String message = instance.memory().readString(ptr, len);
+                        throw new RuntimeException("WASM threw: " + message);
+                    });
+        }
+        // All other wbindgen functions (describe, object_drop_ref, etc.) — no-op
+        return new HostFunction(
+                module, name,
+                FunctionType.of(List.of(ValType.I32), List.of()),
+                (Instance instance, long... args) -> null);
+    }
+
+    /**
+     * Create a handler for __wbindgen_externref_xform__ imports.
+     */
+    private static HostFunction createExternrefFunction(String module, String name) {
+        if (name.equals("__wbindgen_externref_table_grow")) {
+            return new HostFunction(
+                    module, name,
+                    FunctionType.of(List.of(ValType.I32), List.of(ValType.I32)),
+                    (Instance instance, long... args) -> new long[] {128L});
+        }
+        // table_set_null and any other externref functions — no-op
+        return new HostFunction(
+                module, name,
+                FunctionType.of(List.of(ValType.I32), List.of()),
+                (Instance instance, long... args) -> null);
     }
 }
