@@ -366,6 +366,73 @@ public class ComparisonBenchmark {
         }
     }
 
+    // ========================================================================
+    // X5: Old vs New under high concurrency (16 threads)
+    // ========================================================================
+
+    @Benchmark
+    @Threads(16)
+    public void X5_old_16t_simple(ComparisonState state, ThreadContext ctx, Blackhole bh) {
+        ProviderEvaluation<Boolean> result = state.oldResolver.booleanEvaluation(
+            "simple-bool", false, state.emptyContext);
+        bh.consume(result);
+    }
+
+    @Benchmark
+    @Threads(16)
+    public void X5_new_16t_simple(ComparisonState state, ThreadContext ctx, Blackhole bh) {
+        try {
+            EvaluationResult<Boolean> result = state.newEvaluator.evaluateFlag(
+                Boolean.class, "simple-bool", ctx.simpleContextJson);
+            bh.consume(result.getValue());
+            bh.consume(result.getVariant());
+        } catch (Exception e) {
+            throw new RuntimeException("Benchmark failed", e);
+        }
+    }
+
+    @Benchmark
+    @Threads(16)
+    public void X5_old_16t_targeting(ComparisonState state, ThreadContext ctx, Blackhole bh) {
+        ProviderEvaluation<Boolean> result = state.oldResolver.booleanEvaluation(
+            "targeted-access", false, ctx.matchingContext);
+        bh.consume(result);
+    }
+
+    @Benchmark
+    @Threads(16)
+    public void X5_new_16t_targeting(ComparisonState state, ThreadContext ctx, Blackhole bh) {
+        try {
+            EvaluationResult<Boolean> result = state.newEvaluator.evaluateFlag(
+                Boolean.class, "targeted-access", ctx.matchingContext);
+            bh.consume(result.getValue());
+            bh.consume(result.getVariant());
+        } catch (Exception e) {
+            throw new RuntimeException("Benchmark failed", e);
+        }
+    }
+
+    @Benchmark
+    @Threads(16)
+    public void X5_old_16t_largeContext(ComparisonState state, ThreadContext ctx, Blackhole bh) {
+        ProviderEvaluation<Boolean> result = state.oldResolver.booleanEvaluation(
+            "targeted-access", false, state.largeContext);
+        bh.consume(result);
+    }
+
+    @Benchmark
+    @Threads(16)
+    public void X5_new_16t_largeContext(ComparisonState state, ThreadContext ctx, Blackhole bh) {
+        try {
+            EvaluationResult<Boolean> result = state.newEvaluator.evaluateFlag(
+                Boolean.class, "targeted-access", state.largeContextJson);
+            bh.consume(result.getValue());
+            bh.consume(result.getVariant());
+        } catch (Exception e) {
+            throw new RuntimeException("Benchmark failed", e);
+        }
+    }
+
     /**
      * Main method to run benchmarks standalone.
      */
