@@ -264,6 +264,146 @@ fn concurrent_read_write_4t(c: &mut Criterion) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// C7: 16 threads evaluating simple flag
+// ---------------------------------------------------------------------------
+
+/// C7: 16 threads concurrently evaluating a simple (static) flag.
+///
+/// Tests throughput saturation — at 16 threads the mutex contention dominates,
+/// revealing the scalability ceiling of the current locking strategy.
+fn concurrent_simple_16t(c: &mut Criterion) {
+    let evaluator = make_evaluator();
+
+    c.bench_function("concurrent_simple_16t", |b| {
+        b.iter(|| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| {
+                    let eval = Arc::clone(&evaluator);
+                    thread::spawn(move || {
+                        let ctx = json!({});
+                        let guard = eval.lock().unwrap();
+                        guard.evaluate_flag(black_box("boolFlag"), black_box(&ctx))
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+        })
+    });
+}
+
+// ---------------------------------------------------------------------------
+// C8: 16 threads evaluating targeting flag
+// ---------------------------------------------------------------------------
+
+/// C8: 16 threads concurrently evaluating a flag with targeting rules.
+///
+/// Combines heavy mutex contention with per-evaluation rule processing,
+/// measuring how targeting overhead compounds under high parallelism.
+fn concurrent_targeting_16t(c: &mut Criterion) {
+    let evaluator = make_evaluator();
+
+    c.bench_function("concurrent_targeting_16t", |b| {
+        b.iter(|| {
+            let handles: Vec<_> = (0..16)
+                .map(|i| {
+                    let eval = Arc::clone(&evaluator);
+                    thread::spawn(move || {
+                        let role = if i % 2 == 0 { "admin" } else { "viewer" };
+                        let ctx = json!({"role": role});
+                        let guard = eval.lock().unwrap();
+                        guard.evaluate_flag(black_box("targetedFlag"), black_box(&ctx))
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+        })
+    });
+}
+
+// ---------------------------------------------------------------------------
+// C9: Mixed workload - 16 threads with simple/targeting/disabled flags
+// ---------------------------------------------------------------------------
+
+/// C9: 16 threads with mixed workload (simple, targeting, and disabled flags).
+///
+/// Simulates a realistic high-load production scenario where threads evaluate
+/// different flag types concurrently. The workload distribution cycles through
+/// static, targeting, and disabled flags across all 16 threads.
+fn concurrent_mixed_16t(c: &mut Criterion) {
+    let evaluator = make_evaluator();
+
+    // Cycle through workload types across 16 threads:
+    // simple, targeting(admin), disabled, targeting(viewer), repeat...
+    let workload_defs: Vec<(&str, Value)> = vec![
+        ("boolFlag", json!({})),
+        ("targetedFlag", json!({"role": "admin"})),
+        ("disabledFlag", json!({})),
+        ("targetedFlag", json!({"role": "viewer"})),
+    ];
+
+    c.bench_function("concurrent_mixed_16t", |b| {
+        b.iter(|| {
+            let handles: Vec<_> = (0..16)
+                .map(|i| {
+                    let eval = Arc::clone(&evaluator);
+                    let (key, ctx) = workload_defs[i % workload_defs.len()].clone();
+                    thread::spawn(move || {
+                        let guard = eval.lock().unwrap();
+                        guard.evaluate_flag(black_box(key), black_box(&ctx))
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+        })
+    });
+}
+
+// ---------------------------------------------------------------------------
+// C10: Read/write contention - 15 readers + 1 writer (16 threads total)
+// ---------------------------------------------------------------------------
+
+/// C10: Read/write contention at 16 threads — 15 evaluating while 1 updates state.
+///
+/// The writer thread alternates between two configurations on each iteration,
+/// simulating periodic config refreshes under heavy parallel evaluation load.
+/// This measures contention between readers and a writer at high thread counts.
+fn concurrent_read_write_16t(c: &mut Criterion) {
+    let evaluator = make_evaluator();
+
+    c.bench_function("concurrent_read_write_16t", |b| {
+        b.iter(|| {
+            let eval_writer = Arc::clone(&evaluator);
+            let writer = thread::spawn(move || {
+                let mut guard = eval_writer.lock().unwrap();
+                guard.update_state(black_box(BENCH_CONFIG_ALT)).unwrap();
+            });
+
+            let readers: Vec<_> = (0..15)
+                .map(|_| {
+                    let eval = Arc::clone(&evaluator);
+                    thread::spawn(move || {
+                        let ctx = json!({});
+                        let guard = eval.lock().unwrap();
+                        guard.evaluate_flag(black_box("boolFlag"), black_box(&ctx))
+                    })
+                })
+                .collect();
+
+            writer.join().unwrap();
+            for h in readers {
+                h.join().unwrap();
+            }
+        })
+    });
+}
+
 criterion_group!(
     benches,
     concurrent_simple_1t,
@@ -272,5 +412,9 @@ criterion_group!(
     concurrent_targeting_4t,
     concurrent_mixed_4t,
     concurrent_read_write_4t,
+    concurrent_simple_16t,
+    concurrent_targeting_16t,
+    concurrent_mixed_16t,
+    concurrent_read_write_16t,
 );
 criterion_main!(benches);
