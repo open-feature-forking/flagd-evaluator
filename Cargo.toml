@@ -60,6 +60,10 @@ harness = false
 name = "comparison"
 harness = false
 
+[[bench]]
+name = "scale"
+harness = false
+
 [profile.release]
 # Optimize for speed instead of size for better runtime performance
 opt-level = 2
