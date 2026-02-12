@@ -169,7 +169,7 @@ fn evaluate_logic_complex(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// Context size variations (E2, E3, E5, E7 from BENCHMARKS.md)
+// Context size variations (E2-E7 from BENCHMARKS.md)
 // ---------------------------------------------------------------------------
 
 /// Standard small context (5 attributes) from BENCHMARKS.md.
@@ -220,6 +220,17 @@ fn evaluate_flag_simple_large_ctx(c: &mut Criterion) {
     });
 }
 
+/// E4: Simple targeting with small context - measures minimal rule evaluation cost.
+fn evaluate_flag_targeting_small_ctx(c: &mut Criterion) {
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+    evaluator.update_state(BENCH_CONFIG).unwrap();
+    let context = small_context(); // contains "role": "admin" which triggers the match
+
+    c.bench_function("evaluate_flag_targeting_small_ctx", |b| {
+        b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(&context)))
+    });
+}
+
 /// E5: Simple targeting with large context - measures targeting evaluation with large payloads.
 fn evaluate_flag_targeting_large_ctx(c: &mut Criterion) {
     let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
@@ -228,6 +239,17 @@ fn evaluate_flag_targeting_large_ctx(c: &mut Criterion) {
 
     c.bench_function("evaluate_flag_targeting_large_ctx", |b| {
         b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(&context)))
+    });
+}
+
+/// E6: Complex targeting with small context - measures rule evaluation cost dominance.
+fn evaluate_flag_complex_targeting_small_ctx(c: &mut Criterion) {
+    let mut evaluator = FlagEvaluator::new(ValidationMode::Permissive);
+    evaluator.update_state(BENCH_CONFIG).unwrap();
+    let context = small_context(); // contains "tier": "premium" and "score": 85
+
+    c.bench_function("evaluate_flag_complex_targeting_small_ctx", |b| {
+        b.iter(|| evaluator.evaluate_flag(black_box("complexFlag"), black_box(&context)))
     });
 }
 
@@ -255,7 +277,9 @@ criterion_group!(
     // Context size variations
     evaluate_flag_simple_small_ctx,
     evaluate_flag_simple_large_ctx,
+    evaluate_flag_targeting_small_ctx,
     evaluate_flag_targeting_large_ctx,
+    evaluate_flag_complex_targeting_small_ctx,
     evaluate_flag_complex_targeting_large_ctx,
 );
 criterion_main!(benches);

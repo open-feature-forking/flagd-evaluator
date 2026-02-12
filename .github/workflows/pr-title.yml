@@ -30,6 +30,7 @@ jobs:
             perf
             build
             style
+            infra
           # Require a scope (optional - can be removed if scopes aren't required)
           requireScope: false
           # Subjects must not be sentence-case, start-case, pascal-case, or upper-case
