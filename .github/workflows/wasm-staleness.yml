@@ -1,0 +1,63 @@
+name: WASM Staleness Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-staleness:
+    name: Check WASM Binary Staleness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-wasm-staleness-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-staleness-
+
+      - name: Build WASM from source
+        run: cargo build --target wasm32-unknown-unknown --no-default-features --release --lib
+
+      - name: Compare SHA256 hashes
+        run: |
+          if [ ! -f flagd_evaluator.wasm ]; then
+            echo "::warning::No committed flagd_evaluator.wasm found at repo root. It will be added by release-please."
+            exit 0
+          fi
+
+          COMMITTED_HASH=$(sha256sum flagd_evaluator.wasm | awk '{print $1}')
+          BUILT_HASH=$(sha256sum target/wasm32-unknown-unknown/release/flagd_evaluator.wasm | awk '{print $1}')
+
+          echo "Committed: $COMMITTED_HASH"
+          echo "Built:     $BUILT_HASH"
+
+          if [ "$COMMITTED_HASH" != "$BUILT_HASH" ]; then
+            echo ""
+            echo "::warning::The committed flagd_evaluator.wasm is stale — it does not match the WASM built from the current Rust source."
+            echo "::warning::This is expected during development. The release-please workflow will rebuild and commit the binary on the release PR."
+            echo ""
+            echo "To update locally: cargo build --target wasm32-unknown-unknown --no-default-features --release --lib && cp target/wasm32-unknown-unknown/release/flagd_evaluator.wasm ."
+          else
+            echo "WASM binary is up to date."
+          fi
