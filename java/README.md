@@ -15,6 +15,8 @@ This library provides a standalone Java artifact that bundles the flagd-evaluato
 - ✅ **JIT compiled** - Uses Chicory's JIT compiler for performance
 - ✅ **Full feature support** - All flagd evaluation features including targeting rules
 - ✅ **Performance benchmarks** - JMH benchmarks for tracking performance over time
+- ✅ **Context key filtering** - Only serializes context fields referenced by targeting rules
+- ✅ **Index-based evaluation** - Numeric flag indices avoid string key overhead across WASM boundary
 
 ## Installation
 
@@ -188,8 +190,9 @@ Main class for flag evaluation.
 
 #### Methods
 
-- `UpdateStateResult updateState(String jsonConfig)` - Updates flag configuration
-- `<T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, String contextJson)` - Type-safe flag evaluation with JSON context
+- `UpdateStateResult updateState(String jsonConfig)` - Updates flag configuration. Returns changed flags, pre-evaluated results, required context keys per flag, and flag indices.
+- `<T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, EvaluationContext context)` - Type-safe flag evaluation with OpenFeature context (recommended). Automatically applies context key filtering and index-based evaluation when available.
+- `<T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, String contextJson)` - Type-safe flag evaluation with pre-serialized JSON context
 - `<T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, Map<String, Object> context)` - Type-safe flag evaluation with Map context
 
 **Supported Types:**
@@ -222,6 +225,9 @@ Contains the result of updating flag state.
 - `boolean isSuccess()` - Whether the update succeeded
 - `String getError()` - Error message if update failed
 - `List<String> getChangedFlags()` - List of changed flag keys
+- `Map<String, EvaluationResult<Object>> getPreEvaluated()` - Pre-evaluated results for static/disabled flags (cached on Java side)
+- `Map<String, List<String>> getRequiredContextKeys()` - Per-flag context keys needed by targeting rules (for context filtering)
+- `Map<String, Integer> getFlagIndices()` - Flag key to numeric index mapping (for `evaluate_by_index`)
 
 ## Building from Source
 
@@ -264,75 +270,62 @@ At runtime:
 - Chicory JIT compiles the WASM to optimized bytecode
 - Custom Jackson serializers handle OpenFeature SDK types (`ImmutableMetadata`, `LayeredEvaluationContext`)
 - Each `FlagEvaluator` instance creates its own WASM instance
+- `updateState()` populates three caches: pre-evaluated results, required context keys per flag, and flag index mappings
+- `evaluateFlag()` checks the pre-evaluated cache first, then applies context key filtering and index-based WASM evaluation for targeting flags
 - Type-safe evaluation returns `EvaluationResult<T>` with compile-time type checking
-- Evaluations are synchronized for thread safety
+- All evaluation and state update operations are synchronized for thread safety
 
 ## Performance
 
 - **Startup**: WASM module compiled once during class loading (~100ms)
 - **Memory**: ~3MB for WASM module + Chicory runtime
-- **Static flags**: Near-zero cost via pre-evaluation cache (see below)
+- **Static flags**: ~0.02 µs via pre-evaluation cache (no WASM call)
+- **Targeting flags**: ~12.8 µs with context key filtering (1000+ attribute context)
 
-### Pre-evaluation Cache (Issue #60)
+### Optimization Pipeline
 
-Static flags (no targeting rules) and disabled flags are pre-evaluated during `updateState()`. Their results are cached on the Java side, so `evaluateFlag()` returns instantly without crossing the WASM boundary. This eliminates the ~4.4µs WASM overhead for the most common flag types.
+The evaluator applies three optimizations automatically during `evaluateFlag()`:
 
-### WASM vs Native JsonLogic Comparison
+1. **Pre-evaluation cache**: Static flags (no targeting rules) and disabled flags are pre-evaluated during `updateState()` and cached on the Java side. `evaluateFlag()` returns instantly without crossing the WASM boundary.
 
-JMH benchmark comparing this WASM-based evaluator against a native Java JsonLogic implementation (`json-logic-java`):
+2. **Context key filtering**: During `updateState()`, the WASM module walks each flag's compiled targeting tree to extract which context fields the rule references (e.g., `{"var": "email"}` -> `email`). When evaluating with an `EvaluationContext`, only those fields are serialized — a 1000-attribute context where the rule uses 2 fields shrinks from ~50KB JSON to ~200 bytes.
 
-| Scenario | Native JsonLogic | WASM Evaluator | Ratio |
+3. **Index-based evaluation**: Each flag is assigned a stable numeric index during `updateState()`. The WASM `evaluate_by_index(u32, ...)` export avoids flag key string serialization and uses O(1) Vec lookup instead of HashMap lookup on the Rust side.
+
+Context enrichment (`$flagd.flagKey`, `$flagd.timestamp`, `targetingKey`) is also moved to the Java side, eliminating an allocation + clone inside the WASM module.
+
+### WASM Evaluator vs Native JsonLogic
+
+JMH benchmark (`ResolverComparisonBenchmark`) comparing this WASM-based evaluator against a native Java JsonLogic implementation (`json-logic-java`) with a `LayeredEvaluationContext` containing 1000+ attributes:
+
+| Scenario | Native JsonLogic | WASM Evaluator | Speedup |
 |---|---|---|---|
-| **Simple flag (no targeting)** | 0.022 µs/op | 4.41 µs/op | ~200x |
-| **Targeting match** | 7.85 µs/op | 26.29 µs/op | ~3.4x |
-| **Targeting no-match** | 3.55 µs/op | 15.21 µs/op | ~4x |
+| **Simple flag** (no targeting) | 0.023 µs/op | 0.020 µs/op | ~same (both cached) |
+| **Targeting match** (1000+ attrs) | 409.3 µs/op | 12.8 µs/op | **32x faster** |
+| **Targeting no-match** (small ctx) | 4.4 µs/op | 12.0 µs/op | 0.4x |
+| **Many evals** (x1000, 1000+ attrs) | 408.5 µs/op | 11.9 µs/op | **34x faster** |
 
-> **Note**: Simple flags now bypass WASM entirely via the pre-evaluation cache, effectively matching native performance.
+Key observations:
+- **Simple/static flags** are served from the Java-side cache at ~0.02 µs — no WASM call at all.
+- **Targeting flags with large contexts** benefit most from context key filtering. The old JsonLogic resolver must iterate all 1000+ attributes on every evaluation, while the WASM evaluator only serializes the 2-3 fields the rule actually uses.
+- **Small contexts** (targeting no-match row) show the WASM overhead more clearly — the 12 µs includes the WASM boundary crossing cost. For small contexts, the native resolver is faster since there's little serialization to save.
 
-**Context size impact** (targeting evaluation with varying context sizes):
-
-| Context Size | Native JsonLogic | WASM Evaluator | Ratio |
-|---|---|---|---|
-| Empty | 3.55 µs/op | 15.21 µs/op | ~4x |
-| Small (5 attributes) | 6.34 µs/op | 27.10 µs/op | ~4x |
-| Large (100+ attributes) | 24.02 µs/op | 166.72 µs/op | ~7x |
-
-The WASM overhead comes from JSON serialization across the WASM boundary. For targeting rules with large contexts, serialization dominates the cost.
-
-### Benchmarks
-
-The library includes JMH (Java Microbenchmark Harness) benchmarks for performance tracking:
+### Running Benchmarks
 
 ```bash
-# Run comparison benchmark (WASM vs native JsonLogic)
-./mvnw exec:java@run-jmh-benchmark -Dbenchmark=ResolverComparisonBenchmark
+# Build the JMH fat JAR
+cd java
+./mvnw clean package
 
-# Run evaluator benchmarks
-./mvnw exec:java@run-jmh-benchmark
-```
+# Run the old-vs-new comparison benchmark
+java -jar target/benchmarks.jar ResolverComparisonBenchmark
 
-**Evaluator Benchmark Results** (example from development machine):
-```
-Benchmark                                              Mode  Cnt       Score        Error  Units
-FlagEvaluatorJmhBenchmark.evaluateWithLayeredContext  thrpt    5   13035.383 ±   4173.375  ops/s
-FlagEvaluatorJmhBenchmark.evaluateWithSimpleContext   thrpt    5   14748.099 ±   2689.011  ops/s
-FlagEvaluatorJmhBenchmark.serializeLayeredContext     thrpt    5  222863.374 ± 151002.720  ops/s
-```
-
-**Benchmark Scenarios:**
-- **evaluateWithLayeredContext**: Full flag evaluation with 4-layer context (API, Transaction, Client, Invocation) and 100+ entries per layer
-- **evaluateWithSimpleContext**: Baseline evaluation with minimal context
-- **serializeLayeredContext**: JSON serialization overhead measurement
-
-To run with GC profiling:
-```bash
-./mvnw exec:java -Dexec.classpathScope=test -Dexec.mainClass=org.openjdk.jmh.Main \
-  -Dexec.args="FlagEvaluatorJmhBenchmark -prof gc -f 0"
+# Run the evaluator benchmarks (layered context, simple context, serialization)
+java -jar target/benchmarks.jar FlagEvaluatorJmhBenchmark
 ```
 
 The JUnit-based benchmark test suite is also available:
 ```bash
-# Run performance benchmark tests
 ./mvnw test -Dtest=FlagEvaluatorBenchmarkTest
 ```
 
@@ -342,7 +335,6 @@ The JUnit-based benchmark test suite is also available:
 
 ## Future Improvements
 
-- **AOT Compilation**: When Chicory supports AOT, compile WASM → Java at build time for better performance
 - **Async API**: Non-blocking evaluation methods
 - **Streaming Updates**: Support for flag configuration streams
 

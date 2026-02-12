@@ -566,6 +566,8 @@ Each evaluator instance maintains its own flag configuration state and validatio
 |----------|-----------|-------------|
 | `update_state` | `(config_ptr, config_len) -> u64` | Updates the feature flag configuration state |
 | `evaluate` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a feature flag against context (generic) |
+| `evaluate_reusable` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Like `evaluate` but does not deallocate input buffers (caller manages memory) |
+| `evaluate_by_index` | `(flag_index, context_ptr, context_len) -> u64` | Evaluates a flag by numeric index (avoids flag key string overhead). Does not deallocate input buffers. |
 | `evaluate_boolean` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a boolean flag with type checking |
 | `evaluate_string` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a string flag with type checking |
 | `evaluate_integer` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates an integer flag with type checking |
@@ -615,7 +617,18 @@ The configuration should follow the [flagd flag definition schema](https://flagd
 // Success
 {
   "success": true,
-  "error": null
+  "error": null,
+  "changedFlags": ["flag-a", "flag-b"],
+  "preEvaluated": {
+    "static-flag": {"value": true, "variant": "on", "reason": "STATIC"}
+  },
+  "requiredContextKeys": {
+    "targeted-flag": ["email", "targetingKey"]
+  },
+  "flagIndices": {
+    "static-flag": 0,
+    "targeted-flag": 1
+  }
 }
 
 // Error
@@ -786,6 +799,24 @@ flowchart TD
     HostRead --> HostDealloc[Host deallocates all memory]
     HostDealloc --> End([Evaluation complete])
 ```
+
+### evaluate_by_index
+
+Evaluates a flag using a numeric index instead of a string key. This is an optimization that avoids flag key string serialization and uses O(1) Vec lookup instead of HashMap lookup on the Rust side.
+
+**Parameters:**
+- `flag_index` (u32): Numeric index of the flag (from `flagIndices` in the `update_state` response)
+- `context_ptr` (u32): Pointer to the evaluation context JSON string in WASM memory
+- `context_len` (u32): Length of the context JSON string
+
+**Returns:**
+- `u64`: Packed pointer where upper 32 bits = result pointer, lower 32 bits = result length
+
+**Important:**
+- Does NOT deallocate input buffers — the caller must free `context_ptr` after reading the result.
+- Expects the context to already include `$flagd` enrichment and `targetingKey` (the host should add these before calling). If `$flagd` is present in the context, WASM-side enrichment is skipped.
+- Flag indices are assigned in sorted (alphabetical) order during `update_state()` and are stable until the next `update_state()` call.
+- If the index is out of bounds, returns a `FLAG_NOT_FOUND` error.
 
 ### Context Enrichment
 
@@ -1237,16 +1268,30 @@ int len = (int) (packedResult & 0xFFFFFFFFL);
 
 | Metric | Target | Notes |
 |--------|--------|-------|
-| WASM Size | ~1.5MB | Full JSON Logic implementation with 50+ operators |
-| Evaluation Time | < 1ms | For simple rules with small data |
+| WASM Size | ~2.4MB | Full JSON Logic implementation with 50+ operators |
+| Static flag evaluation | < 0.1 µs | Pre-evaluated, no WASM call |
+| Targeting flag evaluation | < 15 µs | With context key filtering (1000+ attribute context) |
 | Memory Overhead | Minimal | Only allocates what's needed for inputs and outputs |
 
-### Optimization Tips
+### Host-Side Optimizations
+
+The `update_state` response includes metadata that host implementations can use to optimize evaluation:
+
+1. **Pre-evaluated results** (`preEvaluated`): Static and disabled flags are fully resolved at config-load time. The host caches these and returns them without any WASM call.
+
+2. **Required context keys** (`requiredContextKeys`): Per-flag list of context fields the targeting rule references. The host serializes only those fields instead of the entire context. A 1000-attribute context where the rule uses 2 fields shrinks from ~50KB to ~200 bytes.
+
+3. **Flag indices** (`flagIndices`): Numeric index per flag for `evaluate_by_index`. Avoids flag key string serialization across the WASM boundary and uses O(1) Vec lookup on the Rust side.
+
+4. **Host-side enrichment**: When using `evaluate_by_index`, the host adds `$flagd.flagKey`, `$flagd.timestamp`, and `targetingKey` to the context before serialization, skipping the WASM-side `enrich_context()` clone.
+
+### General Tips
 
 1. **Reuse the WASM instance** - Instantiation is expensive; reuse the instance for multiple evaluations
-2. **Batch evaluations** - If evaluating many rules, consider batching
-3. **Keep data small** - Only include necessary data in the context
-4. **Use wasm-opt** - The release workflow uses wasm-opt for additional optimization
+2. **Use `evaluate_by_index`** - Avoids flag key string overhead across the WASM boundary
+3. **Filter context on the host** - Use `requiredContextKeys` to serialize only needed fields
+4. **Cache pre-evaluated flags** - Static/disabled flags never need a WASM call
+5. **Use wasm-opt** - The release workflow uses wasm-opt for additional optimization
 
 ## Building from Source
 
