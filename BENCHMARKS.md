@@ -42,6 +42,23 @@ Every language implementation should benchmark the following scenarios. The comb
 | S3 | Update state (200 flags) | Large config scaling |
 | S4 | Update state (no change) | Change detection overhead |
 | S5 | Update state (1 flag changed in 100) | Incremental update efficiency |
+| S6 | Update state (1,000 flags) | Large-scale config parse + validate |
+| S7 | Update state (10,000 flags) | Very large config scaling |
+| S8 | Update state (100,000 flags) | Stress-test config scaling |
+| S9 | Update state (1,000,000 flags) | Maximum-scale config load |
+| S10 | Evaluate from 1M-flag store (static) | Lookup performance at scale |
+| S11 | Evaluate from 1M-flag store (targeting) | Targeting evaluation at scale |
+
+### Memory Profiling Benchmarks
+
+| ID | Scenario | What it measures |
+|----|----------|------------------|
+| M1 | Heap after loading 1,000 flags | Baseline memory footprint |
+| M2 | Heap after loading 10,000 flags | Memory scaling at medium scale |
+| M3 | Heap after loading 100,000 flags | Memory scaling at large scale |
+| M4 | Heap after loading 1,000,000 flags | Maximum-scale memory consumption |
+| M5 | Per-evaluate memory overhead | Transient allocations per evaluation call |
+| M6 | Leak check (10K evaluations) | Memory stability over sustained use |
 
 ### Concurrency Benchmarks
 
@@ -53,6 +70,10 @@ Every language implementation should benchmark the following scenarios. The comb
 | C4 | Targeting flag, 4 threads | 4 | Concurrent rule evaluation |
 | C5 | Mixed workload, 4 threads | 4 | Realistic production mix |
 | C6 | Read/write contention | 4 | `evaluate` concurrent with `update_state` |
+| C7 | Simple flag, 16 threads | 16 | Throughput saturation point |
+| C8 | Targeting flag, 16 threads | 16 | Heavy concurrent rule evaluation |
+| C9 | Mixed workload, 16 threads | 16 | Realistic high-load production mix |
+| C10 | Read/write contention, 16 threads | 16 | Contention under heavy parallel load |
 
 ### Comparison Benchmarks (language-specific)
 
@@ -194,3 +215,75 @@ When reporting benchmark results, always include:
 5. **Comparison table** when measuring old vs new
 
 Results should be committed to language-specific README files, not to this document.
+
+## Performance Expectations
+
+The following targets define acceptable performance at each scale. Implementations that regress beyond the thresholds below should be investigated before merging.
+
+### Throughput Targets (ops/sec)
+
+| Scale | Static flag | Simple targeting | Complex targeting |
+|-------|-------------|------------------|-------------------|
+| 100 flags | > 500,000 | > 200,000 | > 100,000 |
+| 1,000 flags | > 500,000 | > 200,000 | > 100,000 |
+| 10,000 flags | > 400,000 | > 150,000 | > 80,000 |
+| 100,000 flags | > 300,000 | > 100,000 | > 50,000 |
+| 1,000,000 flags | > 200,000 | > 80,000 | > 30,000 |
+
+Throughput should remain O(1) for evaluation; degradation at scale reflects store lookup overhead, not rule evaluation cost.
+
+### Store Update Time Targets
+
+| Scale | Target (wall clock) | Notes |
+|-------|---------------------|-------|
+| 100 flags | < 5 ms | Baseline |
+| 1,000 flags | < 50 ms | Typical large deployment |
+| 10,000 flags | < 500 ms | Stress test |
+| 100,000 flags | < 5 s | Extreme scale |
+| 1,000,000 flags | < 60 s | Maximum scale (offline acceptable) |
+
+### Memory Consumption Targets
+
+| Scale | Heap (RSS) | Per-flag overhead |
+|-------|------------|-------------------|
+| 1,000 flags | < 50 MB | ~50 KB |
+| 10,000 flags | < 200 MB | ~20 KB |
+| 100,000 flags | < 1 GB | ~10 KB |
+| 1,000,000 flags | < 5 GB | ~5 KB |
+
+Per-flag overhead should decrease at scale due to amortized data structure costs.
+
+### Regression Gates
+
+- **> 15% throughput degradation** vs previous release on any scenario = investigation required
+- **> 25% memory increase** vs previous release at the same flag count = investigation required
+- Regressions should be reported with full hardware/OS context (see [Reporting Results](#reporting-results))
+
+## Scale Test Flag Generation
+
+For benchmarks at 1K+ scale, generate flags programmatically using a seeded RNG for reproducibility. The distribution should approximate production workloads:
+
+| Category | Proportion | Description |
+|----------|------------|-------------|
+| Static flags | 60% | `state: ENABLED`, no targeting, boolean/string variants |
+| Simple targeting | 25% | Single `==` or `in` condition on 1 context attribute |
+| Complex targeting | 15% | Nested `and`/`or` with 3-5 conditions, `fractional`, or `sem_ver` |
+
+### Generation Recipe (pseudocode)
+
+```
+seed = 42
+rng = SeededRandom(seed)
+
+for i in 0..N:
+    roll = rng.float()
+    if roll < 0.60:
+        flag = static_flag(i, rng)       # random bool/string/int variants
+    elif roll < 0.85:
+        flag = simple_targeting_flag(i, rng)  # single == on attr_{rng.int(100)}
+    else:
+        flag = complex_targeting_flag(i, rng) # nested and/or, 3-5 conditions
+    flags[f"flag_{i}"] = flag
+```
+
+Each language benchmark suite should provide a shared generator function that produces identical flag sets given the same seed and count. This ensures cross-language comparability at scale.
