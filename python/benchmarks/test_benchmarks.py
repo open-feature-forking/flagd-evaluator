@@ -124,7 +124,7 @@ class TestCustomOperatorBenchmarks:
     """Benchmarks for flagd custom JSON Logic operators."""
 
     def test_bench_fractional_operator(self, benchmark, evaluator):
-        """Fractional bucketing operator (MurmurHash3-based)."""
+        """Fractional bucketing operator with 3 buckets (O1)."""
         ctx = {"targetingKey": "user-abc-123"}
         result = benchmark(evaluator.evaluate_string, "fractional-flag", ctx, "fallback")
         assert result in [
@@ -133,10 +133,22 @@ class TestCustomOperatorBenchmarks:
             "treatment-b-experience",
         ]
 
+    def test_bench_fractional_8_buckets(self, benchmark, evaluator):
+        """Fractional bucketing with 8 weighted buckets — multi-variant experiment (O2)."""
+        ctx = {"targetingKey": "user-abc-123"}
+        result = benchmark(evaluator.evaluate_string, "fractional-8-flag", ctx, "fallback")
+        assert result in ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"]
+
     def test_bench_semver_operator(self, benchmark, evaluator):
-        """Semantic version comparison operator."""
+        """Semantic version equality comparison (O3)."""
         ctx = {"appVersion": "2.5.1"}
         result = benchmark(evaluator.evaluate_bool, "semver-flag", ctx, False)
+        assert result is True
+
+    def test_bench_semver_range_operator(self, benchmark, evaluator):
+        """Semantic version range comparison with caret operator (O4)."""
+        ctx = {"version": "1.5.3"}
+        result = benchmark(evaluator.evaluate_bool, "semver-range-flag", ctx, False)
         assert result is True
 
     def test_bench_starts_with_operator(self, benchmark, evaluator):

@@ -101,7 +101,35 @@ def _build_flag_config():
                     ]
                 },
             },
-            # Semver flag
+            # Fractional bucketing flag with 8 weighted buckets (O2)
+            "fractional-8-flag": {
+                "state": "ENABLED",
+                "variants": {
+                    "v1": "v1",
+                    "v2": "v2",
+                    "v3": "v3",
+                    "v4": "v4",
+                    "v5": "v5",
+                    "v6": "v6",
+                    "v7": "v7",
+                    "v8": "v8",
+                },
+                "defaultVariant": "v1",
+                "targeting": {
+                    "fractional": [
+                        {"var": "targetingKey"},
+                        ["v1", 12],
+                        ["v2", 13],
+                        ["v3", 12],
+                        ["v4", 13],
+                        ["v5", 12],
+                        ["v6", 13],
+                        ["v7", 12],
+                        ["v8", 13],
+                    ]
+                },
+            },
+            # Semver flag (equality, O3)
             "semver-flag": {
                 "state": "ENABLED",
                 "variants": {"new-ui": True, "old-ui": False},
@@ -111,6 +139,19 @@ def _build_flag_config():
                         {"sem_ver": [{"var": "appVersion"}, ">=", "2.0.0"]},
                         "new-ui",
                         "old-ui",
+                    ]
+                },
+            },
+            # Semver range flag with caret operator (O4)
+            "semver-range-flag": {
+                "state": "ENABLED",
+                "variants": {"on": True, "off": False},
+                "defaultVariant": "off",
+                "targeting": {
+                    "if": [
+                        {"sem_ver": [{"var": "version"}, "^", "1.2.0"]},
+                        "on",
+                        "off",
                     ]
                 },
             },
