@@ -33,7 +33,10 @@ jobs:
             ${{ runner.os }}-cargo-test-
 
       - name: Run tests
-        run: cargo test --verbose -- --test-threads=1
+        run: |
+          cargo test --lib --verbose -- --test-threads=1
+          cargo test --test integration_tests --test metadata_merging_tests --verbose -- --test-threads=1
+          cargo test --test gherkin_tests --verbose
 
   clippy:
     name: Clippy
