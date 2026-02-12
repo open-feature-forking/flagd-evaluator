@@ -119,6 +119,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-go-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-go-
+
+      - name: Build WASM
+        run: |
+          cargo build --target wasm32-unknown-unknown --no-default-features --release --lib
+          cp target/wasm32-unknown-unknown/release/flagd_evaluator.wasm go/flagd_evaluator.wasm
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
