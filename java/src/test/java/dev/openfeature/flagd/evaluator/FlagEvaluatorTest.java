@@ -3,11 +3,22 @@ package dev.openfeature.flagd.evaluator;
 import dev.openfeature.sdk.EvaluationContext;
 import dev.openfeature.sdk.MutableContext;
 import dev.openfeature.sdk.ProviderEvaluation;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,6 +32,13 @@ class FlagEvaluatorTest {
     @BeforeEach
     void setUp() {
         evaluator = new FlagEvaluator(FlagEvaluator.ValidationMode.PERMISSIVE);
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (evaluator != null) {
+            evaluator.close();
+        }
     }
 
     @Test
@@ -392,5 +410,203 @@ class FlagEvaluatorTest {
         EvaluationResult<Boolean> disabledResult = evaluator.evaluateFlag(Boolean.class, "disabled-flag", context);
         assertThat(disabledResult.getValue()).isNull();
         assertThat(disabledResult.getReason()).isEqualTo("DISABLED");
+    }
+
+    // ========================================================================
+    // Concurrency Tests
+    // ========================================================================
+
+    @Test
+    void testConcurrentEvaluation() throws Exception {
+        // N threads evaluating targeting flags simultaneously — verify correctness
+        String config = "{\n" +
+                "  \"flags\": {\n" +
+                "    \"user-flag\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"default\",\n" +
+                "      \"variants\": { \"default\": false, \"premium\": true },\n" +
+                "      \"targeting\": {\n" +
+                "        \"if\": [\n" +
+                "          { \"==\": [{ \"var\": \"email\" }, \"premium@example.com\"] },\n" +
+                "          \"premium\", null\n" +
+                "        ]\n" +
+                "      }\n" +
+                "    }\n" +
+                "  }\n" +
+                "}";
+
+        evaluator.updateState(config);
+
+        int threadCount = 8;
+        int iterationsPerThread = 100;
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        List<Future<?>> futures = new ArrayList<>();
+        CopyOnWriteArrayList<Throwable> errors = new CopyOnWriteArrayList<>();
+
+        for (int t = 0; t < threadCount; t++) {
+            final int threadId = t;
+            futures.add(executor.submit(() -> {
+                try {
+                    startLatch.await();
+                    for (int i = 0; i < iterationsPerThread; i++) {
+                        // Even threads get matching context, odd threads get non-matching
+                        MutableContext ctx;
+                        if (threadId % 2 == 0) {
+                            ctx = new MutableContext("user-" + threadId);
+                            ctx.add("email", "premium@example.com");
+                        } else {
+                            ctx = new MutableContext("user-" + threadId);
+                            ctx.add("email", "regular@example.com");
+                        }
+
+                        EvaluationResult<Boolean> result = evaluator.evaluateFlag(
+                            Boolean.class, "user-flag", ctx);
+
+                        if (threadId % 2 == 0) {
+                            assertThat(result.getValue()).isEqualTo(true);
+                            assertThat(result.getVariant()).isEqualTo("premium");
+                        } else {
+                            assertThat(result.getValue()).isEqualTo(false);
+                            assertThat(result.getVariant()).isEqualTo("default");
+                        }
+                    }
+                } catch (Throwable e) {
+                    errors.add(e);
+                }
+            }));
+        }
+
+        startLatch.countDown();
+        for (Future<?> f : futures) {
+            f.get(30, TimeUnit.SECONDS);
+        }
+        executor.shutdown();
+
+        assertThat(errors).isEmpty();
+    }
+
+    @Test
+    void testConcurrentUpdateAndEvaluate() throws Exception {
+        // 1 writer + N readers running simultaneously — verify no exceptions
+        String configA = "{\n" +
+                "  \"flags\": {\n" +
+                "    \"toggle-flag\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"on\",\n" +
+                "      \"variants\": { \"on\": true, \"off\": false },\n" +
+                "      \"targeting\": {\n" +
+                "        \"if\": [\n" +
+                "          { \"==\": [{ \"var\": \"role\" }, \"admin\"] },\n" +
+                "          \"on\", \"off\"\n" +
+                "        ]\n" +
+                "      }\n" +
+                "    }\n" +
+                "  }\n" +
+                "}";
+
+        String configB = "{\n" +
+                "  \"flags\": {\n" +
+                "    \"toggle-flag\": {\n" +
+                "      \"state\": \"ENABLED\",\n" +
+                "      \"defaultVariant\": \"off\",\n" +
+                "      \"variants\": { \"on\": true, \"off\": false },\n" +
+                "      \"targeting\": {\n" +
+                "        \"if\": [\n" +
+                "          { \"==\": [{ \"var\": \"role\" }, \"admin\"] },\n" +
+                "          \"on\", \"off\"\n" +
+                "        ]\n" +
+                "      }\n" +
+                "    }\n" +
+                "  }\n" +
+                "}";
+
+        evaluator.updateState(configA);
+
+        int readerCount = 4;
+        AtomicBoolean running = new AtomicBoolean(true);
+        CopyOnWriteArrayList<Throwable> errors = new CopyOnWriteArrayList<>();
+        ExecutorService executor = Executors.newFixedThreadPool(readerCount + 1);
+        List<Future<?>> futures = new ArrayList<>();
+
+        // Writer thread: alternates configs
+        futures.add(executor.submit(() -> {
+            try {
+                for (int i = 0; i < 20; i++) {
+                    String config = (i % 2 == 0) ? configB : configA;
+                    evaluator.updateState(config);
+                    Thread.sleep(5);
+                }
+            } catch (Throwable e) {
+                errors.add(e);
+            } finally {
+                running.set(false);
+            }
+        }));
+
+        // Reader threads: evaluate continuously
+        for (int t = 0; t < readerCount; t++) {
+            futures.add(executor.submit(() -> {
+                try {
+                    MutableContext ctx = new MutableContext("user-1");
+                    ctx.add("role", "admin");
+                    while (running.get()) {
+                        EvaluationResult<Boolean> result = evaluator.evaluateFlag(
+                            Boolean.class, "toggle-flag", ctx);
+                        // Value should always be true (targeting matches "admin")
+                        assertThat(result.getValue()).isEqualTo(true);
+                        assertThat(result.getVariant()).isEqualTo("on");
+                    }
+                } catch (Throwable e) {
+                    errors.add(e);
+                }
+            }));
+        }
+
+        for (Future<?> f : futures) {
+            f.get(30, TimeUnit.SECONDS);
+        }
+        executor.shutdown();
+
+        assertThat(errors).isEmpty();
+    }
+
+    @Test
+    void testPoolSize1() throws EvaluatorException {
+        // Regression: single-instance pool still works correctly
+        FlagEvaluator singlePool = new FlagEvaluator(FlagEvaluator.ValidationMode.PERMISSIVE, 1);
+        try {
+            assertThat(singlePool.getPoolSize()).isEqualTo(1);
+
+            String config = "{\n" +
+                    "  \"flags\": {\n" +
+                    "    \"simple-flag\": {\n" +
+                    "      \"state\": \"ENABLED\",\n" +
+                    "      \"defaultVariant\": \"on\",\n" +
+                    "      \"variants\": { \"on\": true, \"off\": false }\n" +
+                    "    }\n" +
+                    "  }\n" +
+                    "}";
+
+            UpdateStateResult updateResult = singlePool.updateState(config);
+            assertThat(updateResult.isSuccess()).isTrue();
+
+            EvaluationResult<Boolean> result = singlePool.evaluateFlag(Boolean.class, "simple-flag", "{}");
+            assertThat(result.getValue()).isEqualTo(true);
+            assertThat(result.getVariant()).isEqualTo("on");
+            assertThat(result.getReason()).isEqualTo("STATIC");
+        } finally {
+            singlePool.close();
+        }
+    }
+
+    @Test
+    void testPoolSizeMatchesConstructorArg() {
+        FlagEvaluator customPool = new FlagEvaluator(FlagEvaluator.ValidationMode.PERMISSIVE, 4);
+        try {
+            assertThat(customPool.getPoolSize()).isEqualTo(4);
+        } finally {
+            customPool.close();
+        }
     }
 }

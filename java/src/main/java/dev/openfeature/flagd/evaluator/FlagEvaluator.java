@@ -17,19 +17,28 @@ import dev.openfeature.sdk.Value;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Thread-safe flag evaluator using the flagd-evaluator WASM module.
+ * Thread-safe flag evaluator using a pool of flagd-evaluator WASM instances.
  *
  * <p>This class provides a type-safe API for evaluating feature flags using the
- * bundled WASM module. Each instance maintains its own WASM instance and can be
- * used concurrently from multiple threads.
+ * bundled WASM module. It maintains a pool of WASM instances sized to the number
+ * of available processors, enabling parallel evaluation from multiple threads.
+ *
+ * <p>Pre-evaluated (static/disabled) flags are served lock-free from a volatile
+ * cache snapshot. Targeting flags acquire a WASM instance from the pool, evaluate,
+ * and return it. This allows near-linear throughput scaling with thread count.
  *
  * <p>Returns {@link EvaluationResult} objects that contain the resolved value,
  * variant, reason, error information, and metadata.
@@ -50,7 +59,7 @@ import java.util.Set;
  * }</pre>
  *
  * <p><b>Thread Safety:</b> This class is thread-safe. Multiple threads can call
- * evaluation methods concurrently.
+ * evaluation methods concurrently with near-linear throughput scaling.
  */
 public class FlagEvaluator implements AutoCloseable {
 
@@ -86,158 +95,249 @@ public class FlagEvaluator implements AutoCloseable {
                 .constructParametricType(EvaluationResult.class, Value.class));
     }
 
-    private final Instance wasmInstance;
-    private final ExportFunction updateStateFunction;
-    private final ExportFunction evaluateReusableFunction;
-    private final ExportFunction allocFunction;
-    private final ExportFunction deallocFunction;
-    private final Memory memory;
+    /**
+     * Encapsulates a single WASM instance with its exports and pre-allocated buffers.
+     * Each instance has its own linear memory and can evaluate independently.
+     */
+    private static class WasmInstance {
+        final Instance instance;
+        final ExportFunction updateStateFunction;
+        final ExportFunction evaluateReusableFunction;
+        final ExportFunction evaluateByIndexFunction; // may be null
+        final ExportFunction allocFunction;
+        final ExportFunction deallocFunction;
+        final Memory memory;
+        final long flagKeyBufferPtr;
+        final long contextBufferPtr;
+        long generation; // stamped during updateState
 
-    // Pre-allocated buffers for high-performance evaluation
-    private final long flagKeyBufferPtr;
-    private final long contextBufferPtr;
+        WasmInstance(Instance instance) {
+            this.instance = instance;
+            this.updateStateFunction = instance.export("update_state");
+            this.evaluateReusableFunction = instance.export("evaluate_reusable");
+            this.allocFunction = instance.export("alloc");
+            this.deallocFunction = instance.export("dealloc");
+            this.memory = instance.memory();
 
-    // Cache of pre-evaluated results for static/disabled flags (replaced atomically on updateState)
-    private volatile Map<String, EvaluationResult<Object>> preEvaluatedCache = Collections.emptyMap();
+            ExportFunction evalByIndex = null;
+            try {
+                evalByIndex = instance.export("evaluate_by_index");
+            } catch (Exception e) {
+                // Older WASM module without evaluate_by_index
+            }
+            this.evaluateByIndexFunction = evalByIndex;
 
-    // Per-flag required context keys for host-side filtering (read/written inside synchronized methods)
-    private Map<String, Set<String>> requiredContextKeysCache = Collections.emptyMap();
+            this.flagKeyBufferPtr = allocFunction.apply(MAX_FLAG_KEY_SIZE)[0];
+            this.contextBufferPtr = allocFunction.apply(MAX_CONTEXT_SIZE)[0];
+        }
 
-    // Flag key to numeric index mapping (read/written inside synchronized methods)
-    private Map<String, Integer> flagIndexCache = Collections.emptyMap();
-
-    // WASM export for index-based evaluation (may be null if WASM module doesn't support it)
-    private final ExportFunction evaluateByIndexFunction;
+        void close() {
+            deallocFunction.apply(flagKeyBufferPtr, MAX_FLAG_KEY_SIZE);
+            deallocFunction.apply(contextBufferPtr, MAX_CONTEXT_SIZE);
+        }
+    }
 
     /**
-     * Creates a new flag evaluator with strict validation mode.
-     *
-     * <p>In strict mode, invalid flag configurations will be rejected.
+     * Immutable snapshot of host-side caches. Replaced atomically on updateState.
+     */
+    private static class CacheSnapshot {
+        final long generation;
+        final Map<String, EvaluationResult<Object>> preEvaluated;
+        final Map<String, Set<String>> requiredContextKeys;
+        final Map<String, Integer> flagIndices;
+
+        CacheSnapshot(long generation,
+                      Map<String, EvaluationResult<Object>> preEvaluated,
+                      Map<String, Set<String>> requiredContextKeys,
+                      Map<String, Integer> flagIndices) {
+            this.generation = generation;
+            this.preEvaluated = preEvaluated;
+            this.requiredContextKeys = requiredContextKeys;
+            this.flagIndices = flagIndices;
+        }
+
+        static final CacheSnapshot EMPTY = new CacheSnapshot(
+            0, Collections.emptyMap(), Collections.emptyMap(), Collections.emptyMap());
+    }
+
+    // Pool of WASM instances
+    private final ArrayBlockingQueue<WasmInstance> pool;
+    private final int poolSize;
+
+    // Host-side caches — atomically swapped on updateState
+    private volatile CacheSnapshot cache = CacheSnapshot.EMPTY;
+
+    // Generation counter — incremented on each updateState
+    private final AtomicLong generation = new AtomicLong(0);
+
+    // Serializes updateState calls
+    private final ReentrantLock updateLock = new ReentrantLock();
+
+    /**
+     * Creates a new flag evaluator with strict validation mode and default pool size.
      */
     public FlagEvaluator() {
         this(ValidationMode.STRICT);
     }
 
     /**
-     * Creates a new flag evaluator with the specified validation mode.
+     * Creates a new flag evaluator with the specified validation mode and default pool size.
      *
      * @param validationMode the validation mode to use
      */
     public FlagEvaluator(ValidationMode validationMode) {
-        this.wasmInstance = WasmRuntime.createInstance();
-        this.updateStateFunction = wasmInstance.export("update_state");
-        this.evaluateReusableFunction = wasmInstance.export("evaluate_reusable");
-        this.allocFunction = wasmInstance.export("alloc");
-        this.deallocFunction = wasmInstance.export("dealloc");
-        this.memory = wasmInstance.memory();
-
-        // Bind evaluate_by_index if available (newer WASM modules)
-        ExportFunction evalByIndex = null;
-        try {
-            evalByIndex = wasmInstance.export("evaluate_by_index");
-        } catch (Exception e) {
-            // Older WASM module without evaluate_by_index — fall back to string-based eval
-        }
-        this.evaluateByIndexFunction = evalByIndex;
-
-        // Pre-allocate buffers for evaluation (avoids alloc calls per evaluation)
-        this.flagKeyBufferPtr = allocFunction.apply(MAX_FLAG_KEY_SIZE)[0];
-        this.contextBufferPtr = allocFunction.apply(MAX_CONTEXT_SIZE)[0];
-
-        // Set validation mode
-        ExportFunction setValidationMode = wasmInstance.export("set_validation_mode");
-        setValidationMode.apply(validationMode.getValue());
+        this(validationMode, Runtime.getRuntime().availableProcessors());
     }
 
     /**
-     * Updates the flag state with a new configuration.
+     * Creates a new flag evaluator with the specified validation mode and pool size.
      *
-     * <p>The configuration should be a JSON string following the flagd flag schema:
-     * <pre>{@code
-     * {
-     *   "flags": {
-     *     "my-flag": {
-     *       "state": "ENABLED",
-     *       "defaultVariant": "on",
-     *       "variants": {
-     *         "on": true,
-     *         "off": false
-     *       }
-     *     }
-     *   }
-     * }
-     * }</pre>
+     * @param validationMode the validation mode to use
+     * @param poolSize       the number of WASM instances in the pool
+     */
+    public FlagEvaluator(ValidationMode validationMode, int poolSize) {
+        if (poolSize < 1) {
+            throw new IllegalArgumentException("Pool size must be >= 1, got " + poolSize);
+        }
+        this.poolSize = poolSize;
+        this.pool = new ArrayBlockingQueue<>(poolSize);
+
+        for (int i = 0; i < poolSize; i++) {
+            WasmInstance inst = createWasmInstance(validationMode);
+            pool.add(inst);
+        }
+    }
+
+    /**
+     * Creates a single WASM instance configured with the given validation mode.
+     */
+    private static WasmInstance createWasmInstance(ValidationMode validationMode) {
+        Instance instance = WasmRuntime.createInstance();
+        WasmInstance inst = new WasmInstance(instance);
+        ExportFunction setValidationMode = instance.export("set_validation_mode");
+        setValidationMode.apply(validationMode.getValue());
+        return inst;
+    }
+
+    /**
+     * Updates the flag state across all WASM instances in the pool.
+     *
+     * <p>The configuration should be a JSON string following the flagd flag schema.
+     * All instances are drained from the pool, updated (in parallel for instances
+     * beyond the first), then returned with a new generation stamp.
      *
      * @param jsonConfig the flag configuration as JSON
      * @return the update result containing changed flag keys
      * @throws EvaluatorException if the update fails
      */
-    public synchronized UpdateStateResult updateState(String jsonConfig) throws EvaluatorException {
-        byte[] configBytes = jsonConfig.getBytes(StandardCharsets.UTF_8);
-        long configPtr = allocFunction.apply(configBytes.length)[0];
-
+    public UpdateStateResult updateState(String jsonConfig) throws EvaluatorException {
+        updateLock.lock();
         try {
-            memory.write((int) configPtr, configBytes);
+            byte[] configBytes = jsonConfig.getBytes(StandardCharsets.UTF_8);
 
-            long packedResult = updateStateFunction.apply(configPtr, configBytes.length)[0];
-            int resultPtr = (int) (packedResult >>> 32);
-            int resultLen = (int) (packedResult & 0xFFFFFFFFL);
-
-            String resultJson = memory.readString(resultPtr, resultLen);
-
-            UpdateStateResult result = OBJECT_MAPPER.readValue(resultJson, UpdateStateResult.class);
-
-            // Update the pre-evaluated cache (atomic replacement)
-            Map<String, EvaluationResult<Object>> preEval = result.getPreEvaluated();
-            this.preEvaluatedCache = (preEval != null) ? preEval : Collections.emptyMap();
-
-            // Update required context keys cache
-            Map<String, List<String>> reqKeys = result.getRequiredContextKeys();
-            if (reqKeys != null) {
-                Map<String, Set<String>> keySets = new HashMap<>(reqKeys.size());
-                for (Map.Entry<String, List<String>> entry : reqKeys.entrySet()) {
-                    keySets.put(entry.getKey(), new HashSet<>(entry.getValue()));
+            // Drain all instances from pool
+            List<WasmInstance> instances = new ArrayList<>(poolSize);
+            for (int i = 0; i < poolSize; i++) {
+                try {
+                    instances.add(pool.take());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    // Return any already-drained instances
+                    for (WasmInstance inst : instances) {
+                        pool.add(inst);
+                    }
+                    throw new EvaluatorException("Interrupted while draining pool", e);
                 }
-                this.requiredContextKeysCache = keySets;
-            } else {
-                this.requiredContextKeysCache = Collections.emptyMap();
             }
 
-            // Update flag index cache
-            Map<String, Integer> indices = result.getFlagIndices();
-            this.flagIndexCache = (indices != null) ? indices : Collections.emptyMap();
+            try {
+                // Update first instance and capture result
+                UpdateStateResult result = updateInstance(instances.get(0), configBytes);
 
-            return result;
-        } catch (Exception e) {
-            throw new EvaluatorException("Failed to update state", e);
+                // Update remaining instances in parallel
+                if (instances.size() > 1) {
+                    CompletableFuture<?>[] futures = new CompletableFuture[instances.size() - 1];
+                    for (int i = 1; i < instances.size(); i++) {
+                        final WasmInstance inst = instances.get(i);
+                        futures[i - 1] = CompletableFuture.runAsync(() -> {
+                            try {
+                                updateInstance(inst, configBytes);
+                            } catch (EvaluatorException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
+                    }
+                    CompletableFuture.allOf(futures).join();
+                }
+
+                // Increment generation, stamp on cache and all instances
+                long gen = generation.incrementAndGet();
+                CacheSnapshot newCache = buildCacheSnapshot(gen, result);
+                for (WasmInstance inst : instances) {
+                    inst.generation = gen;
+                }
+
+                // Atomic cache swap
+                this.cache = newCache;
+
+                return result;
+            } finally {
+                // Return all instances to pool
+                for (WasmInstance inst : instances) {
+                    pool.add(inst);
+                }
+            }
         } finally {
-            deallocFunction.apply(configPtr, configBytes.length);
+            updateLock.unlock();
         }
     }
 
     /**
+     * Updates a single WASM instance with the given config bytes.
+     */
+    private static UpdateStateResult updateInstance(WasmInstance inst, byte[] configBytes) throws EvaluatorException {
+        long configPtr = inst.allocFunction.apply(configBytes.length)[0];
+        try {
+            inst.memory.write((int) configPtr, configBytes);
+            long packedResult = inst.updateStateFunction.apply(configPtr, configBytes.length)[0];
+            int resultPtr = (int) (packedResult >>> 32);
+            int resultLen = (int) (packedResult & 0xFFFFFFFFL);
+            String resultJson = inst.memory.readString(resultPtr, resultLen);
+            inst.deallocFunction.apply(resultPtr, resultLen);
+            return OBJECT_MAPPER.readValue(resultJson, UpdateStateResult.class);
+        } catch (Exception e) {
+            throw new EvaluatorException("Failed to update state", e);
+        } finally {
+            inst.deallocFunction.apply(configPtr, configBytes.length);
+        }
+    }
+
+    /**
+     * Builds an immutable CacheSnapshot from an UpdateStateResult.
+     */
+    private static CacheSnapshot buildCacheSnapshot(long generation, UpdateStateResult result) {
+        Map<String, EvaluationResult<Object>> preEval = result.getPreEvaluated();
+        if (preEval == null) preEval = Collections.emptyMap();
+
+        Map<String, Set<String>> keySets;
+        Map<String, List<String>> reqKeys = result.getRequiredContextKeys();
+        if (reqKeys != null) {
+            keySets = new HashMap<>(reqKeys.size());
+            for (Map.Entry<String, List<String>> entry : reqKeys.entrySet()) {
+                keySets.put(entry.getKey(), new HashSet<>(entry.getValue()));
+            }
+        } else {
+            keySets = Collections.emptyMap();
+        }
+
+        Map<String, Integer> indices = result.getFlagIndices();
+        if (indices == null) indices = Collections.emptyMap();
+
+        return new CacheSnapshot(generation, preEval, keySets, indices);
+    }
+
+    /**
      * Evaluates a flag with the given context JSON string.
-     *
-     * <p>Returns an {@link EvaluationResult} with the resolved value, variant,
-     * reason, error information, and metadata.
-     *
-     * <p>The context should be a JSON string with evaluation context properties:
-     * <pre>{@code
-     * {
-     *   "targetingKey": "user-123",
-     *   "email": "user@example.com",
-     *   "age": 25
-     * }
-     * }</pre>
-     *
-     * <p><b>Supported types:</b>
-     * <ul>
-     *   <li>{@code Boolean.class} - For boolean flags</li>
-     *   <li>{@code String.class} - For string flags</li>
-     *   <li>{@code Integer.class} - For integer flags</li>
-     *   <li>{@code Double.class} - For double/number flags</li>
-     *   <li>{@code Value.class} - For structured/object flags</li>
-     * </ul>
      *
      * @param <T>         the type of the flag value
      * @param type        the class of the expected flag value type
@@ -247,29 +347,52 @@ public class FlagEvaluator implements AutoCloseable {
      * @throws EvaluatorException if the evaluation fails
      */
     @SuppressWarnings("unchecked")
-    public synchronized <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, String contextJson) throws EvaluatorException {
+    public <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, String contextJson) throws EvaluatorException {
+        // Load cache snapshot (lock-free volatile read)
+        CacheSnapshot snap = this.cache;
+
         // Fast path: return cached result for static/disabled flags
-        EvaluationResult<Object> cached = preEvaluatedCache.get(flagKey);
+        EvaluationResult<Object> cached = snap.preEvaluated.get(flagKey);
         if (cached != null) {
             return (EvaluationResult<T>) (EvaluationResult<?>) cached;
         }
 
-        return evaluateFlagInternal(type, flagKey, contextJson);
+        // Acquire instance from pool
+        WasmInstance inst;
+        try {
+            inst = pool.take();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new EvaluatorException("Interrupted while acquiring WASM instance", e);
+        }
+        try {
+            // Generation guard: if updateState completed between cache read and pool acquire,
+            // reload cache to match the instance's generation
+            if (snap.generation != inst.generation) {
+                snap = this.cache;
+                cached = snap.preEvaluated.get(flagKey);
+                if (cached != null) {
+                    return (EvaluationResult<T>) (EvaluationResult<?>) cached;
+                }
+            }
+
+            return evaluateFlagInternal(type, flagKey, contextJson, inst);
+        } finally {
+            pool.add(inst);
+        }
     }
 
     /**
      * Internal evaluation using flag key string and evaluate_reusable WASM export.
      */
-    private <T> EvaluationResult<T> evaluateFlagInternal(Class<T> type, String flagKey, String contextJson) throws EvaluatorException {
+    private <T> EvaluationResult<T> evaluateFlagInternal(Class<T> type, String flagKey, String contextJson, WasmInstance inst) throws EvaluatorException {
         byte[] flagBytes = flagKey.getBytes(StandardCharsets.UTF_8);
         if (flagBytes.length > MAX_FLAG_KEY_SIZE) {
             throw new EvaluatorException("Flag key exceeds maximum size of " + MAX_FLAG_KEY_SIZE + " bytes");
         }
 
-        // Write flag key to pre-allocated buffer (no alloc call needed!)
-        memory.write((int) flagKeyBufferPtr, flagBytes);
+        inst.memory.write((int) inst.flagKeyBufferPtr, flagBytes);
 
-        // Handle context - write to pre-allocated buffer if present
         long contextPtr = 0;
         int contextLen = 0;
         if (contextJson != null && !contextJson.isEmpty()) {
@@ -277,20 +400,18 @@ public class FlagEvaluator implements AutoCloseable {
             if (contextBytes.length > MAX_CONTEXT_SIZE) {
                 throw new EvaluatorException("Context exceeds maximum size of " + MAX_CONTEXT_SIZE + " bytes");
             }
-            memory.write((int) contextBufferPtr, contextBytes);
-            contextPtr = contextBufferPtr;
+            inst.memory.write((int) inst.contextBufferPtr, contextBytes);
+            contextPtr = inst.contextBufferPtr;
             contextLen = contextBytes.length;
         }
 
         try {
-            // Single WASM call with pre-allocated buffers
-            long packedResult = evaluateReusableFunction.apply(flagKeyBufferPtr, flagBytes.length, contextPtr, contextLen)[0];
+            long packedResult = inst.evaluateReusableFunction.apply(inst.flagKeyBufferPtr, flagBytes.length, contextPtr, contextLen)[0];
             int resultPtr = (int) (packedResult >>> 32);
             int resultLen = (int) (packedResult & 0xFFFFFFFFL);
 
-            // Read JSON result and deallocate result buffer
-            String resultJson = memory.readString(resultPtr, resultLen);
-            deallocFunction.apply(resultPtr, resultLen);
+            String resultJson = inst.memory.readString(resultPtr, resultLen);
+            inst.deallocFunction.apply(resultPtr, resultLen);
 
             return OBJECT_MAPPER.readValue(resultJson, JAVA_TYPE_MAP.get(type));
         } catch (Exception e) {
@@ -300,11 +421,8 @@ public class FlagEvaluator implements AutoCloseable {
 
     /**
      * Evaluates a flag using the numeric index path (evaluate_by_index WASM export).
-     *
-     * <p>This avoids flag key string serialization and uses O(1) Vec lookup on the Rust side.
-     * The context must already be pre-enriched with {@code $flagd.*} and {@code targetingKey}.
      */
-    private <T> EvaluationResult<T> evaluateByIndex(Class<T> type, int flagIndex, String contextJson) throws EvaluatorException {
+    private <T> EvaluationResult<T> evaluateByIndex(Class<T> type, int flagIndex, String contextJson, WasmInstance inst) throws EvaluatorException {
         long contextPtr = 0;
         int contextLen = 0;
         if (contextJson != null && !contextJson.isEmpty()) {
@@ -312,18 +430,18 @@ public class FlagEvaluator implements AutoCloseable {
             if (contextBytes.length > MAX_CONTEXT_SIZE) {
                 throw new EvaluatorException("Context exceeds maximum size of " + MAX_CONTEXT_SIZE + " bytes");
             }
-            memory.write((int) contextBufferPtr, contextBytes);
-            contextPtr = contextBufferPtr;
+            inst.memory.write((int) inst.contextBufferPtr, contextBytes);
+            contextPtr = inst.contextBufferPtr;
             contextLen = contextBytes.length;
         }
 
         try {
-            long packedResult = evaluateByIndexFunction.apply(flagIndex, contextPtr, contextLen)[0];
+            long packedResult = inst.evaluateByIndexFunction.apply(flagIndex, contextPtr, contextLen)[0];
             int resultPtr = (int) (packedResult >>> 32);
             int resultLen = (int) (packedResult & 0xFFFFFFFFL);
 
-            String resultJson = memory.readString(resultPtr, resultLen);
-            deallocFunction.apply(resultPtr, resultLen);
+            String resultJson = inst.memory.readString(resultPtr, resultLen);
+            inst.deallocFunction.apply(resultPtr, resultLen);
 
             return OBJECT_MAPPER.readValue(resultJson, JAVA_TYPE_MAP.get(type));
         } catch (Exception e) {
@@ -334,8 +452,6 @@ public class FlagEvaluator implements AutoCloseable {
     /**
      * Evaluates a flag with an EvaluationContext.
      *
-     * <p>This method serializes the context to JSON and delegates to the main evaluation method.
-     *
      * @param <T>     the type of the flag value
      * @param type    the class of the expected flag value type
      * @param flagKey the key of the flag to evaluate
@@ -344,27 +460,28 @@ public class FlagEvaluator implements AutoCloseable {
      * @throws EvaluatorException if the evaluation or serialization fails
      */
     @SuppressWarnings("unchecked")
-    public synchronized <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, EvaluationContext context) throws EvaluatorException {
+    public <T> EvaluationResult<T> evaluateFlag(Class<T> type, String flagKey, EvaluationContext context) throws EvaluatorException {
         try {
+            // Load cache snapshot (lock-free volatile read)
+            CacheSnapshot snap = this.cache;
+
             // Fast path: return cached result for static/disabled flags
-            EvaluationResult<Object> cached = preEvaluatedCache.get(flagKey);
+            EvaluationResult<Object> cached = snap.preEvaluated.get(flagKey);
             if (cached != null) {
                 return (EvaluationResult<T>) (EvaluationResult<?>) cached;
             }
 
             // Fast path: empty context
             if (context == null || context.isEmpty()) {
-                return evaluateFlagInternal(type, flagKey, (String) null);
+                return evaluateFlag(type, flagKey, (String) null);
             }
 
-            // Check if we can use filtered serialization
-            Set<String> requiredKeys = requiredContextKeysCache.get(flagKey);
+            // Determine context serialization strategy
+            Set<String> requiredKeys = snap.requiredContextKeys.get(flagKey);
             String contextJson;
             if (requiredKeys != null) {
-                // Filtered path: only serialize keys the targeting rule references
                 contextJson = EvaluationContextSerializer.serializeFiltered(context, requiredKeys, flagKey);
             } else {
-                // Full serialization path (flag uses {"var": ""} or older WASM module)
                 ByteArrayOutputStream buffer = JSON_BUFFER.get();
                 buffer.reset();
                 try (JsonGenerator generator = JSON_FACTORY.createGenerator(buffer)) {
@@ -373,15 +490,36 @@ public class FlagEvaluator implements AutoCloseable {
                 contextJson = buffer.toString(StandardCharsets.UTF_8.name());
             }
 
-            // Check if we can use index-based evaluation
-            Integer flagIndex = flagIndexCache.get(flagKey);
-            if (flagIndex != null && evaluateByIndexFunction != null && requiredKeys != null) {
-                // Index-based path: avoids flag key string overhead
-                return evaluateByIndex(type, flagIndex, contextJson);
+            // Acquire instance from pool
+            WasmInstance inst;
+            try {
+                inst = pool.take();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new EvaluatorException("Interrupted while acquiring WASM instance", e);
             }
+            try {
+                // Generation guard
+                if (snap.generation != inst.generation) {
+                    snap = this.cache;
+                    cached = snap.preEvaluated.get(flagKey);
+                    if (cached != null) {
+                        return (EvaluationResult<T>) (EvaluationResult<?>) cached;
+                    }
+                    // Re-resolve required keys from new cache
+                    requiredKeys = snap.requiredContextKeys.get(flagKey);
+                }
 
-            // Fall back to string-based evaluation
-            return evaluateFlagInternal(type, flagKey, contextJson);
+                // Check if we can use index-based evaluation
+                Integer flagIndex = snap.flagIndices.get(flagKey);
+                if (flagIndex != null && inst.evaluateByIndexFunction != null && requiredKeys != null) {
+                    return evaluateByIndex(type, flagIndex, contextJson, inst);
+                }
+
+                return evaluateFlagInternal(type, flagKey, contextJson, inst);
+            } finally {
+                pool.add(inst);
+            }
         } catch (EvaluatorException e) {
             throw e;
         } catch (Exception e) {
@@ -389,12 +527,22 @@ public class FlagEvaluator implements AutoCloseable {
         }
     }
 
+    /**
+     * Returns the number of WASM instances in the pool.
+     *
+     * @return the pool size
+     */
+    public int getPoolSize() {
+        return poolSize;
+    }
+
     @Override
     public void close() {
-        // Free pre-allocated buffers
-        deallocFunction.apply(flagKeyBufferPtr, MAX_FLAG_KEY_SIZE);
-        deallocFunction.apply(contextBufferPtr, MAX_CONTEXT_SIZE);
-        // WASM instances don't need explicit cleanup in Chicory
+        // Drain pool non-blocking and deallocate each instance's buffers
+        WasmInstance inst;
+        while ((inst = pool.poll()) != null) {
+            inst.close();
+        }
     }
 
     /**
