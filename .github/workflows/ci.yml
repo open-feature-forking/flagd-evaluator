@@ -141,6 +141,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - uses: actions/setup-python@v5
         with:
@@ -150,6 +152,11 @@ jobs:
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
+
+      - name: Build WASM for Python WASM evaluator
+        run: |
+          cargo build --target wasm32-unknown-unknown --no-default-features --release --lib
+          cp target/wasm32-unknown-unknown/release/flagd_evaluator.wasm python/flagd_evaluator_wasm/flagd_evaluator.wasm
 
       - name: Install dependencies and build package
         run: |

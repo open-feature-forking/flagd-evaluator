@@ -23,9 +23,14 @@ classifiers = [
 [tool.maturin]
 features = ["pyo3/extension-module"]
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
 [dependency-groups]
 dev = [
     "maturin>=1.0,<2.0",
     "pytest>=7.0",
     "pytest-benchmark>=4.0",
+    "wasmtime>=29.0",
+    "panzi-json-logic>=1.0",
 ]
