@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+    <PackageReference Include="JsonLogic" Version="5.4.0" />
   </ItemGroup>
 
   <ItemGroup>

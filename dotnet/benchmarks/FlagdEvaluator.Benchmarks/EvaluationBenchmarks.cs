@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
+using BenchmarkDotNet.Configs;
 using Eval = FlagdEvaluator;
 
 namespace FlagdEvaluator.Benchmarks;
@@ -179,7 +180,8 @@ public class Program
 {
     public static void Main(string[] args)
     {
-        BenchmarkRunner.Run<EvaluationBenchmarks>(args: args);
-        BenchmarkRunner.Run<ConcurrencyBenchmarks>(args: args);
+        BenchmarkSwitcher
+            .FromTypes([typeof(EvaluationBenchmarks), typeof(ConcurrencyBenchmarks), typeof(ComparisonBenchmarks)])
+            .Run(args);
     }
 }
