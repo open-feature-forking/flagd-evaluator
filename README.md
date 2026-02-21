@@ -1,1343 +1,210 @@
 # flagd-evaluator
 
-A WebAssembly-based JSON Logic evaluator with custom operators for feature flag evaluation. Designed to work with [Chicory](https://github.com/nicknisi/chicory) (pure Java WebAssembly runtime) and other WASM runtimes.
+A single Rust-based feature flag evaluation engine that replaces per-language JSON Logic implementations with one core — one implementation, one test suite, consistent behavior everywhere.
 
 [![CI](https://github.com/open-feature-forking/flagd-evaluator/actions/workflows/ci.yml/badge.svg)](https://github.com/open-feature-forking/flagd-evaluator/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-## Features
+## Language Packages
 
-- **Full JSON Logic Support**: Evaluate complex JSON Logic rules with all standard operators via [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
-- **Custom Operators**: Feature-flag specific operators like `fractional` for A/B testing
-- **JSON Schema Validation**: Validates flag configurations against the official [flagd-schemas](https://github.com/open-feature/flagd-schemas)
-- **Configurable Validation Mode**: Choose between strict (reject invalid configs) or permissive (store with warnings) validation per evaluator instance
-- **Instance-Based API**: Use `FlagEvaluator` for stateful flag evaluation in Rust, or singleton WASM exports for language interop
-- **Type-Specific Evaluation**: Dedicated functions for boolean, string, integer, float, and object flags with type checking
-- **Chicory Compatible**: Works seamlessly with pure Java WASM runtimes - no JNI required
-- **Zero Dependencies at Runtime**: Single WASM file, no external dependencies
-- **Optimized Size**: WASM binary optimized for size (~2.4MB, includes full JSON Logic implementation and schema validation)
-- **Memory Safe**: Clean memory management with explicit alloc/dealloc functions
+Thin wrapper libraries expose the evaluator via WASM runtimes or native bindings. Each package bundles the evaluator and handles all memory management internally.
+
+| Language | Runtime | Install | Docs |
+|----------|---------|---------|------|
+| **Java** | Chicory (pure JVM) | `dev.openfeature:flagd-evaluator-java` | [java/README.md](java/README.md) |
+| **Go** | wazero (pure Go) | `go get github.com/open-feature/flagd-evaluator/go` | [go/README.md](go/README.md) |
+| **.NET** | Wasmtime | NuGet (coming soon) | [dotnet/README.md](dotnet/README.md) |
+| **Python** | PyO3 (native) | `pip install flagd-evaluator` | [python/README.md](python/README.md) |
+| **JavaScript** | Node.js WASM | npm (coming soon) | [js/](js/) |
+| **Rust** | Native library | `flagd-evaluator` crate | [crates.io](https://crates.io/crates/flagd-evaluator) |
 
 ## Quick Start
 
-### Building from Source
+Every wrapper follows the same pattern: create evaluator, load config, evaluate flags.
 
-```bash
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Add WASM target
-rustup target add wasm32-unknown-unknown
-
-# Clone and build
-git clone https://github.com/open-feature-forking/flagd-evaluator.git
-cd flagd-evaluator
-cargo build --target wasm32-unknown-unknown --release
-```
-
-The WASM file will be at: `target/wasm32-unknown-unknown/release/flagd_evaluator.wasm`
-
-### Running Tests
-
-```bash
-cargo test
-```
-
-## Installation
-
-### From Release
-
-Download the latest WASM file from the [Releases](https://github.com/open-feature-forking/flagd-evaluator/releases) page.
-
-### From Source
-
-```bash
-cargo build --target wasm32-unknown-unknown --release
-```
-
-### Java Library (Recommended for Java Projects)
-
-For Java applications, use the standalone Java library that bundles the WASM module and runtime:
-
-```xml
-<dependency>
-    <groupId>dev.openfeature</groupId>
-    <artifactId>flagd-evaluator-java</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
-</dependency>
-```
-
-See [`java/README.md`](./java/README.md) for complete documentation and examples.
-
-## Usage Examples
-
-### Java Library (Simple)
+### Java
 
 ```java
-import dev.openfeature.flagd.evaluator.FlagEvaluator;
-import dev.openfeature.flagd.evaluator.EvaluationResult;
-
-// Create evaluator
 FlagEvaluator evaluator = new FlagEvaluator();
+evaluator.updateState(configJson);
 
-// Load flags
-String config = """
+EvaluationResult<Boolean> result = evaluator.evaluateFlag(Boolean.class, "my-flag", context);
+boolean value = result.getValue();
+```
+
+### Go
+
+```go
+e, _ := evaluator.NewFlagEvaluator()
+defer e.Close()
+
+e.UpdateState(configJSON)
+val := e.EvaluateBool("my-flag", ctx, false)
+```
+
+### .NET
+
+```csharp
+using var evaluator = new FlagEvaluator();
+evaluator.UpdateState(configJson);
+
+bool value = evaluator.EvaluateBool("my-flag", context, defaultValue: false);
+```
+
+### Python
+
+```python
+from flagd_evaluator import FlagEvaluator
+
+evaluator = FlagEvaluator()
+evaluator.update_state(config)
+value = evaluator.evaluate_bool("my-flag", {}, False)
+```
+
+### JavaScript
+
+```typescript
+const evaluator = await FlagEvaluator.create("flagd_evaluator.wasm");
+evaluator.updateState(configJson);
+
+const result = evaluator.evaluateFlag("my-flag", context);
+```
+
+### Rust
+
+```rust
+use flagd_evaluator::{FlagEvaluator, ValidationMode};
+
+let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+evaluator.update_state(&config).unwrap();
+
+let result = evaluator.evaluate_bool("my-flag", &context);
+```
+
+All wrappers accept a [flagd flag definition](https://flagd.dev/reference/flag-definitions/) config:
+
+```json
 {
   "flags": {
     "my-flag": {
       "state": "ENABLED",
       "defaultVariant": "on",
-      "variants": {"on": true, "off": false}
-    }
-  }
-}
-""";
-evaluator.updateState(config);
-
-// Evaluate
-EvaluationResult result = evaluator.evaluateFlag("my-flag", "{}");
-System.out.println("Value: " + result.getValue());
-```
-
-### Java with Chicory (Advanced)
-
-Add the Chicory dependency to your Maven project:
-
-```xml
-<dependency>
-    <groupId>com.dylibso.chicory</groupId>
-    <artifactId>runtime</artifactId>
-    <version>1.0.0</version>
-</dependency>
-<dependency>
-    <groupId>com.google.code.gson</groupId>
-    <artifactId>gson</artifactId>
-    <version>2.10.1</version>
-</dependency>
-```
-
-Java code example:
-
-```java
-import com.dylibso.chicory.runtime.*;
-import com.dylibso.chicory.wasm.Parser;
-import java.nio.charset.StandardCharsets;
-
-// Load the WASM module
-byte[] wasmBytes = Files.readAllBytes(Path.of("flagd_evaluator.wasm"));
-var module = Parser.parse(wasmBytes);
-Instance instance = Instance.builder(module).build();
-
-// Get exported functions
-Memory memory = instance.memory();
-ExportFunction alloc = instance.export("alloc");
-ExportFunction dealloc = instance.export("dealloc");
-ExportFunction updateState = instance.export("update_state");
-ExportFunction evaluate = instance.export("evaluate");
-
-// Update flag configuration
-String config = """
-{
-  "flags": {
-    "myFlag": {
-      "state": "ENABLED",
-      "variants": {"on": true, "off": false},
-      "defaultVariant": "on"
-    }
-  }
-}
-""";
-byte[] configBytes = config.getBytes(StandardCharsets.UTF_8);
-long configPtr = alloc.apply(configBytes.length)[0];
-memory.write((int) configPtr, configBytes);
-
-// Call update_state
-long updateResult = updateState.apply(configPtr, configBytes.length)[0];
-int updateResPtr = (int) (updateResult >>> 32);
-int updateResLen = (int) (updateResult & 0xFFFFFFFFL);
-
-// Read and free update response
-byte[] updateBytes = memory.readBytes(updateResPtr, updateResLen);
-System.out.println("State updated: " + new String(updateBytes, StandardCharsets.UTF_8));
-dealloc.apply(configPtr, configBytes.length);
-dealloc.apply(updateResPtr, updateResLen);
-
-// Evaluate flag
-String flagKey = "myFlag";
-String context = "{}";
-byte[] keyBytes = flagKey.getBytes(StandardCharsets.UTF_8);
-byte[] contextBytes = context.getBytes(StandardCharsets.UTF_8);
-
-long keyPtr = alloc.apply(keyBytes.length)[0];
-long contextPtr = alloc.apply(contextBytes.length)[0];
-memory.write((int) keyPtr, keyBytes);
-memory.write((int) contextPtr, contextBytes);
-
-// Call evaluate
-long evalResult = evaluate.apply(keyPtr, keyBytes.length, contextPtr, contextBytes.length)[0];
-int evalResPtr = (int) (evalResult >>> 32);
-int evalResLen = (int) (evalResult & 0xFFFFFFFFL);
-
-// Read result
-byte[] resultBytes = memory.readBytes(evalResPtr, evalResLen);
-String result = new String(resultBytes, StandardCharsets.UTF_8);
-System.out.println(result);
-
-// Free memory
-dealloc.apply(keyPtr, keyBytes.length);
-dealloc.apply(contextPtr, contextBytes.length);
-dealloc.apply(evalResPtr, evalResLen);
-```
-
-See [examples/java/FlagdEvaluatorExample.java](examples/java/FlagdEvaluatorExample.java) for a complete example.
-
-### Python (Native Bindings) - Recommended
-
-**Native Python bindings** provide the best performance and most Pythonic API using PyO3:
-
-```bash
-pip install flagd-evaluator
-```
-
-**Quick Example:**
-
-```python
-from flagd_evaluator import FlagEvaluator
-
-# Stateful flag evaluation
-evaluator = FlagEvaluator()
-evaluator.update_state({
-    "flags": {
-        "myFlag": {
-            "state": "ENABLED",
-            "variants": {"on": True, "off": False},
-            "defaultVariant": "on"
-        }
-    }
-})
-
-enabled = evaluator.evaluate_bool("myFlag", {}, False)
-print(enabled)  # True
-```
-
-**Benefits:**
-- ⚡ 5-10x faster than WASM
-- 🐍 Pythonic API with type hints
-- 📦 Simple `pip install` - no external dependencies
-- 🔧 Native Python exceptions
-- 💾 Efficient memory usage
-
-**Development:**
-
-For local development, we recommend using [uv](https://github.com/astral-sh/uv) for faster package management:
-
-```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Set up development environment
-cd python
-uv sync --group dev
-source .venv/bin/activate
-maturin develop
-pytest tests/ -v
-```
-
-See [python/README.md](python/README.md) for complete documentation.
-
-### Python with Wasmtime (Alternative)
-
-For environments where native extensions cannot be used, Python can use the WASM evaluator through [wasmtime-py](https://github.com/bytecodealliance/wasmtime-py), providing the same consistent evaluation logic as other languages.
-
-**Installation:**
-
-```bash
-pip install wasmtime
-```
-
-**Basic Example:**
-
-```python
-import json
-from wasmtime import Store, Module, Instance, Func, FuncType, ValType
-import time
-import secrets
-
-# Load WASM module
-store = Store()
-module = Module.from_file(store.engine, 'flagd_evaluator.wasm')
-
-# Define required host functions
-def get_current_time() -> int:
-    return int(time.time())
-
-def get_random_values(caller, _typed_array_ptr: int, buffer_ptr: int):
-    random_bytes = secrets.token_bytes(32)
-    memory = caller["memory"]
-    memory.write(store, buffer_ptr, random_bytes)
-
-# Minimal host function stubs (no-ops)
-def noop_i32(_: int): pass
-def noop_i32_ret(_: int) -> int: return 0
-def noop_i32_i32(_1: int, _2: int): pass
-def noop() -> int: return 0
-def noop_ret() -> int: return 128
-
-# Create host functions
-imports = {
-    "host": {
-        "get_current_time_unix_seconds": Func(store, FuncType([], [ValType.i64()]), get_current_time),
-    },
-    "__wbindgen_placeholder__": {
-        "__wbg_getRandomValues_1c61fac11405ffdc": Func(
-            store, FuncType([ValType.i32(), ValType.i32()], []), get_random_values
-        ),
-        "__wbg_new_0_23cedd11d9b40c9d": Func(store, FuncType([], [ValType.i32()]), noop),
-        "__wbg_getTime_ad1e9878a735af08": Func(
-            store, FuncType([ValType.i32()], [ValType.f64()]), lambda _: float(time.time() * 1000)
-        ),
-        "__wbg___wbindgen_throw_dd24417ed36fc46e": Func(
-            store, FuncType([ValType.i32(), ValType.i32()], []), noop_i32_i32
-        ),
-        "__wbindgen_describe": Func(store, FuncType([ValType.i32()], []), noop_i32),
-        "__wbindgen_object_drop_ref": Func(store, FuncType([ValType.i32()], []), noop_i32),
-    },
-    "__wbindgen_externref_xform__": {
-        "__wbindgen_externref_table_grow": Func(
-            store, FuncType([ValType.i32()], [ValType.i32()]), noop_ret
-        ),
-        "__wbindgen_externref_table_set_null": Func(
-            store, FuncType([ValType.i32()], []), noop_i32
-        ),
-    },
-}
-
-# Create instance with host functions
-instance = Instance(store, module, imports)
-
-# Get WASM exports
-exports = instance.exports(store)
-alloc = exports["alloc"]
-dealloc = exports["dealloc"]
-update_state = exports["update_state"]
-evaluate = exports["evaluate"]
-memory = exports["memory"]
-
-# Load flag configuration
-config = {
-    "flags": {
-        "myFlag": {
-            "state": "ENABLED",
-            "variants": {"on": True, "off": False},
-            "defaultVariant": "on",
-            "targeting": {
-                "if": [
-                    {"==": [{"var": "email"}, "admin@example.com"]},
-                    "on",
-                    "off"
-                ]
-            }
-        }
-    }
-}
-
-config_json = json.dumps(config).encode('utf-8')
-config_ptr = alloc(store, len(config_json))
-memory.write(store, config_ptr, config_json)
-
-# Update state
-result_packed = update_state(store, config_ptr, len(config_json))
-dealloc(store, config_ptr, len(config_json))
-
-# Evaluate flag
-def evaluate_flag(flag_key: str, context: dict) -> dict:
-    """Evaluate a feature flag"""
-    flag_key_bytes = flag_key.encode('utf-8')
-    context_json = json.dumps(context).encode('utf-8')
-
-    # Allocate memory
-    key_ptr = alloc(store, len(flag_key_bytes))
-    context_ptr = alloc(store, len(context_json))
-
-    # Write to WASM memory
-    memory.write(store, key_ptr, flag_key_bytes)
-    memory.write(store, context_ptr, context_json)
-
-    # Call evaluate
-    result_packed = evaluate(store, key_ptr, len(flag_key_bytes), context_ptr, len(context_json))
-
-    # Unpack result
-    result_ptr = result_packed >> 32
-    result_len = result_packed & 0xFFFFFFFF
-
-    # Read result
-    result_bytes = memory.read(store, result_ptr, result_len)
-    result = json.loads(result_bytes.decode('utf-8'))
-
-    # Free memory
-    dealloc(store, key_ptr, len(flag_key_bytes))
-    dealloc(store, context_ptr, len(context_json))
-    dealloc(store, result_ptr, result_len)
-
-    return result
-
-# Example usage
-result = evaluate_flag("myFlag", {})
-print(result["value"])  # False (default variant, no context match)
-
-# With matching context
-result = evaluate_flag("myFlag", {"email": "admin@example.com"})
-print(result["value"])  # True (targeting matched)
-```
-
-**Recommended: Native Python Bindings with PyO3**
-
-For better performance and a more Pythonic API, use the native Python bindings built with [PyO3](https://github.com/PyO3/pyo3) (see section above). Native bindings:
-- Eliminate WASM overhead (5-10x faster)
-- Provide direct Rust-to-Python compilation
-- Enable a simpler, more idiomatic Python API
-- Simple `pip install flagd-evaluator` - no WASM runtime needed
-
-See [python/README.md](python/README.md) for complete documentation.
-
-### Node.js/JavaScript with WASM
-
-Node.js can use the WASM evaluator using the built-in WebAssembly API:
-
-```javascript
-const fs = require('fs');
-const crypto = require('crypto');
-
-// Load WASM module
-const wasmBuffer = fs.readFileSync('flagd_evaluator.wasm');
-
-// Define host functions
-const imports = {
-  host: {
-    get_current_time_unix_seconds: () => BigInt(Math.floor(Date.now() / 1000))
-  },
-  __wbindgen_placeholder__: {
-    __wbg_getRandomValues_1c61fac11405ffdc: (typedArrayPtr, bufferPtr) => {
-      const randomBytes = crypto.randomBytes(32);
-      const memory = instance.exports.memory;
-      new Uint8Array(memory.buffer, bufferPtr, 32).set(randomBytes);
-    },
-    __wbindgen_describe: () => {},
-    __wbindgen_throw: (ptr, len) => {
-      const memory = instance.exports.memory;
-      const message = new TextDecoder().decode(
-        new Uint8Array(memory.buffer, ptr, len)
-      );
-      throw new Error(message);
-    },
-    __wbindgen_object_drop_ref: () => {},
-    __wbindgen_externref_table_grow: () => 0,
-    __wbindgen_externref_table_set_null: () => {},
-    __wbg_new0_1: () => Date.now(),
-    __wbg_getTime_1: (datePtr) => Date.now()
-  }
-};
-
-// Instantiate WASM
-let instance;
-WebAssembly.instantiate(wasmBuffer, imports).then(result => {
-  instance = result.instance;
-
-  // Helper functions
-  const alloc = instance.exports.alloc;
-  const dealloc = instance.exports.dealloc;
-  const updateState = instance.exports.update_state;
-  const evaluate = instance.exports.evaluate;
-  const memory = instance.exports.memory;
-
-  function writeString(str) {
-    const bytes = Buffer.from(str, 'utf8');
-    const ptr = alloc(bytes.length);
-    new Uint8Array(memory.buffer, ptr, bytes.length).set(bytes);
-    return { ptr, len: bytes.length };
-  }
-
-  function readString(ptr, len) {
-    const bytes = new Uint8Array(memory.buffer, ptr, len);
-    return Buffer.from(bytes).toString('utf8');
-  }
-
-  // Load flag configuration
-  const config = writeString(JSON.stringify({
-    flags: {
-      myFlag: {
-        state: "ENABLED",
-        variants: { on: true, off: false },
-        defaultVariant: "on"
-      }
-    }
-  }));
-
-  const updateResult = updateState(config.ptr, config.len);
-  dealloc(config.ptr, config.len);
-
-  // Evaluate flag
-  const flagKey = writeString('myFlag');
-  const context = writeString('{}');
-
-  const resultPacked = evaluate(flagKey.ptr, flagKey.len, context.ptr, context.len);
-  const resultPtr = Number(resultPacked >> 32n);
-  const resultLen = Number(resultPacked & 0xFFFFFFFFn);
-
-  const resultJson = readString(resultPtr, resultLen);
-  console.log(JSON.parse(resultJson).value);
-  // Output: true
-
-  // Clean up
-  dealloc(flagKey.ptr, flagKey.len);
-  dealloc(context.ptr, context.len);
-  dealloc(resultPtr, resultLen);
-});
-```
-
-**Alternative: Native Node.js Bindings with napi-rs**
-
-For better performance and a more idiomatic JavaScript/TypeScript API, native Node.js bindings could be created using [napi-rs](https://napi.rs/). This would:
-- Eliminate WASM overhead
-- Provide native npm package installation
-- Enable simpler, more JavaScript-idiomatic API
-- Auto-generate TypeScript definitions
-
-See [GitHub issue #48](https://github.com/open-feature-forking/flagd-evaluator/issues/48) for discussion on adding native Node.js bindings.
-
-### Rust
-
-The Rust library provides an instance-based `FlagEvaluator` API for stateful flag evaluation:
-
-```rust
-use flagd_evaluator::{FlagEvaluator, ValidationMode};
-use serde_json::json;
-
-// Create evaluator with strict validation (default)
-let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
-
-// Update flag configuration
-let config = json!({
-    "flags": {
-        "myFlag": {
-            "state": "ENABLED",
-            "variants": {"on": true, "off": false},
-            "defaultVariant": "on",
-            "targeting": {
-                "if": [
-                    {"==": [{"var": "email"}, "admin@example.com"]},
-                    "on",
-                    "off"
-                ]
-            }
-        }
-    }
-}).to_string();
-
-evaluator.update_state(&config).unwrap();
-
-// Evaluate with type-specific methods
-let result = evaluator.evaluate_bool("myFlag", &json!({}));
-println!("{:?}", result.value);  // false (default variant)
-
-let result = evaluator.evaluate_bool("myFlag", &json!({"email": "admin@example.com"}));
-println!("{:?}", result.value);  // true (targeting matched)
-
-// Or use the generic evaluate method for full result details
-let result = evaluator.evaluate_flag("myFlag", &json!({}));
-println!("Variant: {:?}, Reason: {:?}", result.variant, result.reason);
-```
-
-**Type-Specific Evaluation Methods:**
-- `evaluate_bool(flag_key, context) -> EvaluationResult` - For boolean flags
-- `evaluate_string(flag_key, context) -> EvaluationResult` - For string flags
-- `evaluate_int(flag_key, context) -> EvaluationResult` - For integer flags
-- `evaluate_float(flag_key, context) -> EvaluationResult` - For float flags
-- `evaluate_object(flag_key, context) -> EvaluationResult` - For object flags
-- `evaluate_flag(flag_key, context) -> EvaluationResult` - Generic evaluation
-
-Each evaluator instance maintains its own flag configuration state and validation mode.
-
-## API Reference
-
-### Exported Functions
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `update_state` | `(config_ptr, config_len) -> u64` | Updates the feature flag configuration state |
-| `evaluate` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a feature flag against context (generic) |
-| `evaluate_reusable` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Like `evaluate` but does not deallocate input buffers (caller manages memory) |
-| `evaluate_by_index` | `(flag_index, context_ptr, context_len) -> u64` | Evaluates a flag by numeric index (avoids flag key string overhead). Does not deallocate input buffers. |
-| `evaluate_boolean` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a boolean flag with type checking |
-| `evaluate_string` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a string flag with type checking |
-| `evaluate_integer` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates an integer flag with type checking |
-| `evaluate_float` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates a float flag with type checking |
-| `evaluate_object` | `(flag_key_ptr, flag_key_len, context_ptr, context_len) -> u64` | Evaluates an object flag with type checking |
-| `set_validation_mode` | `(mode: u32) -> u64` | Sets validation mode (0=Strict, 1=Permissive) |
-| `alloc` | `(len: u32) -> *mut u8` | Allocates memory in WASM linear memory |
-| `dealloc` | `(ptr: *mut u8, len: u32)` | Frees previously allocated memory |
-
-### update_state
-
-Updates the internal feature flag configuration state. This function should be called before evaluating flags using the `evaluate` function.
-
-**Parameters:**
-- `config_ptr` (u32): Pointer to the flagd configuration JSON string in WASM memory
-- `config_len` (u32): Length of the configuration JSON string
-
-**Returns:**
-- `u64`: Packed pointer where upper 32 bits = result pointer, lower 32 bits = result length
-
-**Configuration Format:**
-The configuration should follow the [flagd flag definition schema](https://flagd.dev/reference/flag-definitions/):
-```json
-{
-  "flags": {
-    "myFlag": {
-      "state": "ENABLED",
-      "variants": {
-        "on": true,
-        "off": false
-      },
-      "defaultVariant": "off",
+      "variants": { "on": true, "off": false },
       "targeting": {
-        "if": [
-          {"==": [{"var": "email"}, "admin@example.com"]},
-          "on",
-          "off"
-        ]
+        "if": [{ "==": [{ "var": "email" }, "admin@example.com"] }, "on", "off"]
       }
     }
   }
 }
 ```
 
-**Response Format:**
-```json
-// Success
-{
-  "success": true,
-  "error": null,
-  "changedFlags": ["flag-a", "flag-b"],
-  "preEvaluated": {
-    "static-flag": {"value": true, "variant": "on", "reason": "STATIC"}
-  },
-  "requiredContextKeys": {
-    "targeted-flag": ["email", "targetingKey"]
-  },
-  "flagIndices": {
-    "static-flag": 0,
-    "targeted-flag": 1
-  }
-}
+## How It Works
 
-// Error
-{
-  "success": false,
-  "error": "error message"
-}
+The Rust core compiles to a ~2.4MB WASM module (or native bindings for Python). Each language wrapper loads the module once and reuses it for all evaluations.
+
+### Evaluation Flow
+
 ```
-
-**State Update Flow:**
-
-```mermaid
-sequenceDiagram
-    participant Host as Host Application
-    participant WASM as WASM Module
-    participant Storage as Flag Storage
-    
-    Host->>Host: Allocate memory using alloc()
-    Host->>Host: Write config JSON to memory
-    Host->>WASM: Call update_state(config_ptr, config_len)
-    
-    WASM->>WASM: Read JSON from memory
-    alt Invalid UTF-8
-        WASM-->>Host: Return error response
-    end
-    
-    WASM->>WASM: Validate against JSON Schema
-    
-    alt Strict Mode
-        alt Validation Failed
-            WASM-->>Host: Return validation error
-        end
-    else Permissive Mode
-        alt Validation Failed
-            WASM->>WASM: Log warning, continue
-        end
-    end
-    
-    WASM->>WASM: Parse JSON to FeatureFlag objects
-    alt Parse Error
-        WASM-->>Host: Return parse error
-    end
-    
-    WASM->>Storage: Store parsed flags (replace existing)
-    WASM->>WASM: Allocate memory for success response
-    WASM-->>Host: Return packed pointer (success)
-    
-    Host->>Host: Read response from memory
-    Host->>Host: Deallocate memory using dealloc()
+updateState(config)                          evaluateFlag(key, context)
+       |                                              |
+       v                                              v
+  Parse & validate config                   Check pre-evaluated cache
+  Detect changed flags             ------>  (static/disabled flags: ~0.02 us)
+  Pre-evaluate static flags                         |
+  Extract required context keys              Filter context keys
+  Assign flag indices                        Serialize only needed fields
+       |                                     Call WASM evaluate_by_index
+       v                                              |
+  Return: changedFlags,                               v
+    preEvaluated,                            Return: value, variant, reason
+    requiredContextKeys,
+    flagIndices
 ```
-
-### evaluate
-
-Evaluates a feature flag from the previously stored configuration (set via `update_state`) against the provided context.
-
-**Parameters:**
-- `flag_key_ptr` (u32): Pointer to the flag key string in WASM memory
-- `flag_key_len` (u32): Length of the flag key string
-- `context_ptr` (u32): Pointer to the evaluation context JSON string in WASM memory
-- `context_len` (u32): Length of the context JSON string
-
-**Returns:**
-- `u64`: Packed pointer where upper 32 bits = result pointer, lower 32 bits = result length
-
-**Response Format:**
-The response follows the [flagd provider specification](https://flagd.dev/reference/specifications/providers/#evaluation-results):
-```json
-{
-  "value": <resolved_value>,
-  "variant": "variant_name",
-  "reason": "DEFAULT" | "TARGETING_MATCH" | "DISABLED" | "ERROR",
-  "errorCode": "FLAG_NOT_FOUND" | "PARSE_ERROR" | "TYPE_MISMATCH" | "GENERAL",
-  "errorMessage": "error description"
-}
-```
-
-**Reasons:**
-- `STATIC`: The resolved value is statically configured (no targeting rules exist)
-- `DEFAULT`: The resolved value uses the default variant because targeting didn't match
-- `TARGETING_MATCH`: The resolved value is the result of targeting rule evaluation
-- `DISABLED`: The flag is disabled, returning the default variant
-- `ERROR`: An error occurred during evaluation
-- `FLAG_NOT_FOUND`: The flag was not found in the configuration
-
-**Error Codes:**
-- `FLAG_NOT_FOUND`: The flag key was not found in the configuration
-- `PARSE_ERROR`: Error parsing or evaluating the targeting rule
-- `TYPE_MISMATCH`: The evaluated type does not match the expected type
-- `GENERAL`: Generic evaluation error
-
-**Example Usage:**
-```java
-// 1. Update state with flag configuration
-String config = "{\"flags\": {...}}";
-byte[] configBytes = config.getBytes(StandardCharsets.UTF_8);
-long configPtr = alloc.apply(configBytes.length)[0];
-memory.write((int) configPtr, configBytes);
-long updateResult = updateState.apply(configPtr, configBytes.length)[0];
-// ... read and parse update result ...
-dealloc.apply(configPtr, configBytes.length);
-
-// 2. Evaluate a flag
-String flagKey = "myFlag";
-String context = "{\"email\": \"admin@example.com\"}";
-byte[] keyBytes = flagKey.getBytes(StandardCharsets.UTF_8);
-byte[] contextBytes = context.getBytes(StandardCharsets.UTF_8);
-
-long keyPtr = alloc.apply(keyBytes.length)[0];
-long contextPtr = alloc.apply(contextBytes.length)[0];
-memory.write((int) keyPtr, keyBytes);
-memory.write((int) contextPtr, contextBytes);
-
-long packedResult = evaluate.apply(keyPtr, keyBytes.length, contextPtr, contextBytes.length)[0];
-int resultPtr = (int) (packedResult >>> 32);
-int resultLen = (int) (packedResult & 0xFFFFFFFFL);
-
-byte[] resultBytes = memory.readBytes(resultPtr, resultLen);
-String result = new String(resultBytes, StandardCharsets.UTF_8);
-// Parse JSON result...
-
-// Cleanup
-dealloc.apply(keyPtr, keyBytes.length);
-dealloc.apply(contextPtr, contextBytes.length);
-dealloc.apply(resultPtr, resultLen);
-```
-
-**Flag Evaluation Flow:**
-
-```mermaid
-flowchart TD
-    Start([Host calls evaluate]) --> AllocMem[Host allocates memory for flag key and context]
-    AllocMem --> WriteData[Host writes data to WASM memory]
-    WriteData --> CallEval[Call evaluate with pointers]
-    
-    CallEval --> ReadMem[WASM reads flag key and context from memory]
-    ReadMem --> ParseCtx{Parse context JSON}
-    ParseCtx -->|Error| ReturnError[Return PARSE_ERROR]
-    
-    ParseCtx -->|Success| GetFlag{Retrieve flag from storage}
-    GetFlag -->|Not Found| ReturnNotFound[Return FLAG_NOT_FOUND]
-    GetFlag -->|Found| CheckState{Check flag state}
-    
-    CheckState -->|DISABLED| ReturnDisabled[Return default variant with DISABLED reason]
-    CheckState -->|ENABLED| CheckTargeting{Has targeting rules?}
-    
-    CheckTargeting -->|No| ReturnStatic[Return default variant with STATIC reason]
-    CheckTargeting -->|Yes| EnrichContext[Enrich context with:<br/>- $flagd.flagKey<br/>- $flagd.timestamp<br/>- targetingKey default]
-    
-    EnrichContext --> EvalRule[Evaluate targeting rule using JSON Logic]
-    EvalRule --> EvalResult{Evaluation result}
-    
-    EvalResult -->|Error| ReturnParseError[Return PARSE_ERROR]
-    EvalResult -->|Success| GetVariant{Variant exists?}
-    
-    GetVariant -->|Yes| ReturnMatch[Return variant value with TARGETING_MATCH]
-    GetVariant -->|No| ReturnDefault[Return default variant with DEFAULT reason]
-    
-    ReturnError --> PackResult[Pack result into memory]
-    ReturnNotFound --> PackResult
-    ReturnDisabled --> PackResult
-    ReturnStatic --> PackResult
-    ReturnParseError --> PackResult
-    ReturnMatch --> PackResult
-    ReturnDefault --> PackResult
-    
-    PackResult --> ReturnPacked[Return packed pointer to host]
-    ReturnPacked --> HostRead[Host reads result from memory]
-    HostRead --> HostDealloc[Host deallocates all memory]
-    HostDealloc --> End([Evaluation complete])
-```
-
-### evaluate_by_index
-
-Evaluates a flag using a numeric index instead of a string key. This is an optimization that avoids flag key string serialization and uses O(1) Vec lookup instead of HashMap lookup on the Rust side.
-
-**Parameters:**
-- `flag_index` (u32): Numeric index of the flag (from `flagIndices` in the `update_state` response)
-- `context_ptr` (u32): Pointer to the evaluation context JSON string in WASM memory
-- `context_len` (u32): Length of the context JSON string
-
-**Returns:**
-- `u64`: Packed pointer where upper 32 bits = result pointer, lower 32 bits = result length
-
-**Important:**
-- Does NOT deallocate input buffers — the caller must free `context_ptr` after reading the result.
-- Expects the context to already include `$flagd` enrichment and `targetingKey` (the host should add these before calling). If `$flagd` is present in the context, WASM-side enrichment is skipped.
-- Flag indices are assigned in sorted (alphabetical) order during `update_state()` and are stable until the next `update_state()` call.
-- If the index is out of bounds, returns a `FLAG_NOT_FOUND` error.
-
-### Context Enrichment
-
-The evaluator automatically enriches the evaluation context with standard `$flagd` properties according to the [flagd provider specification](https://flagd.dev/reference/specifications/providers/#in-process-resolver). These properties are available in targeting rules via JSON Logic's `var` operator.
-
-**Injected Properties:**
-
-| Property | Type | Description | Example Access |
-|----------|------|-------------|----------------|
-| `$flagd.flagKey` | string | The key of the flag being evaluated | `{"var": "$flagd.flagKey"}` |
-| `$flagd.timestamp` | number | Unix timestamp in seconds at evaluation time | `{"var": "$flagd.timestamp"}` |
-| `targetingKey` | string | Key for consistent hashing (from context or empty string) | `{"var": "targetingKey"}` |
-
-**Example - Time-based Feature Flag:**
-```json
-{
-  "flags": {
-    "limitedTimeOffer": {
-      "state": "ENABLED",
-      "variants": {
-        "active": true,
-        "expired": false
-      },
-      "defaultVariant": "expired",
-      "targeting": {
-        "if": [
-          {
-            "and": [
-              {">=": [{"var": "$flagd.timestamp"}, 1704067200]},
-              {"<": [{"var": "$flagd.timestamp"}, 1735689600]}
-            ]
-          },
-          "active",
-          "expired"
-        ]
-      }
-    }
-  }
-}
-```
-
-**Example - Flag-specific Logic:**
-```json
-{
-  "targeting": {
-    "if": [
-      {"==": [{"var": "$flagd.flagKey"}, "debugMode"]},
-      "enabled",
-      "disabled"
-    ]
-  }
-}
-```
-
-**Note:** The `$flagd` properties are stored as a nested object in the evaluation context: `{"$flagd": {"flagKey": "...", "timestamp": ...}}`. This allows JSON Logic to access them using dot notation (e.g., `{"var": "$flagd.timestamp"}`).
-
-## Host Functions (Required for WASM)
-
-The WASM module requires the host environment to provide the current timestamp for context enrichment.
-
-### Required: `get_current_time_unix_seconds`
-
-**Module:** `host`
-**Function:** `get_current_time_unix_seconds() -> u64`
-
-Returns the current Unix timestamp in seconds since epoch (1970-01-01 00:00:00 UTC).
-
-#### Why is this needed?
-
-The WASM sandbox cannot access system time without WASI support. Since Chicory and other pure WASM runtimes don't provide WASI, the host must supply the current time for the `$flagd.timestamp` property used in targeting rules.
-
-#### Java Implementation Example (Chicory)
-
-```java
-import com.dylibso.chicory.runtime.HostFunction;
-import com.dylibso.chicory.wasm.types.Value;
-import com.dylibso.chicory.wasm.types.ValueType;
-
-HostFunction getCurrentTime = new HostFunction(
-    "host",                              // Module name
-    "get_current_time_unix_seconds",    // Function name
-    List.of(),                           // No parameters
-    List.of(ValueType.I64),             // Returns i64
-    (Instance instance, Value... args) -> {
-        long currentTimeSeconds = System.currentTimeMillis() / 1000;
-        return new Value[] { Value.i64(currentTimeSeconds) };
-    }
-);
-
-// Add to module when loading WASM
-Module module = Module.builder(wasmBytes)
-    .withHostFunction(getCurrentTime)
-    .build();
-```
-
-**📝 See [HOST_FUNCTIONS.md](./HOST_FUNCTIONS.md) for complete implementation examples in Java, JavaScript, and Go.**
-
-#### Behavior Without Host Function
-
-If the host function is not provided:
-- `$flagd.timestamp` defaults to `0`
-- Evaluation continues without errors
-- Time-based targeting rules will not work correctly
-
-## JSON Schema Validation
-
-The evaluator automatically validates flag configurations against the official [flagd-schemas](https://github.com/open-feature/flagd-schemas) before storing them. This ensures that your flag configurations match the expected structure and catches errors early.
-
-### Validation Modes
-
-You can configure how validation errors are handled:
-
-- **Strict Mode (default)**: Rejects flag configurations that fail validation
-- **Permissive Mode**: Stores flag configurations even if validation fails (useful for legacy configurations)
-
-**From Rust:**
-
-Each `FlagEvaluator` instance can have its own validation mode:
-
-```rust
-use flagd_evaluator::{FlagEvaluator, ValidationMode};
-
-// Create evaluator with strict validation (default)
-let strict_evaluator = FlagEvaluator::new(ValidationMode::Strict);
-
-// Create evaluator with permissive validation
-let permissive_evaluator = FlagEvaluator::new(ValidationMode::Permissive);
-
-// Change validation mode on an existing evaluator
-let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
-evaluator.set_validation_mode(ValidationMode::Permissive);
-```
-
-**From WASM (e.g., Java via Chicory):**
-
-The WASM module uses a singleton evaluator, and you can set its validation mode globally:
-```java
-// Get the set_validation_mode function
-WasmFunction setValidationMode = instance.export("set_validation_mode");
-
-// Set to permissive mode (1)
-long resultPtr = setValidationMode.apply(1L)[0];
-
-// Parse the response
-int ptr = (int) (resultPtr >>> 32);
-int len = (int) (resultPtr & 0xFFFFFFFFL);
-byte[] responseBytes = memory.readBytes(ptr, len);
-String response = new String(responseBytes, StandardCharsets.UTF_8);
-// {"success":true,"error":null}
-
-// Don't forget to free the memory
-dealloc.apply(ptr, len);
-
-// To set back to strict mode (0) - this is the default
-setValidationMode.apply(0L);
-```
-
-**Validation Mode Values:**
-- `0` = Strict mode (reject invalid configurations)
-- `1` = Permissive mode (accept with warnings)
-
-### Validation Error Format
-
-When validation fails in strict mode, the `update_state` function returns a JSON error object:
-
-```json
-{
-  "valid": false,
-  "errors": [
-    {
-      "path": "/flags/myFlag/state",
-      "message": "'INVALID' is not one of ['ENABLED', 'DISABLED']"
-    },
-    {
-      "path": "/flags/myFlag",
-      "message": "'variants' is a required property"
-    }
-  ]
-}
-```
-
-### Common Validation Errors
-
-**Missing Required Fields:**
-```json
-{
-  "valid": false,
-  "errors": [
-    {
-      "path": "/flags/myFlag",
-      "message": "'state' is a required property"
-    }
-  ]
-}
-```
-
-**Invalid State Value:**
-```json
-{
-  "valid": false,
-  "errors": [
-    {
-      "path": "/flags/myFlag/state",
-      "message": "'INVALID_STATE' is not one of ['ENABLED', 'DISABLED']"
-    }
-  ]
-}
-```
-
-**Mixed Variant Types (e.g., boolean flag with string variant):**
-```json
-{
-  "valid": false,
-  "errors": [
-    {
-      "path": "/flags/boolFlag/variants/on",
-      "message": "'string value' is not of type 'boolean'"
-    }
-  ]
-}
-```
-
-**Invalid JSON:**
-```json
-{
-  "valid": false,
-  "errors": [
-    {
-      "path": "",
-      "message": "Invalid JSON: expected value at line 1 column 5"
-    }
-  ]
-}
-```
-
-## Custom Operators
-
-This library implements all flagd custom operators for feature flag evaluation. See the [flagd Custom Operations Specification](https://flagd.dev/reference/specifications/custom-operations/) for the full specification.
-
-### fractional
-
-The `fractional` operator provides consistent hashing for A/B testing and feature flag rollouts. It uses MurmurHash3 to consistently assign the same key to the same bucket.
-
-**Syntax:**
-```json
-{"fractional": [<bucket_key>, [<name1>, <weight1>, <name2>, <weight2>, ...]]}
-```
-
-**Parameters:**
-- `bucket_key`: A string, number, or `{"var": "path"}` reference used for bucketing
-- `buckets`: Array of alternating bucket names and weights
-
-**Examples:**
-
-```json
-// 50/50 A/B test
-{"fractional": ["user-123", ["control", 50, "treatment", 50]]}
-
-// Using a variable reference
-{"fractional": [{"var": "user.id"}, ["A", 33, "B", 33, "C", 34]]}
-
-// 10% rollout to beta
-{"fractional": [{"var": "userId"}, ["beta", 10, "stable", 90]]}
-```
-
-**Properties:**
-- **Consistent**: Same bucket key always returns the same bucket
-- **Deterministic**: Results are reproducible across different invocations
-- **Uniform Distribution**: Keys are evenly distributed across buckets according to weights
-
-### starts_with
-
-The `starts_with` operator checks if a string starts with a specific prefix. The comparison is case-sensitive.
-
-**Syntax:**
-```json
-{"starts_with": [<string_value>, <prefix>]}
-```
-
-**Parameters:**
-- `string_value`: A string or `{"var": "path"}` reference to the value to check
-- `prefix`: A string or `{"var": "path"}` reference to the prefix to search for
-
-**Examples:**
-
-```json
-// Check if email starts with "admin@"
-{"starts_with": [{"var": "email"}, "admin@"]}
-
-// Check if path starts with "/api/"
-{"starts_with": [{"var": "path"}, "/api/"]}
-```
-
-**Properties:**
-- **Case-sensitive**: "Hello" does not start with "hello"
-- **Empty prefix**: An empty prefix always returns true
-
-### ends_with
-
-The `ends_with` operator checks if a string ends with a specific suffix. The comparison is case-sensitive.
-
-**Syntax:**
-```json
-{"ends_with": [<string_value>, <suffix>]}
-```
-
-**Parameters:**
-- `string_value`: A string or `{"var": "path"}` reference to the value to check
-- `suffix`: A string or `{"var": "path"}` reference to the suffix to search for
-
-**Examples:**
-
-```json
-// Check if filename ends with ".pdf"
-{"ends_with": [{"var": "filename"}, ".pdf"]}
-
-// Check if URL ends with ".com"
-{"ends_with": [{"var": "url"}, ".com"]}
-```
-
-**Properties:**
-- **Case-sensitive**: "Hello.PDF" does not end with ".pdf"
-- **Empty suffix**: An empty suffix always returns true
-
-### sem_ver
-
-The `sem_ver` operator compares semantic versions according to the [semver.org](https://semver.org/) specification. It supports all standard comparison operators plus caret (^) and tilde (~) ranges.
-
-**Syntax:**
-```json
-{"sem_ver": [<version>, <operator>, <target_version>]}
-```
-
-**Parameters:**
-- `version`: A version string or `{"var": "path"}` reference
-- `operator`: One of `"="`, `"!="`, `"<"`, `"<="`, `">"`, `">="`, `"^"`, `"~"`
-- `target_version`: The version to compare against
-
-**Operators:**
-| Operator | Description |
-|----------|-------------|
-| `"="` | Equal to |
-| `"!="` | Not equal to |
-| `"<"` | Less than |
-| `"<="` | Less than or equal to |
-| `">"` | Greater than |
-| `">="` | Greater than or equal to |
-| `"^"` | Caret range (allows minor and patch updates) |
-| `"~"` | Tilde range (allows patch updates only) |
-
-**Examples:**
-
-```json
-// Check if version is greater than or equal to 2.0.0
-{"sem_ver": [{"var": "app.version"}, ">=", "2.0.0"]}
-
-// Caret range: ^1.2.3 means >=1.2.3 <2.0.0
-{"sem_ver": [{"var": "version"}, "^", "1.2.3"]}
-
-// Tilde range: ~1.2.3 means >=1.2.3 <1.3.0
-{"sem_ver": [{"var": "version"}, "~", "1.2.3"]}
-```
-
-**Version Handling:**
-- Supports versions with prerelease tags (e.g., "1.0.0-alpha.1")
-- Supports versions with build metadata (e.g., "1.0.0+build.123")
-- Missing minor/patch versions are treated as 0 (e.g., "1.2" = "1.2.0")
-- Prerelease versions have lower precedence than release versions
-
-## Memory Model & Safety
-
-### Memory Management
-
-The library uses a simple linear memory allocation model:
-
-1. **Allocation**: Call `alloc(len)` to allocate `len` bytes. Returns a pointer or null on failure.
-2. **Usage**: Write data to the allocated memory region.
-3. **Deallocation**: Call `dealloc(ptr, len)` to free the memory.
-
-**Important:** The caller is responsible for:
-- Freeing input memory after WASM functions return
-- Freeing the result memory after reading it
-
-**Memory Management Flow:**
-
-```mermaid
-sequenceDiagram
-    participant Host as Host Application
-    participant WASM as WASM Module
-    participant Heap as WASM Heap
-    
-    Note over Host,Heap: Input Phase
-    Host->>WASM: Call alloc(input_len)
-    WASM->>Heap: Allocate input_len bytes
-    Heap-->>WASM: Return pointer or null
-    WASM-->>Host: Return input_ptr
-    
-    Host->>WASM: Write input data to memory[input_ptr]
-    
-    Note over Host,Heap: Processing Phase
-    Host->>WASM: Call function(input_ptr, input_len, ...)
-    WASM->>WASM: Read data from memory[input_ptr]
-    WASM->>WASM: Process data
-    
-    WASM->>WASM: Call alloc(result_len) internally
-    WASM->>Heap: Allocate result_len bytes
-    Heap-->>WASM: Return result_ptr
-    WASM->>WASM: Write result to memory[result_ptr]
-    
-    WASM->>WASM: Pack pointer and length:<br/>packed = (result_ptr << 32) | result_len
-    WASM-->>Host: Return packed u64
-    
-    Note over Host,Heap: Cleanup Phase
-    Host->>Host: Unpack u64:<br/>result_ptr = packed >> 32<br/>result_len = packed & 0xFFFFFFFF
-    Host->>WASM: Read result from memory[result_ptr]
-    
-    Host->>WASM: Call dealloc(input_ptr, input_len)
-    WASM->>Heap: Free input memory
-    
-    Host->>WASM: Call dealloc(result_ptr, result_len)
-    WASM->>Heap: Free result memory
-    
-    Note over Host,Heap: Memory lifecycle complete
-```
-
-### Pointer Packing
-
-Results are returned as a packed 64-bit integer:
-- **Upper 32 bits**: Memory pointer to result string
-- **Lower 32 bits**: Length of result string in bytes
-
-```java
-// Java example to unpack
-long packedResult = evaluateLogic.apply(...)[0];
-int ptr = (int) (packedResult >>> 32);
-int len = (int) (packedResult & 0xFFFFFFFFL);
-```
-
-### Safety Considerations
-
-- All memory operations go through the exported `alloc`/`dealloc` functions
-- The library never accesses memory outside allocated regions
-- Invalid UTF-8 input is detected and reported as an error
-- All errors are caught and returned as JSON, never as panics
-
-## Performance Considerations
-
-### Targets
-
-| Metric | Target | Notes |
-|--------|--------|-------|
-| WASM Size | ~2.4MB | Full JSON Logic implementation with 50+ operators |
-| Static flag evaluation | < 0.1 µs | Pre-evaluated, no WASM call |
-| Targeting flag evaluation | < 15 µs | With context key filtering (1000+ attribute context) |
-| Memory Overhead | Minimal | Only allocates what's needed for inputs and outputs |
 
 ### Host-Side Optimizations
 
-The `update_state` response includes metadata that host implementations can use to optimize evaluation:
+The `updateState` response includes metadata that wrappers use automatically:
 
-1. **Pre-evaluated results** (`preEvaluated`): Static and disabled flags are fully resolved at config-load time. The host caches these and returns them without any WASM call.
+1. **Pre-evaluated cache** — Static flags (no targeting) and disabled flags are fully resolved at config-load time and cached on the host side. Evaluation returns instantly without crossing the WASM boundary (~0.02 us).
 
-2. **Required context keys** (`requiredContextKeys`): Per-flag list of context fields the targeting rule references. The host serializes only those fields instead of the entire context. A 1000-attribute context where the rule uses 2 fields shrinks from ~50KB to ~200 bytes.
+2. **Context key filtering** — The WASM module walks each flag's targeting rule tree to extract which context fields it references (e.g., `{"var": "email"}` -> `email`). When evaluating, only those fields are serialized instead of the entire context. A 1000-attribute context where the rule uses 2 fields shrinks from ~50KB to ~200 bytes.
 
-3. **Flag indices** (`flagIndices`): Numeric index per flag for `evaluate_by_index`. Avoids flag key string serialization across the WASM boundary and uses O(1) Vec lookup on the Rust side.
+3. **Index-based evaluation** — Each flag gets a stable numeric index during `updateState`. The WASM `evaluate_by_index(u32, ...)` export avoids flag key string serialization and uses O(1) Vec lookup on the Rust side.
 
-4. **Host-side enrichment**: When using `evaluate_by_index`, the host adds `$flagd.flagKey`, `$flagd.timestamp`, and `targetingKey` to the context before serialization, skipping the WASM-side `enrich_context()` clone.
+With a 1000+ attribute context, these optimizations deliver a **32-34x speedup** over native JSON Logic implementations. See [BENCHMARKS.md](BENCHMARKS.md) for the full comparison matrix.
 
-### General Tips
+## Custom Operators
 
-1. **Reuse the WASM instance** - Instantiation is expensive; reuse the instance for multiple evaluations
-2. **Use `evaluate_by_index`** - Avoids flag key string overhead across the WASM boundary
-3. **Filter context on the host** - Use `requiredContextKeys` to serialize only needed fields
-4. **Cache pre-evaluated flags** - Static/disabled flags never need a WASM call
-5. **Use wasm-opt** - The release workflow uses wasm-opt for additional optimization
+All [flagd custom operators](https://flagd.dev/reference/specifications/custom-operations/) are implemented:
+
+### fractional
+
+Consistent hashing for A/B testing. Same key always maps to the same bucket.
+
+```json
+{"fractional": [{"var": "targetingKey"}, ["control", 50, "treatment", 50]]}
+```
+
+### sem_ver
+
+Semantic version comparison with all standard operators plus caret (`^`) and tilde (`~`) ranges.
+
+```json
+{"sem_ver": [{"var": "app.version"}, ">=", "2.0.0"]}
+```
+
+### starts_with / ends_with
+
+Case-sensitive string prefix and suffix matching.
+
+```json
+{"starts_with": [{"var": "email"}, "admin@"]}
+{"ends_with": [{"var": "filename"}, ".pdf"]}
+```
 
 ## Building from Source
 
-### Requirements
-
-- Rust 1.70+ (for 2021 edition support)
-- wasm32-unknown-unknown target
-
-### Development Build
-
 ```bash
+# Dev build + tests
 cargo build
 cargo test
+
+# WASM build
+cargo build --target wasm32-unknown-unknown --no-default-features --release --lib
+
+# Lint (required before commit)
+cargo fmt && cargo clippy -- -D warnings
 ```
 
-### Release Build
+The WASM file is output to `target/wasm32-unknown-unknown/release/flagd_evaluator.wasm`.
 
-```bash
-cargo build --target wasm32-unknown-unknown --release
-```
+## Documentation
 
-### Linting
+| Topic | File |
+|-------|------|
+| Architecture, memory model, WASM API | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Benchmarks, performance matrix | [BENCHMARKS.md](BENCHMARKS.md) |
+| Host function requirements | [HOST_FUNCTIONS.md](HOST_FUNCTIONS.md) |
+| Contributing guidelines | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Java package | [java/README.md](java/README.md) |
+| Go package | [go/README.md](go/README.md) |
+| .NET package | [dotnet/README.md](dotnet/README.md) |
+| Python bindings | [python/README.md](python/README.md) |
 
-```bash
-cargo clippy -- -D warnings
-cargo fmt -- --check
-```
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
-
-Quick summary:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Ensure `cargo test` and `cargo clippy` pass
-5. Submit a pull request
+**External specs:**
+- [flagd Flag Definitions](https://flagd.dev/reference/flag-definitions/)
+- [flagd Custom Operations](https://flagd.dev/reference/specifications/custom-operations/)
+- [flagd Provider Specification](https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md)
+- [JSON Logic](https://jsonlogic.com/) | [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
 
 ## License
 
-This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
+Apache License, Version 2.0 — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- [datalogic-rs](https://github.com/cozylogic/datalogic-rs) - The JSON Logic implementation this library is built on
-- [Chicory](https://github.com/nicknisi/chicory) - Pure Java WebAssembly runtime
-- [serde](https://serde.rs/) - Serialization framework for Rust
-- [OpenFeature](https://openfeature.dev/) - The open standard for feature flag management
+- [datalogic-rs](https://github.com/cozylogic/datalogic-rs) — JSON Logic engine
+- [Chicory](https://github.com/dylibso/chicory) — Pure Java WASM runtime
+- [wazero](https://wazero.io/) — Pure Go WASM runtime
+- [PyO3](https://pyo3.rs/) — Rust-Python bindings
+- [OpenFeature](https://openfeature.dev/) — Open standard for feature flag management
