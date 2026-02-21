@@ -159,6 +159,27 @@ jobs:
       - name: Run tests
         run: cd js && npx vitest run
 
+  test-dotnet:
+    name: Test .NET Package
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flagd_evaluator.wasm
+          path: dotnet/src/FlagdEvaluator/
+
+      - name: Run tests
+        run: cd dotnet && dotnet test dotnet.sln -c Release --logger "console;verbosity=detailed"
+
   test-python:
     name: Test Python Bindings
     runs-on: ubuntu-latest
