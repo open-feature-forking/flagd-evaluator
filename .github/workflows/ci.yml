@@ -133,6 +133,33 @@ jobs:
       - name: Run Go tests
         run: cd go && go test -v -count=1 ./...
 
+  test-js:
+    name: Test JS Package
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flagd_evaluator.wasm
+          path: js/
+
+      - name: Install dependencies
+        run: cd js && npm ci
+
+      - name: Type check
+        run: cd js && npx tsc --noEmit
+
+      - name: Run tests
+        run: cd js && npx vitest run
+
   test-python:
     name: Test Python Bindings
     runs-on: ubuntu-latest
