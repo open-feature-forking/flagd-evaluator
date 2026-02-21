@@ -68,7 +68,7 @@ export class MinimalInProcessResolver {
       // engine.build() compiles the JSON Logic into a native JS function
       if (flag.targeting) {
         try {
-          flag.compiledTargeting = this.engine.build(flag.targeting);
+          flag.compiledTargeting = this.engine.build(flag.targeting) as (data: Record<string, unknown>) => unknown;
         } catch {
           // If build fails, fall back to interpreted mode
         }
