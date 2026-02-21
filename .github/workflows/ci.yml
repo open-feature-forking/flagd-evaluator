@@ -182,14 +182,13 @@ jobs:
 
   test-python:
     name: Test Python Bindings
+    needs: build-wasm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
       - uses: actions/setup-python@v5
         with:
@@ -200,10 +199,11 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Build WASM for Python WASM evaluator
-        run: |
-          cargo build --target wasm32-unknown-unknown --no-default-features --release --lib
-          cp target/wasm32-unknown-unknown/release/flagd_evaluator.wasm python/flagd_evaluator_wasm/flagd_evaluator.wasm
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flagd_evaluator.wasm
+          path: python/flagd_evaluator_wasm/
 
       - name: Install dependencies and build package
         run: |
@@ -220,6 +220,7 @@ jobs:
 
   test-java:
     name: Test Java Library
+    needs: build-wasm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -231,29 +232,17 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
         with:
-          targets: wasm32-unknown-unknown
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-java-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-java-
+          name: flagd_evaluator.wasm
+          path: target/wasm32-unknown-unknown/release/
 
       - name: Make Maven wrapper executable
         run: chmod +x java/mvnw
 
-      - name: Build with Maven
-        run: cd java && ./mvnw clean verify
+      - name: Build with Maven (skip WASM build)
+        run: cd java && ./mvnw clean verify -Dexec.skip=true
 
       - name: Upload test results
         if: always()
