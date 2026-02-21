@@ -114,7 +114,6 @@ jobs:
     name: Test Go Package
     needs: build-wasm
     runs-on: ubuntu-latest
-    if: hashFiles('go/go.mod') != ''
     steps:
       - uses: actions/checkout@v4
 
