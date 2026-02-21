@@ -33,7 +33,10 @@ jobs:
             ${{ runner.os }}-cargo-test-
 
       - name: Run tests
-        run: cargo test --verbose
+        run: |
+          cargo test --lib --verbose -- --test-threads=1
+          cargo test --test integration_tests --verbose -- --test-threads=1
+          cargo test --test gherkin_tests --verbose
 
   clippy:
     name: Clippy
@@ -114,7 +117,6 @@ jobs:
     name: Test Go Package
     needs: build-wasm
     runs-on: ubuntu-latest
-    if: hashFiles('go/go.mod') != ''
     steps:
       - uses: actions/checkout@v4
 
@@ -133,16 +135,62 @@ jobs:
       - name: Run Go tests
         run: cd go && go test -v -count=1 ./...
 
-  test-python:
-    name: Test Python Bindings
+  test-js:
+    name: Test JS Package
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flagd_evaluator.wasm
+          path: js/
+
+      - name: Install dependencies
+        run: cd js && npm ci
+
+      - name: Type check
+        run: cd js && npx tsc --noEmit
+
+      - name: Run tests
+        run: cd js && npx vitest run
+
+  test-dotnet:
+    name: Test .NET Package
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flagd_evaluator.wasm
+          path: dotnet/src/FlagdEvaluator/
+
+      - name: Run tests
+        run: cd dotnet && dotnet test dotnet.sln -c Release --logger "console;verbosity=detailed"
+
+  test-python-native:
+    name: Test Python Native Bindings (PyO3)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
       - uses: actions/setup-python@v5
         with:
@@ -153,11 +201,6 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Build WASM for Python WASM evaluator
-        run: |
-          cargo build --target wasm32-unknown-unknown --no-default-features --release --lib
-          cp target/wasm32-unknown-unknown/release/flagd_evaluator.wasm python/flagd_evaluator_wasm/flagd_evaluator.wasm
-
       - name: Install dependencies and build package
         run: |
           cd python
@@ -165,14 +208,49 @@ jobs:
           source .venv/bin/activate
           maturin develop
 
-      - name: Run Python tests
+      - name: Run native tests
         run: |
           cd python
           source .venv/bin/activate
-          pytest tests/ -v
+          pytest tests/ -v --ignore=tests/test_wasm_evaluator.py
+
+  test-python-wasm:
+    name: Test Python WASM Evaluator
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flagd_evaluator.wasm
+          path: python/flagd_evaluator_wasm/
+
+      - name: Install dependencies
+        run: |
+          cd python
+          uv sync --group dev
+          source .venv/bin/activate
+
+      - name: Run WASM tests
+        run: |
+          cd python
+          source .venv/bin/activate
+          pytest tests/test_wasm_evaluator.py -v
 
   test-java:
     name: Test Java Library
+    needs: build-wasm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -184,29 +262,17 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
         with:
-          targets: wasm32-unknown-unknown
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-java-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-java-
+          name: flagd_evaluator.wasm
+          path: target/wasm32-unknown-unknown/release/
 
       - name: Make Maven wrapper executable
         run: chmod +x java/mvnw
 
-      - name: Build with Maven
-        run: cd java && ./mvnw clean verify
+      - name: Build with Maven (skip WASM build)
+        run: cd java && ./mvnw clean verify -Dexec.skip=true
 
       - name: Upload test results
         if: always()
