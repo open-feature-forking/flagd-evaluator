@@ -183,9 +183,8 @@ jobs:
       - name: Run tests
         run: cd dotnet && dotnet test dotnet.sln -c Release --logger "console;verbosity=detailed"
 
-  test-python:
-    name: Test Python Bindings
-    needs: build-wasm
+  test-python-native:
+    name: Test Python Native Bindings (PyO3)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -202,12 +201,6 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Download WASM artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: flagd_evaluator.wasm
-          path: python/flagd_evaluator_wasm/
-
       - name: Install dependencies and build package
         run: |
           cd python
@@ -215,11 +208,45 @@ jobs:
           source .venv/bin/activate
           maturin develop
 
-      - name: Run Python tests
+      - name: Run native tests
         run: |
           cd python
           source .venv/bin/activate
-          pytest tests/ -v
+          pytest tests/ -v --ignore=tests/test_wasm_evaluator.py
+
+  test-python-wasm:
+    name: Test Python WASM Evaluator
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flagd_evaluator.wasm
+          path: python/flagd_evaluator_wasm/
+
+      - name: Install dependencies
+        run: |
+          cd python
+          uv sync --group dev
+          source .venv/bin/activate
+
+      - name: Run WASM tests
+        run: |
+          cd python
+          source .venv/bin/activate
+          pytest tests/test_wasm_evaluator.py -v
 
   test-java:
     name: Test Java Library
