@@ -77,7 +77,7 @@ fn evaluate_flag_simple(c: &mut Criterion) {
     let context = json!({});
 
     c.bench_function("evaluate_flag_simple", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("boolFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("boolFlag"), black_box(context.clone())))
     });
 }
 
@@ -87,7 +87,7 @@ fn evaluate_flag_targeting_match(c: &mut Criterion) {
     let context = json!({"role": "admin"});
 
     c.bench_function("evaluate_flag_targeting_match", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(context.clone())))
     });
 }
 
@@ -97,7 +97,7 @@ fn evaluate_flag_targeting_no_match(c: &mut Criterion) {
     let context = json!({"role": "viewer"});
 
     c.bench_function("evaluate_flag_targeting_no_match", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(context.clone())))
     });
 }
 
@@ -107,7 +107,7 @@ fn evaluate_flag_complex_targeting(c: &mut Criterion) {
     let context = json!({"tier": "standard", "score": 75});
 
     c.bench_function("evaluate_flag_complex_targeting", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("complexFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("complexFlag"), black_box(context.clone())))
     });
 }
 
@@ -117,7 +117,7 @@ fn evaluate_flag_disabled(c: &mut Criterion) {
     let context = json!({});
 
     c.bench_function("evaluate_flag_disabled", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("disabledFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("disabledFlag"), black_box(context.clone())))
     });
 }
 
@@ -127,7 +127,7 @@ fn evaluate_flag_not_found(c: &mut Criterion) {
     let context = json!({});
 
     c.bench_function("evaluate_flag_not_found", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("nonexistent"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("nonexistent"), black_box(context.clone())))
     });
 }
 
@@ -205,7 +205,7 @@ fn evaluate_flag_simple_small_ctx(c: &mut Criterion) {
     let context = small_context();
 
     c.bench_function("evaluate_flag_simple_small_ctx", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("boolFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("boolFlag"), black_box(context.clone())))
     });
 }
 
@@ -216,7 +216,7 @@ fn evaluate_flag_simple_large_ctx(c: &mut Criterion) {
     let context = large_context();
 
     c.bench_function("evaluate_flag_simple_large_ctx", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("boolFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("boolFlag"), black_box(context.clone())))
     });
 }
 
@@ -227,7 +227,7 @@ fn evaluate_flag_targeting_small_ctx(c: &mut Criterion) {
     let context = small_context(); // contains "role": "admin" which triggers the match
 
     c.bench_function("evaluate_flag_targeting_small_ctx", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(context.clone())))
     });
 }
 
@@ -238,7 +238,7 @@ fn evaluate_flag_targeting_large_ctx(c: &mut Criterion) {
     let context = large_context(); // contains "role": "admin" which triggers the match
 
     c.bench_function("evaluate_flag_targeting_large_ctx", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("targetedFlag"), black_box(context.clone())))
     });
 }
 
@@ -249,7 +249,7 @@ fn evaluate_flag_complex_targeting_small_ctx(c: &mut Criterion) {
     let context = small_context(); // contains "tier": "premium" and "score": 85
 
     c.bench_function("evaluate_flag_complex_targeting_small_ctx", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("complexFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("complexFlag"), black_box(context.clone())))
     });
 }
 
@@ -260,7 +260,7 @@ fn evaluate_flag_complex_targeting_large_ctx(c: &mut Criterion) {
     let context = large_context(); // contains "tier": "premium" and "score": 85
 
     c.bench_function("evaluate_flag_complex_targeting_large_ctx", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("complexFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("complexFlag"), black_box(context.clone())))
     });
 }
 

@@ -38,7 +38,7 @@ fn test_metadata_merging_flag_priority() {
     evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluator.evaluate_flag("testFlag", &context);
+    let result = evaluator.evaluate_flag("testFlag", context);
 
     // Verify metadata is merged with flag metadata taking priority
     assert!(result.flag_metadata.is_some());
@@ -80,7 +80,7 @@ fn test_metadata_only_flag_set() {
     evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluator.evaluate_flag("testFlag", &context);
+    let result = evaluator.evaluate_flag("testFlag", context);
 
     // Verify flag-set metadata is included
     assert!(result.flag_metadata.is_some());
@@ -114,7 +114,7 @@ fn test_metadata_only_flag_level() {
     evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluator.evaluate_flag("testFlag", &context);
+    let result = evaluator.evaluate_flag("testFlag", context);
 
     // Verify flag-level metadata is included
     assert!(result.flag_metadata.is_some());
@@ -150,7 +150,7 @@ fn test_metadata_disabled_flag_returns_metadata() {
     evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluator.evaluate_flag("testFlag", &context);
+    let result = evaluator.evaluate_flag("testFlag", context);
 
     // Verify metadata is returned even for disabled flag
     assert!(result.flag_metadata.is_some());
@@ -183,7 +183,7 @@ fn test_metadata_missing_flag_returns_flag_set_metadata() {
     evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluator.evaluate_flag("missingFlag", &context);
+    let result = evaluator.evaluate_flag("missingFlag", context);
 
     // Verify flag-set metadata is returned on "best effort" basis
     assert!(result.flag_metadata.is_some());
@@ -213,7 +213,7 @@ fn test_metadata_empty_merging() {
     evaluator.update_state(config).unwrap();
 
     let context = json!({});
-    let result = evaluator.evaluate_flag("testFlag", &context);
+    let result = evaluator.evaluate_flag("testFlag", context);
 
     // Verify empty metadata is not included
     assert!(result.flag_metadata.is_none() || result.flag_metadata.as_ref().unwrap().is_empty());

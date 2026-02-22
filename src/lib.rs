@@ -513,7 +513,7 @@ fn evaluate_by_index_internal(
                 }
             };
 
-            eval.evaluate_flag_by_index(flag_index, &context)
+            eval.evaluate_flag_by_index(flag_index, context)
         })
     });
 
@@ -592,7 +592,7 @@ fn evaluate_internal(
             };
 
             // Evaluate using the evaluator instance
-            eval.evaluate_flag(&flag_key, &context)
+            eval.evaluate_flag(&flag_key, context)
         })
     });
 
@@ -637,7 +637,7 @@ mod tests {
         let response = evaluator.update_state(config).unwrap();
         assert!(response.success);
 
-        let result = evaluator.evaluate_bool("boolFlag", &json!({}));
+        let result = evaluator.evaluate_bool("boolFlag", json!({}));
         assert_eq!(result.value, json!(false));
         assert_eq!(result.variant, Some("off".to_string()));
         assert_eq!(result.reason, ResolutionReason::Static);
@@ -662,7 +662,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_int("intFlag", &json!({}));
+        let result = evaluator.evaluate_int("intFlag", json!({}));
         assert_eq!(result.value, json!(10));
         assert_eq!(result.variant, Some("small".to_string()));
     }
@@ -686,7 +686,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_float("floatFlag", &json!({}));
+        let result = evaluator.evaluate_float("floatFlag", json!({}));
         assert_eq!(result.value, json!(3.14));
         assert_eq!(result.variant, Some("pi".to_string()));
     }
@@ -710,7 +710,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_string("stringFlag", &json!({}));
+        let result = evaluator.evaluate_string("stringFlag", json!({}));
         assert_eq!(result.value, json!("Hello, World!"));
         assert_eq!(result.variant, Some("hello".to_string()));
     }
@@ -734,7 +734,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_flag("objectFlag", &json!({}));
+        let result = evaluator.evaluate_flag("objectFlag", json!({}));
         assert_eq!(result.value, json!({"key": "value1"}));
         assert_eq!(result.variant, Some("config1".to_string()));
     }
@@ -766,13 +766,13 @@ mod tests {
         evaluator.update_state(config).unwrap();
 
         // Test admin role
-        let result_admin = evaluator.evaluate_flag("targetedFlag", &json!({"role": "admin"}));
+        let result_admin = evaluator.evaluate_flag("targetedFlag", json!({"role": "admin"}));
         assert_eq!(result_admin.value, json!("admin-value"));
         assert_eq!(result_admin.variant, Some("admin".to_string()));
         assert_eq!(result_admin.reason, ResolutionReason::TargetingMatch);
 
         // Test user role
-        let result_user = evaluator.evaluate_flag("targetedFlag", &json!({"role": "user"}));
+        let result_user = evaluator.evaluate_flag("targetedFlag", json!({"role": "user"}));
         assert_eq!(result_user.value, json!("user-value"));
         assert_eq!(result_user.variant, Some("user".to_string()));
         assert_eq!(result_user.reason, ResolutionReason::TargetingMatch);
@@ -794,7 +794,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_bool("disabledFlag", &json!({}));
+        let result = evaluator.evaluate_bool("disabledFlag", json!({}));
         assert_eq!(result.value, Value::Null);
         assert_eq!(result.reason, ResolutionReason::Disabled);
         assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
@@ -816,7 +816,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_flag("nonexistentFlag", &json!({}));
+        let result = evaluator.evaluate_flag("nonexistentFlag", json!({}));
         assert_eq!(result.reason, ResolutionReason::FlagNotFound);
         assert_eq!(result.error_code, Some(ErrorCode::FlagNotFound));
     }
@@ -858,7 +858,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_flag("abTestFlag", &json!({"targetingKey": "user-123"}));
+        let result = evaluator.evaluate_flag("abTestFlag", json!({"targetingKey": "user-123"}));
         assert!(
             result.value == json!("control-experience")
                 || result.value == json!("treatment-experience")
@@ -892,7 +892,7 @@ mod tests {
         evaluator.update_state(config).unwrap();
 
         // Missing targetingKey - should use empty string
-        let result = evaluator.evaluate_flag("testFlag", &json!({}));
+        let result = evaluator.evaluate_flag("testFlag", json!({}));
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
         assert!(result.value == json!("variant-a") || result.value == json!("variant-b"));
     }
@@ -922,7 +922,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_flag("brokenFlag", &json!({}));
+        let result = evaluator.evaluate_flag("brokenFlag", json!({}));
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::General));
     }
@@ -963,21 +963,21 @@ mod tests {
         // Admin email
         let result_admin = evaluator.evaluate_flag(
             "complexFlag",
-            &json!({"email": "admin@example.com", "appVersion": "1.0.0"}),
+            json!({"email": "admin@example.com", "appVersion": "1.0.0"}),
         );
         assert_eq!(result_admin.value, json!("premium-tier"));
 
         // Non-admin with new version
         let result_standard = evaluator.evaluate_flag(
             "complexFlag",
-            &json!({"email": "user@example.com", "appVersion": "2.1.0"}),
+            json!({"email": "user@example.com", "appVersion": "2.1.0"}),
         );
         assert_eq!(result_standard.value, json!("standard-tier"));
 
         // Non-admin with old version
         let result_basic = evaluator.evaluate_flag(
             "complexFlag",
-            &json!({"email": "user@example.com", "appVersion": "1.5.0"}),
+            json!({"email": "user@example.com", "appVersion": "1.5.0"}),
         );
         assert_eq!(result_basic.value, json!("basic-tier"));
     }
@@ -1013,7 +1013,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_flag("enrichedFlag", &json!({}));
+        let result = evaluator.evaluate_flag("enrichedFlag", json!({}));
         assert_eq!(result.value, json!("properties-present"));
         assert_eq!(result.variant, Some("verified".to_string()));
     }
@@ -1034,7 +1034,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_bool("stringFlag", &json!({}));
+        let result = evaluator.evaluate_bool("stringFlag", json!({}));
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
     }
@@ -1055,7 +1055,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_string("stringFlag", &json!({}));
+        let result = evaluator.evaluate_string("stringFlag", json!({}));
         assert_eq!(result.reason, ResolutionReason::FlagNotFound);
     }
 
@@ -1076,7 +1076,7 @@ mod tests {
         evaluator.update_state(config).unwrap();
 
         // Integer evaluation should accept floats via coercion
-        let result = evaluator.evaluate_int("floatFlag", &json!({}));
+        let result = evaluator.evaluate_int("floatFlag", json!({}));
         assert_eq!(result.value, json!(3));
     }
 
@@ -1097,7 +1097,7 @@ mod tests {
         evaluator.update_state(config).unwrap();
 
         // Float evaluation should accept integers via coercion
-        let result = evaluator.evaluate_float("intFlag", &json!({}));
+        let result = evaluator.evaluate_float("intFlag", json!({}));
         assert_eq!(result.value, json!(42.0));
     }
 
@@ -1117,7 +1117,7 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let result = evaluator.evaluate_object("stringFlag", &json!({}));
+        let result = evaluator.evaluate_object("stringFlag", json!({}));
         assert_eq!(result.reason, ResolutionReason::Error);
         assert_eq!(result.error_code, Some(ErrorCode::TypeMismatch));
     }
@@ -1138,19 +1138,19 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let bool_result = evaluator.evaluate_bool("missingFlag", &json!({}));
+        let bool_result = evaluator.evaluate_bool("missingFlag", json!({}));
         assert_eq!(bool_result.reason, ResolutionReason::FlagNotFound);
 
-        let string_result = evaluator.evaluate_string("missingFlag", &json!({}));
+        let string_result = evaluator.evaluate_string("missingFlag", json!({}));
         assert_eq!(string_result.reason, ResolutionReason::FlagNotFound);
 
-        let int_result = evaluator.evaluate_int("missingFlag", &json!({}));
+        let int_result = evaluator.evaluate_int("missingFlag", json!({}));
         assert_eq!(int_result.reason, ResolutionReason::FlagNotFound);
 
-        let float_result = evaluator.evaluate_float("missingFlag", &json!({}));
+        let float_result = evaluator.evaluate_float("missingFlag", json!({}));
         assert_eq!(float_result.reason, ResolutionReason::FlagNotFound);
 
-        let object_result = evaluator.evaluate_object("missingFlag", &json!({}));
+        let object_result = evaluator.evaluate_object("missingFlag", json!({}));
         assert_eq!(object_result.reason, ResolutionReason::FlagNotFound);
     }
 
@@ -1175,11 +1175,11 @@ mod tests {
 
         evaluator.update_state(config).unwrap();
 
-        let bool_result = evaluator.evaluate_bool("disabledBool", &json!({}));
+        let bool_result = evaluator.evaluate_bool("disabledBool", json!({}));
         assert_eq!(bool_result.value, Value::Null);
         assert_eq!(bool_result.reason, ResolutionReason::Disabled);
 
-        let string_result = evaluator.evaluate_string("disabledString", &json!({}));
+        let string_result = evaluator.evaluate_string("disabledString", json!({}));
         assert_eq!(string_result.value, Value::Null);
         assert_eq!(string_result.reason, ResolutionReason::Disabled);
     }
@@ -1656,8 +1656,8 @@ mod optimization_tests {
             }
         });
 
-        let result_by_index = evaluator.evaluate_flag_by_index(index, &context);
-        let result_by_key = evaluator.evaluate_flag("targetedFlag", &json!({"role": "admin"}));
+        let result_by_index = evaluator.evaluate_flag_by_index(index, context);
+        let result_by_key = evaluator.evaluate_flag("targetedFlag", json!({"role": "admin"}));
 
         assert_eq!(result_by_index.value, result_by_key.value);
         assert_eq!(result_by_index.variant, result_by_key.variant);
@@ -1696,7 +1696,7 @@ mod optimization_tests {
             }
         });
 
-        let result = evaluator.evaluate_flag_pre_enriched("myFlag", &context);
+        let result = evaluator.evaluate_flag_pre_enriched("myFlag", context);
         assert_eq!(result.value, json!("found-key"));
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
     }
@@ -1726,7 +1726,7 @@ mod optimization_tests {
 
         // Context without $flagd — should fall back to normal enrichment
         let context = json!({"targetingKey": "user-456"});
-        let result = evaluator.evaluate_flag_pre_enriched("myFlag", &context);
+        let result = evaluator.evaluate_flag_pre_enriched("myFlag", context);
         assert_eq!(result.value, json!("found-key"));
         assert_eq!(result.reason, ResolutionReason::TargetingMatch);
     }

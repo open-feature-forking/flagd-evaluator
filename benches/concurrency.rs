@@ -102,7 +102,7 @@ fn concurrent_simple_1t(c: &mut Criterion) {
     let context = json!({});
 
     c.bench_function("concurrent_simple_1t", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("boolFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("boolFlag"), black_box(context.clone())))
     });
 }
 
@@ -122,7 +122,7 @@ fn concurrent_simple_4t(c: &mut Criterion) {
                     thread::spawn(move || {
                         let ctx = json!({});
                         let guard = eval.lock().unwrap();
-                        guard.evaluate_flag(black_box("boolFlag"), black_box(&ctx))
+                        guard.evaluate_flag(black_box("boolFlag"), black_box(ctx))
                     })
                 })
                 .collect();
@@ -149,7 +149,7 @@ fn concurrent_simple_8t(c: &mut Criterion) {
                     thread::spawn(move || {
                         let ctx = json!({});
                         let guard = eval.lock().unwrap();
-                        guard.evaluate_flag(black_box("boolFlag"), black_box(&ctx))
+                        guard.evaluate_flag(black_box("boolFlag"), black_box(ctx))
                     })
                 })
                 .collect();
@@ -177,7 +177,7 @@ fn concurrent_targeting_4t(c: &mut Criterion) {
                         let role = if i % 2 == 0 { "admin" } else { "viewer" };
                         let ctx = json!({"role": role});
                         let guard = eval.lock().unwrap();
-                        guard.evaluate_flag(black_box("targetedFlag"), black_box(&ctx))
+                        guard.evaluate_flag(black_box("targetedFlag"), black_box(ctx))
                     })
                 })
                 .collect();
@@ -215,7 +215,7 @@ fn concurrent_mixed_4t(c: &mut Criterion) {
                     let context = ctx.clone();
                     thread::spawn(move || {
                         let guard = eval.lock().unwrap();
-                        guard.evaluate_flag(black_box(key), black_box(&context))
+                        guard.evaluate_flag(black_box(key), black_box(context))
                     })
                 })
                 .collect();
@@ -251,7 +251,7 @@ fn concurrent_read_write_4t(c: &mut Criterion) {
                     thread::spawn(move || {
                         let ctx = json!({});
                         let guard = eval.lock().unwrap();
-                        guard.evaluate_flag(black_box("boolFlag"), black_box(&ctx))
+                        guard.evaluate_flag(black_box("boolFlag"), black_box(ctx))
                     })
                 })
                 .collect();
@@ -283,7 +283,7 @@ fn concurrent_simple_16t(c: &mut Criterion) {
                     thread::spawn(move || {
                         let ctx = json!({});
                         let guard = eval.lock().unwrap();
-                        guard.evaluate_flag(black_box("boolFlag"), black_box(&ctx))
+                        guard.evaluate_flag(black_box("boolFlag"), black_box(ctx))
                     })
                 })
                 .collect();
@@ -314,7 +314,7 @@ fn concurrent_targeting_16t(c: &mut Criterion) {
                         let role = if i % 2 == 0 { "admin" } else { "viewer" };
                         let ctx = json!({"role": role});
                         let guard = eval.lock().unwrap();
-                        guard.evaluate_flag(black_box("targetedFlag"), black_box(&ctx))
+                        guard.evaluate_flag(black_box("targetedFlag"), black_box(ctx))
                     })
                 })
                 .collect();
@@ -354,7 +354,7 @@ fn concurrent_mixed_16t(c: &mut Criterion) {
                     let (key, ctx) = workload_defs[i % workload_defs.len()].clone();
                     thread::spawn(move || {
                         let guard = eval.lock().unwrap();
-                        guard.evaluate_flag(black_box(key), black_box(&ctx))
+                        guard.evaluate_flag(black_box(key), black_box(ctx))
                     })
                 })
                 .collect();
@@ -391,7 +391,7 @@ fn concurrent_read_write_16t(c: &mut Criterion) {
                     thread::spawn(move || {
                         let ctx = json!({});
                         let guard = eval.lock().unwrap();
-                        guard.evaluate_flag(black_box("boolFlag"), black_box(&ctx))
+                        guard.evaluate_flag(black_box("boolFlag"), black_box(ctx))
                     })
                 })
                 .collect();

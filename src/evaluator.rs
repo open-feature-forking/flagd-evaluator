@@ -220,33 +220,33 @@ impl FlagEvaluator {
     ///
     /// # Returns
     /// An EvaluationResult containing the resolved value, variant, reason, and metadata
-    pub fn evaluate_flag(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        self.evaluate_with_type_check(flag_key, context, None)
+    pub fn evaluate_flag(&self, flag_key: &str, context: Value) -> EvaluationResult {
+        self.evaluate_with_type_check(flag_key, context, None, true)
     }
 
     /// Evaluates a boolean flag with type checking.
-    pub fn evaluate_bool(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::Boolean))
+    pub fn evaluate_bool(&self, flag_key: &str, context: Value) -> EvaluationResult {
+        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::Boolean), true)
     }
 
     /// Evaluates a string flag with type checking.
-    pub fn evaluate_string(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::String))
+    pub fn evaluate_string(&self, flag_key: &str, context: Value) -> EvaluationResult {
+        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::String), true)
     }
 
     /// Evaluates an integer flag with type checking.
-    pub fn evaluate_int(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::Integer))
+    pub fn evaluate_int(&self, flag_key: &str, context: Value) -> EvaluationResult {
+        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::Integer), true)
     }
 
     /// Evaluates a float flag with type checking.
-    pub fn evaluate_float(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::Float))
+    pub fn evaluate_float(&self, flag_key: &str, context: Value) -> EvaluationResult {
+        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::Float), true)
     }
 
     /// Evaluates an object flag with type checking.
-    pub fn evaluate_object(&self, flag_key: &str, context: &JsonValue) -> EvaluationResult {
-        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::Object))
+    pub fn evaluate_object(&self, flag_key: &str, context: Value) -> EvaluationResult {
+        self.evaluate_with_type_check(flag_key, context, Some(ExpectedType::Object), true)
     }
 
     // =========================================================================
@@ -257,8 +257,9 @@ impl FlagEvaluator {
     fn evaluate_with_type_check(
         &self,
         flag_key: &str,
-        context: &JsonValue,
+        context: Value,
         expected_type: Option<ExpectedType>,
+        needs_enrichment: bool,
     ) -> EvaluationResult {
         // Get flag and metadata from state - avoid cloning the flag!
         let state = match &self.state {
@@ -274,7 +275,7 @@ impl FlagEvaluator {
             None => {
                 // Flag not found - return flag-set metadata per spec (best effort)
                 let flag_set_metadata =
-                    Self::merge_metadata(&state.flag_set_metadata, &HashMap::new());
+                    Self::merge_metadata_flag_set_only(&state.flag_set_metadata);
                 return EvaluationResult {
                     value: JsonValue::Null,
                     variant: None,
@@ -286,8 +287,14 @@ impl FlagEvaluator {
             }
         };
 
-        // Perform the evaluation with reference to flag
-        let result = self.evaluate_flag_internal(flag, flag_key, context, &state.flag_set_metadata);
+        // Perform the evaluation
+        let result = self.evaluate_flag_core(
+            flag,
+            flag_key,
+            context,
+            needs_enrichment,
+            &state.flag_set_metadata,
+        );
 
         // Apply type checking if requested
         match expected_type {
@@ -297,11 +304,12 @@ impl FlagEvaluator {
     }
 
     /// Core flag evaluation logic.
-    fn evaluate_flag_internal(
+    fn evaluate_flag_core(
         &self,
         flag: &FeatureFlag,
         flag_key: &str,
-        context: &JsonValue,
+        context: Value,
+        needs_enrichment: bool,
         flag_set_metadata: &HashMap<String, JsonValue>,
     ) -> EvaluationResult {
         // Check if flag is disabled - still return metadata per spec
@@ -346,18 +354,22 @@ impl FlagEvaluator {
             };
         }
 
-        // Enrich the context with flagKey and targetingKey
-        let enriched_context = Self::enrich_context(flag_key, context);
+        // Conditionally enrich the context
+        let eval_context = if needs_enrichment {
+            Self::enrich_context(flag_key, context)
+        } else {
+            context
+        };
 
         // Evaluate targeting using the instance's DataLogic engine
         let eval_result = if let Some(ref compiled) = flag.compiled_targeting {
             // Fast path: use pre-compiled targeting with evaluate_owned (no JSON serialization)
-            self.logic.evaluate_owned(compiled, enriched_context)
+            self.logic.evaluate_owned(compiled, eval_context)
         } else {
             // Fallback: compile at runtime (for flags created without pre-compilation)
             let targeting = flag.targeting.as_ref().unwrap();
             let rule_str = targeting.to_string();
-            let context_str = enriched_context.to_string();
+            let context_str = eval_context.to_string();
             self.logic.evaluate_json(&rule_str, &context_str)
         };
 
@@ -551,16 +563,16 @@ impl FlagEvaluator {
         &self,
         parsing_result: &ParsingResult,
     ) -> HashMap<String, EvaluationResult> {
-        let empty_context = JsonValue::Object(Map::new());
         let mut results = HashMap::new();
 
         for (flag_key, flag) in &parsing_result.flags {
             // Pre-evaluate disabled flags
             if flag.state == "DISABLED" {
-                let result = self.evaluate_flag_internal(
+                let result = self.evaluate_flag_core(
                     flag,
                     flag_key,
-                    &empty_context,
+                    Value::Object(Map::new()),
+                    false,
                     &parsing_result.flag_set_metadata,
                 );
                 results.insert(flag_key.clone(), result);
@@ -575,10 +587,11 @@ impl FlagEvaluator {
             };
 
             if is_static {
-                let result = self.evaluate_flag_internal(
+                let result = self.evaluate_flag_core(
                     flag,
                     flag_key,
-                    &empty_context,
+                    Value::Object(Map::new()),
+                    false,
                     &parsing_result.flag_set_metadata,
                 );
                 results.insert(flag_key.clone(), result);
@@ -629,11 +642,10 @@ impl FlagEvaluator {
     }
 
     /// Enriches the evaluation context with standard flagd fields.
-    fn enrich_context(flag_key: &str, context: &Value) -> Value {
-        let mut enriched = if let Some(obj) = context.as_object() {
-            obj.clone()
-        } else {
-            Map::new()
+    fn enrich_context(flag_key: &str, context: Value) -> Value {
+        let mut enriched = match context {
+            Value::Object(obj) => obj,
+            _ => Map::new(),
         };
 
         // Get current Unix timestamp (seconds since epoch)
@@ -683,6 +695,23 @@ impl FlagEvaluator {
         Some(merged)
     }
 
+    /// Merges only flag-set metadata (no flag-level metadata).
+    /// Used in flag-not-found paths to avoid creating an empty HashMap.
+    fn merge_metadata_flag_set_only(
+        flag_set_metadata: &HashMap<String, JsonValue>,
+    ) -> Option<HashMap<String, JsonValue>> {
+        let filtered: HashMap<String, JsonValue> = flag_set_metadata
+            .iter()
+            .filter(|(key, _)| !key.starts_with('$'))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if filtered.is_empty() {
+            None
+        } else {
+            Some(filtered)
+        }
+    }
+
     /// Lazy metadata attachment - only merges metadata if there's actually metadata to merge.
     /// This avoids the cost of creating HashMaps when both sources are empty.
     fn with_lazy_metadata(
@@ -706,9 +735,9 @@ impl FlagEvaluator {
     ///
     /// This is a fast path that avoids flag key string handling by using O(1) Vec lookup.
     /// The context is expected to be pre-enriched with `$flagd.*` and `targetingKey` by the host.
-    pub fn evaluate_flag_by_index(&self, index: u32, context: &JsonValue) -> EvaluationResult {
+    pub fn evaluate_flag_by_index(&self, index: u32, context: Value) -> EvaluationResult {
         let flag_key = match self.flag_index_map.get(index as usize) {
-            Some(key) => key,
+            Some(key) => key.clone(),
             None => {
                 return EvaluationResult::error(
                     ErrorCode::FlagNotFound,
@@ -717,200 +746,21 @@ impl FlagEvaluator {
             }
         };
 
-        self.evaluate_flag_pre_enriched(flag_key, context)
+        self.evaluate_flag_pre_enriched(&flag_key, context)
     }
 
     /// Evaluates a flag with a pre-enriched context (skips `enrich_context` if `$flagd` is present).
     ///
     /// The host is expected to have added `$flagd.flagKey`, `$flagd.timestamp`, and `targetingKey`.
-    pub fn evaluate_flag_pre_enriched(
-        &self,
-        flag_key: &str,
-        context: &JsonValue,
-    ) -> EvaluationResult {
+    pub fn evaluate_flag_pre_enriched(&self, flag_key: &str, context: Value) -> EvaluationResult {
         // If context already has $flagd, skip enrichment
         let is_pre_enriched = context
             .as_object()
             .map(|o| o.contains_key("$flagd"))
             .unwrap_or(false);
 
-        if is_pre_enriched {
-            self.evaluate_with_type_check_pre_enriched(flag_key, context, None)
-        } else {
-            self.evaluate_with_type_check(flag_key, context, None)
-        }
-    }
-
-    /// Internal evaluation that skips context enrichment (context already has `$flagd`).
-    fn evaluate_with_type_check_pre_enriched(
-        &self,
-        flag_key: &str,
-        context: &JsonValue,
-        expected_type: Option<ExpectedType>,
-    ) -> EvaluationResult {
-        let state = match &self.state {
-            Some(s) => s,
-            None => {
-                return EvaluationResult::error(ErrorCode::General, "No flag configuration loaded");
-            }
-        };
-
-        let flag = match state.flags.get(flag_key) {
-            Some(f) => f,
-            None => {
-                let flag_set_metadata =
-                    Self::merge_metadata(&state.flag_set_metadata, &HashMap::new());
-                return EvaluationResult {
-                    value: JsonValue::Null,
-                    variant: None,
-                    reason: ResolutionReason::FlagNotFound,
-                    error_code: Some(ErrorCode::FlagNotFound),
-                    error_message: Some(format!("Flag '{}' not found in configuration", flag_key)),
-                    flag_metadata: flag_set_metadata,
-                };
-            }
-        };
-
-        let result = self.evaluate_flag_internal_pre_enriched(
-            flag,
-            flag_key,
-            context,
-            &state.flag_set_metadata,
-        );
-
-        match expected_type {
-            Some(expected) => self.apply_type_check(result, expected),
-            None => result,
-        }
-    }
-
-    /// Core flag evaluation logic that skips context enrichment.
-    fn evaluate_flag_internal_pre_enriched(
-        &self,
-        flag: &FeatureFlag,
-        flag_key: &str,
-        context: &JsonValue,
-        flag_set_metadata: &HashMap<String, JsonValue>,
-    ) -> EvaluationResult {
-        // Check if flag is disabled
-        if flag.state == "DISABLED" {
-            let merged_metadata = Self::merge_metadata(flag_set_metadata, &flag.metadata);
-            return EvaluationResult {
-                value: JsonValue::Null,
-                variant: None,
-                reason: ResolutionReason::Disabled,
-                error_code: Some(ErrorCode::FlagNotFound),
-                error_message: Some(format!("flag: {} is disabled", flag_key)),
-                flag_metadata: merged_metadata,
-            };
-        }
-
-        // Check for empty targeting
-        let is_empty_targeting = match &flag.targeting {
-            None => true,
-            Some(JsonValue::Object(map)) if map.is_empty() => true,
-            _ => false,
-        };
-
-        if is_empty_targeting {
-            return match flag.default_variant.as_ref() {
-                None => EvaluationResult::fallback(flag_key),
-                Some(value) if value.is_empty() => EvaluationResult::fallback(flag_key),
-                Some(default_variant) => match flag.variants.get(default_variant) {
-                    Some(value) => {
-                        let result =
-                            EvaluationResult::static_result(value.clone(), default_variant.clone());
-                        Self::with_lazy_metadata(flag_set_metadata, &flag.metadata, result)
-                    }
-                    None => EvaluationResult::error(
-                        ErrorCode::General,
-                        format!(
-                            "Default variant '{}' not found in flag variants",
-                            default_variant
-                        ),
-                    ),
-                },
-            };
-        }
-
-        // Use context directly (already enriched by host)
-        let eval_result = if let Some(ref compiled) = flag.compiled_targeting {
-            self.logic.evaluate_owned(compiled, context.clone())
-        } else {
-            let targeting = flag.targeting.as_ref().unwrap();
-            let rule_str = targeting.to_string();
-            let context_str = context.to_string();
-            self.logic.evaluate_json(&rule_str, &context_str)
-        };
-
-        // Same result processing as evaluate_flag_internal
-        match eval_result {
-            Ok(result) => {
-                if result.is_null() {
-                    return match flag.default_variant.as_ref() {
-                        None => EvaluationResult::fallback(flag_key),
-                        Some(value) if value.is_empty() => EvaluationResult::fallback(flag_key),
-                        Some(default_variant) => match flag.variants.get(default_variant) {
-                            Some(value) => {
-                                let result = EvaluationResult::default_result(
-                                    value.clone(),
-                                    default_variant.clone(),
-                                );
-                                Self::with_lazy_metadata(flag_set_metadata, &flag.metadata, result)
-                            }
-                            None => EvaluationResult::error(
-                                ErrorCode::General,
-                                format!(
-                                    "Default variant '{}' not found in flag variants",
-                                    default_variant
-                                ),
-                            ),
-                        },
-                    };
-                }
-
-                let variant_name = match result {
-                    JsonValue::String(s) => s,
-                    other => match other.as_str() {
-                        Some(s) => s.to_string(),
-                        None => other.to_string().trim_matches('"').to_string(),
-                    },
-                };
-
-                if variant_name.is_empty() {
-                    return match flag.default_variant.as_ref() {
-                        None => EvaluationResult::fallback(flag_key),
-                        Some(default_variant) if default_variant.is_empty() => {
-                            EvaluationResult::fallback(flag_key)
-                        }
-                        Some(_) => EvaluationResult::error(
-                            ErrorCode::General,
-                            format!(
-                                "Targeting rule returned empty variant name for flag '{}'",
-                                flag_key
-                            ),
-                        ),
-                    };
-                }
-
-                match flag.variants.get(&variant_name) {
-                    Some(value) => {
-                        let result = EvaluationResult::targeting_match(value.clone(), variant_name);
-                        Self::with_lazy_metadata(flag_set_metadata, &flag.metadata, result)
-                    }
-                    None => EvaluationResult::error(
-                        ErrorCode::General,
-                        format!(
-                            "Targeting rule returned variant '{}' which is not defined in flag variants",
-                            variant_name
-                        ),
-                    ),
-                }
-            }
-            Err(e) => {
-                EvaluationResult::error(ErrorCode::ParseError, format!("Evaluation error: {}", e))
-            }
-        }
+        let needs_enrichment = !is_pre_enriched;
+        self.evaluate_with_type_check(flag_key, context, None, needs_enrichment)
     }
 
     /// Builds required_context_keys and flag_indices maps from parsed flag config.
