@@ -78,21 +78,30 @@ jobs:
           echo "WASM file size: $SIZE bytes ($(echo "scale=2; $SIZE / 1024" | bc) KB)"
           sha256sum flagd_evaluator.wasm
 
-      - name: Copy WASM to go/ for release tag
+      - name: Copy WASM to language packages
         run: |
-          if [ -d go ]; then
-            cp flagd_evaluator.wasm go/flagd_evaluator.wasm
-            echo "Copied WASM to go/ for go:embed"
-          fi
+          for dest in \
+            go/flagd_evaluator.wasm \
+            dotnet/src/FlagdEvaluator/flagd_evaluator.wasm \
+            js/flagd_evaluator.wasm \
+            python/flagd_evaluator_wasm/flagd_evaluator.wasm; do
+            dir=$(dirname "$dest")
+            if [ -d "$dir" ]; then
+              cp flagd_evaluator.wasm "$dest"
+              echo "Copied to $dest"
+            fi
+          done
 
       - name: Commit WASM binary
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add flagd_evaluator.wasm
-          if [ -d go ]; then
-            git add -f go/flagd_evaluator.wasm
-          fi
+          git add -f \
+            go/flagd_evaluator.wasm \
+            dotnet/src/FlagdEvaluator/flagd_evaluator.wasm \
+            js/flagd_evaluator.wasm \
+            python/flagd_evaluator_wasm/flagd_evaluator.wasm 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "WASM binary is already up to date"
           else
@@ -115,29 +124,16 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-java-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-java-release-
+      - name: Place WASM for Maven
+        run: |
+          mkdir -p target/wasm32-unknown-unknown/release
+          cp flagd_evaluator.wasm target/wasm32-unknown-unknown/release/
 
       - name: Make Maven wrapper executable
         run: chmod +x java/mvnw
 
-      - name: Build with Maven
-        run: cd java && ./mvnw clean package
+      - name: Build with Maven (skip WASM build)
+        run: cd java && ./mvnw clean package -Dexec.skip=true
 
       - name: Generate checksums
         run: |

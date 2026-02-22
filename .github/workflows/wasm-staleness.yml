@@ -61,3 +61,37 @@ jobs:
           else
             echo "WASM binary is up to date."
           fi
+
+      - name: Check language directory copies match root
+        run: |
+          if [ ! -f flagd_evaluator.wasm ]; then
+            echo "No root WASM binary to compare against, skipping."
+            exit 0
+          fi
+
+          ROOT_HASH=$(sha256sum flagd_evaluator.wasm | awk '{print $1}')
+          MISMATCH=0
+
+          for copy in \
+            go/flagd_evaluator.wasm \
+            dotnet/src/FlagdEvaluator/flagd_evaluator.wasm \
+            js/flagd_evaluator.wasm \
+            python/flagd_evaluator_wasm/flagd_evaluator.wasm; do
+            if [ -f "$copy" ]; then
+              COPY_HASH=$(sha256sum "$copy" | awk '{print $1}')
+              if [ "$ROOT_HASH" != "$COPY_HASH" ]; then
+                echo "::warning::$copy does not match root flagd_evaluator.wasm"
+                echo "  Root: $ROOT_HASH"
+                echo "  Copy: $COPY_HASH"
+                MISMATCH=1
+              else
+                echo "$copy matches root binary."
+              fi
+            fi
+          done
+
+          if [ "$MISMATCH" -eq 1 ]; then
+            echo ""
+            echo "::warning::Some language directory WASM copies are out of sync with the root binary."
+            echo "::warning::The release-please workflow will update all copies on the release PR."
+          fi
