@@ -108,17 +108,17 @@ impl FlagEvaluator {
 
             // If we also have a flag index, use the index-based evaluation path
             if let Some(&index) = self.flag_indices.get(flag_key) {
-                return self.inner.evaluate_flag_by_index(index, &filtered_context);
+                return self.inner.evaluate_flag_by_index(index, filtered_context);
             }
 
             // Otherwise use pre-enriched evaluation (context already has $flagd)
             return self
                 .inner
-                .evaluate_flag_pre_enriched(flag_key, &filtered_context);
+                .evaluate_flag_pre_enriched(flag_key, filtered_context);
         }
 
         // Full evaluation path (no optimization data available for this flag)
-        self.inner.evaluate_flag(flag_key, context)
+        self.inner.evaluate_flag(flag_key, context.clone())
     }
 }
 
