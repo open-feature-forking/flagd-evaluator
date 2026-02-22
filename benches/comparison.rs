@@ -71,7 +71,7 @@ fn comparison_simple_flag_evaluator(c: &mut Criterion) {
     let context = json!({});
 
     c.bench_function("comparison_simple_flag_evaluator", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("simpleFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("simpleFlag"), black_box(context.clone())))
     });
 }
 
@@ -116,7 +116,7 @@ fn comparison_complex_flag_evaluator(c: &mut Criterion) {
     let context = json!({"tier": "standard", "score": 75});
 
     c.bench_function("comparison_complex_flag_evaluator", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("complexFlag"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("complexFlag"), black_box(context.clone())))
     });
 }
 

@@ -244,7 +244,9 @@ async fn given_option(_world: &mut FlagdWorld, _key: String, _type: String, _val
 async fn when_flag_evaluated(world: &mut FlagdWorld) {
     let flag_key = world.current_flag_key.as_ref().expect("No flag key set");
 
-    let result = world.evaluator.evaluate_flag(flag_key, &world.context);
+    let result = world
+        .evaluator
+        .evaluate_flag(flag_key, world.context.clone());
 
     // Apply mapping layer for backward compatibility with Gherkin tests
     // The WASM module now uses semantic reasons (Fallback, Disabled) with error codes

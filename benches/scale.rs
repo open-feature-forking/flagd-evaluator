@@ -102,7 +102,7 @@ fn bench_evaluate_static_from_10k(c: &mut Criterion) {
     let context = json!({});
 
     c.bench_function("S10_evaluate_static_from_10K_store", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("flag_0000"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("flag_0000"), black_box(context.clone())))
     });
 }
 
@@ -117,7 +117,7 @@ fn bench_evaluate_targeting_from_10k(c: &mut Criterion) {
     let context = json!({"color": "blue", "targetingKey": "user-123"});
 
     c.bench_function("S11_evaluate_targeting_from_10K_store", |b| {
-        b.iter(|| evaluator.evaluate_flag(black_box("flag_0014"), black_box(&context)))
+        b.iter(|| evaluator.evaluate_flag(black_box("flag_0014"), black_box(context.clone())))
     });
 }
 
