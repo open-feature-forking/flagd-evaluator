@@ -4,23 +4,41 @@ This document provides comprehensive context about the flagd-evaluator repositor
 
 ## Overview of the Repository
 
-This repository contains the **core evaluation logic for flagd**, a feature flag management system. The evaluator is designed as a **WebAssembly (WASM) module** that provides consistent feature flag evaluation across multiple language implementations.
+flagd-evaluator is a **Rust-based feature flag evaluation engine** that replaces per-language JSON Logic implementations (json-logic-java, json-logic-utils, etc.) with a single core — one implementation, one test suite, consistent behavior everywhere. Thin wrapper libraries expose it via WASM runtimes (Java/Chicory, Go/wazero) or native bindings (Python/PyO3). The best integration strategy is chosen per language based on benchmarks — e.g., Python benchmarks showed PyO3 native bindings outperform WASM (wasmtime-py), while Go and Java perform well with their WASM runtimes. See [BENCHMARKS.md](../BENCHMARKS.md) for the full comparison matrix.
 
-The evaluator is used across all OpenFeature flagd providers (Java, JavaScript, .NET, Go, Python, PHP, etc.) to ensure uniform evaluation behavior regardless of the programming language being used. For detailed information about how providers use this evaluator, see the [providers.md documentation](https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md) in the flagd docs.
+The evaluator is used across all OpenFeature flagd providers to ensure uniform evaluation behavior regardless of the programming language being used. For detailed information about how providers use this evaluator, see the <a href="https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md">providers.md documentation</a> in the flagd docs.
 
 ## Architecture & Purpose
 
-### Built as a WASM Module
+### Architecture at a Glance
 
-The flagd-evaluator is:
-- **Written in Rust** and compiled to WebAssembly for maximum portability
-- **Language-agnostic** - can be embedded in any language with a WASM runtime
-- **Single binary deployment** - approximately 1.5MB WASM file with no external dependencies
-- **Optimized for size and performance** using aggressive compilation flags
+```
+src/
+├── lib.rs          # WASM exports (update_state, evaluate, alloc, dealloc)
+├── evaluator.rs    # Instance-based FlagEvaluator, flag evaluation and state logic
+├── memory.rs       # WASM memory management, pointer packing
+├── error.rs        # Error types and handling
+├── types.rs        # EvaluationResult, ErrorCode, ResolutionReason
+├── validation.rs   # JSON Schema validation (boon crate)
+├── operators/      # Custom operators: fractional, sem_ver (starts_with/ends_with from datalogic-rs)
+│   ├── fractional.rs
+│   ├── sem_ver.rs
+│   └── common.rs
+└── model/          # Flag configuration data structures
+    └── feature_flag.rs
+```
+
+**Key concepts:**
+- **Packed u64 returns** — All WASM exports return upper 32 bits = pointer, lower 32 bits = length
+- **Thread-local storage** — Flag state stored per-thread; `update_state` detects changed flags
+- **Context enrichment** — `$flagd.flagKey`, `$flagd.timestamp`, and `targetingKey` auto-injected
+- **Instance-based** — `FlagEvaluator` struct (in `evaluator.rs`) holds state per-instance; no global state
+
+See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full design, memory model, error handling, and cross-language integration patterns.
 
 ### In-Process Evaluation
 
-This evaluator implements the **in-process evaluation logic** described in the [In-Process Resolver section](https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md#in-process-resolver) of the flagd providers specification. It allows feature flag evaluation to happen directly within the application process without requiring network calls to a separate flagd server.
+This evaluator implements the **in-process evaluation logic** described in the <a href="https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md#in-process-resolver">In-Process Resolver section</a> of the flagd providers specification. It allows feature flag evaluation to happen directly within the application process without requiring network calls to a separate flagd server.
 
 Key characteristics:
 - Evaluates feature flags locally using stored flag configurations
@@ -30,12 +48,11 @@ Key characteristics:
 
 ### Core Functionality
 
-1. **JSON Logic Evaluation** - Full support for [JSON Logic](https://jsonlogic.com/) operations via [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
+1. **JSON Logic Evaluation** - Full support for <a href="https://jsonlogic.com/">JSON Logic</a> operations via <a href="https://github.com/cozylogic/datalogic-rs">datalogic-rs</a>
 2. **Custom Operators** - Feature-flag specific operators for:
    - `fractional` - Consistent bucketing for A/B testing and gradual rollouts
    - `sem_ver` - Semantic version comparison (=, !=, <, <=, >, >=, ^, ~)
-   - `starts_with` - String prefix matching
-   - `ends_with` - String suffix matching
+   - `starts_with` / `ends_with` - String prefix/suffix matching (provided by datalogic-rs)
 3. **Flag State Management** - Internal storage for flag configurations with `update_state` API
 4. **Memory Safe Operations** - Clean memory management with explicit alloc/dealloc functions
 
@@ -43,32 +60,45 @@ Key characteristics:
 
 ### Primary Specifications
 
-- **[flagd Providers Specification](https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md)** - Describes how providers should integrate with flagd
-  - **[In-Process Resolver](https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md#in-process-resolver)** - Details on how this evaluator is used
+- **<a href="https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md">flagd Providers Specification</a>** - Describes how providers should integrate with flagd
+  - **<a href="https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md#in-process-resolver">In-Process Resolver</a>** - Details on how this evaluator is used
   - Evaluation results format (value, variant, reason, error codes)
   - Flag configuration schema
 
-- **[flagd Custom Operations Specification](https://flagd.dev/reference/specifications/custom-operations/)** - Complete documentation of custom operators
+- **<a href="https://flagd.dev/reference/specifications/custom-operations/">flagd Custom Operations Specification</a>** - Complete documentation of custom operators
   - Fractional operator for A/B testing
   - Semantic version comparison
   - String comparison operators
 
-- **[flagd Flag Definitions](https://flagd.dev/reference/flag-definitions/)** - Schema for flag configurations
+- **<a href="https://flagd.dev/reference/flag-definitions/">flagd Flag Definitions</a>** - Schema for flag configurations
   - Flag state (ENABLED/DISABLED)
   - Variants and default variant
   - Targeting rules using JsonLogic
 
+### Deep-Dive References
+
+| Topic | File |
+|-------|------|
+| Architecture, memory model, cross-language integration | [ARCHITECTURE.md](../ARCHITECTURE.md) |
+| Build commands, code style, commit conventions, PR process | [CONTRIBUTING.md](../CONTRIBUTING.md) |
+| Benchmark matrix, performance expectations, scale testing | [BENCHMARKS.md](../BENCHMARKS.md) |
+| Python bindings (PyO3), building, testing, CI/CD | [python/README.md](../python/README.md) |
+| Java library, Chicory integration | [java/README.md](../java/README.md) |
+| API reference, usage examples, custom operators | [README.md](../README.md) |
+| Host function requirements (timestamp, random) | [HOST_FUNCTIONS.md](../HOST_FUNCTIONS.md) |
+
 ### Related Technologies
 
-- **[JSON Logic](https://jsonlogic.com/)** - The rule evaluation engine
-- **[datalogic-rs](https://github.com/cozylogic/datalogic-rs)** - Rust implementation of JSON Logic
-- **[Chicory](https://github.com/nicknisi/chicory)** - Pure Java WebAssembly runtime (no JNI required)
+- **<a href="https://jsonlogic.com/">JSON Logic</a>** - The rule evaluation engine
+- **<a href="https://github.com/cozylogic/datalogic-rs">datalogic-rs</a>** - Rust implementation of JSON Logic
+- **<a href="https://github.com/nicknisi/chicory">Chicory</a>** - Pure Java WebAssembly runtime (no JNI required)
+- **<a href="https://pyo3.rs/">PyO3</a>** - Rust-Python native bindings
 
 ## Relationship to flagd Ecosystem
 
 ### Part of the OpenFeature/flagd Project
 
-This repository is a critical component of the larger [OpenFeature](https://openfeature.dev/) and [flagd](https://flagd.dev/) ecosystem:
+This repository is a critical component of the larger <a href="https://openfeature.dev/">OpenFeature</a> and <a href="https://flagd.dev/">flagd</a> ecosystem:
 
 - **OpenFeature** - An open standard for feature flag management
 - **flagd** - A feature flag daemon that implements the OpenFeature specification
@@ -76,27 +106,23 @@ This repository is a critical component of the larger [OpenFeature](https://open
 
 ### Used by Multiple Language Providers
 
-Language-specific providers embed this WASM module to evaluate feature flags:
+Language-specific providers embed this evaluator. The integration approach is chosen per language based on benchmark results:
 
-- **Java Provider** - Uses Chicory (pure Java WASM runtime)
-- **JavaScript/TypeScript Provider** - Uses Node.js or browser WASM runtimes
-- **.NET Provider** - Uses Wasmtime or other .NET-compatible WASM runtimes
-- **Go Provider** - Uses wazero or other Go WASM runtimes
-- **Python Provider** - Uses wasmer-python or other Python WASM runtimes
-- **PHP Provider** - Uses wasm extension or FFI bindings
-- **And more...** - Any language with WASM support can use this evaluator
+- **Java** - WASM via Chicory (pure Java runtime, no JNI)
+- **Go** - WASM via wazero (pure Go runtime)
+- **Python** - Native bindings via PyO3 (benchmarks showed 5–10× faster than wasmtime-py)
+- **JavaScript/TypeScript** - WASM via Node.js or browser WASM runtimes
+- **.NET** - WASM via Wasmtime or other .NET-compatible WASM runtimes
 
 ### Consistent Evaluation Across All Providers
 
-The primary benefit of using a shared WASM evaluator is **consistency**:
+The primary benefit of using a shared evaluator is **consistency**:
 
 - Same targeting logic across all language implementations
 - Identical fractional bucketing results regardless of language
 - Synchronized custom operator behavior
 - Uniform error handling and response formats
 - Single source of truth for evaluation logic
-
-This eliminates the need to reimplement complex evaluation logic in each language and ensures that feature flags behave identically across polyglot architectures.
 
 ## Technical Details
 
@@ -134,35 +160,59 @@ The evaluator exports these functions for use by host applications:
 Located in `src/operators/`:
 - `fractional.rs` - MurmurHash3-based consistent bucketing
 - `sem_ver.rs` - Semantic version parsing and comparison
-- `starts_with.rs` - String prefix matching
-- `ends_with.rs` - String suffix matching
-
-## Project Structure
-
-```
-flagd-evaluator/
-├── src/
-│   ├── lib.rs              # Main library entry point
-│   ├── evaluation.rs       # Core evaluation logic
-│   ├── memory.rs           # WASM memory management (alloc/dealloc)
-│   ├── error.rs            # Error types and handling
-│   ├── storage/            # Flag state storage
-│   ├── operators/          # Custom operator implementations
-│   │   ├── fractional.rs   # Fractional bucketing
-│   │   ├── sem_ver.rs      # Semantic version comparison
-│   │   ├── starts_with.rs  # String prefix matching
-│   │   └── ends_with.rs    # String suffix matching
-│   ├── model/              # Data models
-│   │   └── feature_flag.rs # Flag configuration models
-│   └── bin/
-│       └── flagd-eval.rs   # CLI tool for testing
-├── tests/                  # Integration tests
-├── examples/               # Usage examples (Java, rules, etc.)
-├── Cargo.toml             # Rust dependencies and build config
-└── README.md              # Comprehensive usage documentation
-```
+- `starts_with` / `ends_with` - Provided by datalogic-rs, no separate files
 
 ## Development Workflow
+
+### Issue First
+
+Always create a GitHub issue before starting work. This ensures traceability and clear scope.
+
+```bash
+gh issue create --title "feat(go): add Go WASM bindings" --body "Description of the work"
+```
+
+### Work in Worktrees
+
+All feature work happens in git worktrees under `./worktrees/`. This keeps the main working directory clean and allows parallel work on multiple issues.
+
+```bash
+# Create a branch and worktree for the issue
+git worktree add worktrees/<short-name> -b feat/<short-name>
+
+# Example for issue #42
+git worktree add worktrees/go-bindings -b feat/go-bindings
+
+# Work inside the worktree
+cd worktrees/go-bindings
+```
+
+Branch naming should match the issue scope (e.g., `feat/go-bindings`, `fix/memory-leak`, `refactor/storage`).
+
+### Plan Before Implementing
+
+Before writing any code for an issue, **always enter planning mode** first. This ensures the approach is sound before investing effort.
+
+- Present the plan for approval before writing code
+- Clarify ambiguous requirements before starting
+
+### Use Sub-Agents
+
+Leverage sub-agents liberally:
+
+- **Explore agents** for codebase research and understanding existing patterns
+- **General-purpose agents** for multi-step research and implementation tasks
+
+Launch multiple agents **in parallel** when their work is independent. This maximizes throughput.
+
+### Workflow Summary
+
+1. **Create a GitHub issue** describing the work
+2. **Create a worktree** under `./worktrees/` on a feature branch
+3. **Plan the approach** before writing code
+4. **Implement** with regular commits referencing the issue
+5. **Run tests** before creating a PR
+6. **Create a PR** linking back to the issue
 
 ### Building
 
@@ -171,7 +221,10 @@ flagd-evaluator/
 cargo build
 
 # WASM build (for production)
-cargo build --target wasm32-unknown-unknown --release
+cargo build --target wasm32-unknown-unknown --no-default-features --release --lib
+
+# Python bindings
+cd python && uv sync --group dev && maturin develop
 ```
 
 ### Testing
@@ -180,8 +233,15 @@ cargo build --target wasm32-unknown-unknown --release
 # Run all tests
 cargo test
 
+# Run specific test file
+cargo test --test integration_tests
+cargo test --test gherkin_tests
+
 # Run specific test
 cargo test test_fractional_operator
+
+# Python tests
+cd python && pytest tests/ -v
 ```
 
 ### Code Quality
@@ -190,13 +250,13 @@ cargo test test_fractional_operator
 # Format code
 cargo fmt
 
-# Lint code
+# Lint code (required before commit)
 cargo clippy -- -D warnings
 ```
 
 ### Pull Request Title Conventions
 
-This repository uses **squash and merge** for all PRs, which means the PR title becomes the commit message in the main branch. PR titles must follow the [Conventional Commits](https://www.conventionalcommits.org/) format to enable automated changelog generation and semantic versioning via Release Please.
+This repository uses **squash and merge** for all PRs, which means the PR title becomes the commit message in the main branch. PR titles must follow the <a href="https://www.conventionalcommits.org/">Conventional Commits</a> format to enable automated changelog generation and semantic versioning via Release Please.
 
 **Format:**
 ```
@@ -232,195 +292,66 @@ A GitHub Actions workflow (`.github/workflows/pr-title.yml`) automatically valid
 
 Use `!` after the type/scope or include `BREAKING CHANGE:` in the PR body for breaking changes, which trigger a major version bump.
 
-For more details, see the [PR template](../.github/pull_request_template.md) and [Contributing Guide](../CONTRIBUTING.md).
-
-### CLI Tool
-
-A CLI tool (`flagd-eval`) is available for testing rules without WASM:
-
-```bash
-# Evaluate a rule
-cargo run --bin flagd-eval -- eval --rule '{"==": [1, 1]}' --data '{}'
-
-# Run test suite
-cargo run --bin flagd-eval -- test examples/rules/test-suite.json
-
-# List available operators
-cargo run --bin flagd-eval -- operators
-```
+For more details, see the <a>PR template</a> and [Contributing Guide](../CONTRIBUTING.md).
 
 ## Testing Guidelines
 
 ### Test Suite Structure
 
-The flagd-evaluator repository has a comprehensive test suite organized into two main test files:
-
-#### `tests/cli_tests.rs` - CLI Integration Tests
-
-CLI integration tests verify that the `flagd-eval` binary works correctly end-to-end. These tests cover:
-
-- **Help and Version Commands** - Verifying command-line interface displays correct information
-- **Eval Command** - Testing JSON Logic evaluation functionality:
-  - Inline JSON rules and data
-  - File-based inputs (rules and data from files using `@` prefix)
-  - Comparison operators with variable references
-  - Custom fractional operator with basic usage
-  - Pretty-printed output formatting
-  - Invalid JSON error handling
-  - Missing file error handling
-  - Variable resolution failures
-- **Test Command** - Running test suites:
-  - Test suite execution from JSON files
-  - Verbose output mode showing rule, data, and expected values
-  - Missing file error handling
-  - Invalid test format error handling
-- **Operators Command** - Documentation:
-  - Listing all available operators
-  - Showing operator syntax examples
-- **Edge Cases**:
-  - Empty data objects
-  - Complex nested rules with multiple conditions
-  - Unicode string handling in both rules and data
+The flagd-evaluator repository has a comprehensive test suite:
 
 #### `tests/integration_tests.rs` - Comprehensive Integration Tests
 
-Integration tests verify the complete evaluation flow including memory management, JSON parsing, custom operators, and error handling. These tests include **72 test cases** covering:
+Integration tests verify the complete evaluation flow including memory management, JSON parsing, custom operators, and error handling. These tests cover:
 
-- **Basic JSON Logic Operations**:
-  - Equality (`==`) and strict equality (`===`)
-  - Comparison operators (`>`, `<`, `>=`, `<=`)
-  - Boolean operations (`and`, `or`, `!`)
-  - Conditional logic (`if-then-else` with nested conditions)
+- **Basic JSON Logic Operations**: equality, comparison, boolean, conditional
+- **Variable Access**: simple references, nested paths, missing variables, defaults
+- **Array Operations**: `in`, `merge`
+- **Arithmetic Operations**: `+`, `-`, `*`, `/`, `%`
+- **Custom Fractional Operator**: bucketing, consistency, variable refs, distribution
+- **Custom starts_with / ends_with Operators**: prefix/suffix matching, edge cases
+- **Custom sem_ver Operator**: all comparison operators, pre-release, caret/tilde ranges
+- **Memory Management**: `alloc`/`dealloc`, pointer packing
+- **Error Handling**: invalid JSON, operator validation errors
+- **State Management**: `update_state`, changed flags detection, metadata
+- **Response Format Validation**: success/error JSON structure
 
-- **Variable Access**:
-  - Simple variable references (`{"var": "name"}`)
-  - Nested path access (`{"var": "user.profile.name"}`)
-  - Missing variable handling (returns null)
-  - Default values for missing variables
+#### `tests/gherkin_tests.rs` - Gherkin Specification Tests
 
-- **Array Operations**:
-  - `in` operator for membership testing
-  - `merge` operator for array concatenation
+BDD-style tests based on the official flagd specification scenarios (see [GHERKIN_TESTS.md](../tests/GHERKIN_TESTS.md)).
 
-- **Arithmetic Operations**:
-  - Addition (`+`), subtraction (`-`), multiplication (`*`)
-  - Division (`/`), modulo (`%`)
+#### `tests/metadata_merging_tests.rs` - Metadata Merging Tests
 
-- **Custom Fractional Operator** (A/B testing and gradual rollouts):
-  - Basic bucketing with percentage distributions
-  - Consistency verification (same key always returns same bucket)
-  - Variable references for bucket keys
-  - Nested variable path resolution
-  - Single bucket edge case (100% allocation)
-  - Numeric key handling
-  - Distribution verification over 1000 iterations
-  - Missing buckets error handling
-  - Empty buckets error handling
-  - Missing variable error handling
-
-- **Custom starts_with Operator** (string prefix matching):
-  - Basic prefix matching with variable references
-  - Literal string matching
-  - Empty prefix handling (always true)
-  - Case-sensitive comparison verification
-  - False case testing
-
-- **Custom ends_with Operator** (string suffix matching):
-  - Basic suffix matching with variable references
-  - Literal string matching
-  - Empty suffix handling (always true)
-  - Case-sensitive comparison verification
-  - False case testing
-
-- **Custom sem_ver Operator** (semantic version comparison):
-  - Equality (`=`) and inequality (`!=`) comparisons
-  - Less than (`<`) and less than or equal (`<=`)
-  - Greater than (`>`) and greater than or equal (`>=`)
-  - Caret range (`^`) - compatible with major version
-  - Tilde range (`~`) - compatible with minor version
-  - Pre-release version handling
-  - Literal version comparisons (without variables)
-  - Invalid version error handling
-  - Missing version parts (treated as 0)
-  - Complex targeting rules combining sem_ver with variable paths
-
-- **Memory Management**:
-  - `alloc` and `dealloc` functions
-  - Zero-byte allocation handling
-  - Multiple allocations and deallocations
-  - Pack and unpack pointer/length operations
-
-- **Error Handling**:
-  - Invalid JSON in rules
-  - Invalid JSON in data
-  - Fractional operator validation errors
-  - Semantic version parsing errors
-
-- **Edge Cases**:
-  - Empty rules and data
-  - Null value comparisons
-  - Unicode string handling
-  - Large number arithmetic
-  - Deeply nested data structures (4+ levels)
-  - Complex nested rules with multiple conditions
-
-- **Response Format Validation**:
-  - Success response structure (`success: true`, `result`)
-  - Error response structure (`success: false`, `error`)
-  - JSON serialization of responses
-
-- **State Management**:
-  - `update_state` with flag configurations
-  - Invalid JSON error handling
-  - Missing 'flags' field error handling
-  - State replacement behavior
-  - Flags with targeting rules (JsonLogic conditions)
-  - Metadata fields (`$schema`, `$evaluators`)
-  - Empty flags object handling
-  - Multiple flags storage
-  - Invalid flag structure error handling
+Tests for flag-set metadata merging behaviour.
 
 ### When NOT to Run Tests
 
 Tests are **resource-intensive** and should **NOT** be run during:
 
-- **Initial exploration or code analysis** - Understanding repository structure, reading code to learn architecture
-- **Repository structure understanding** - Browsing directories, viewing file organization
-- **Documentation review** - Reading README, contributing guides, or other documentation
-- **Issue triage or discussion** - Understanding requirements, asking clarifying questions
-- **Understanding existing implementations** - Reading through source code to learn how features work
-- **Reading through code to learn architecture** - Studying design patterns, code organization, and implementation details
-- **Answering questions about the codebase** - Providing information about how the code works
-- **Planning phases** - Creating implementation plans, discussing approaches
+- **Initial exploration or code analysis**
+- **Documentation review**
+- **Issue triage or planning phases**
+- **Answering questions about the codebase**
 
-**Key principle**: If you're not changing code, don't run tests. Understanding test coverage through documentation is sufficient for exploration.
+**Key principle**: If you're not changing code, don't run tests.
 
 ### When to Run Tests
 
 Tests should **ONLY** be run when:
 
-- **Explicitly requested by the user** - User specifically asks to run tests
-- **Implementing new features** - Adding new operators, functionality, or WASM exports
-- **Making bug fixes** - Fixing identified issues that affect behavior
-- **Making code changes that could affect behavior** - Modifying evaluation logic, operators, or core functionality
-- **Debugging specific test failures** - Investigating why a particular test is failing
-- **Validating changes before creating a PR** - Final verification that all changes work correctly
-- **Verifying custom operator implementations** - After adding or modifying fractional, sem_ver, starts_with, ends_with operators
-- **Testing WASM build** - After making changes that affect WASM compilation or exports
-
-**Key principle**: Only run tests when you need to verify that code changes work correctly.
+- **Explicitly requested by the user**
+- **Implementing new features or bug fixes**
+- **Validating changes before creating a PR**
 
 ### Running Tests Efficiently
 
-When you do need to run tests:
-
 ```bash
-# Run all tests (use sparingly - takes significant time)
+# Run all tests (use sparingly)
 cargo test
 
 # Run specific test file (more efficient)
 cargo test --test integration_tests
-cargo test --test cli_tests
+cargo test --test gherkin_tests
 
 # Run specific test function (most efficient)
 cargo test test_fractional_operator
@@ -431,23 +362,18 @@ cargo test fractional
 cargo test starts_with
 ```
 
-### Performance Considerations
+## Key Rules
 
-- **Test execution is time-consuming** - The full test suite includes 72 integration tests and 21 CLI tests (93 total)
-- **Build time** - Compiling the project and tests takes time
-- **The test suite is comprehensive** - Tests cover JSON Logic, custom operators, memory management, error handling, and edge cases
-- **Focus on understanding first** - Read the test files to understand coverage without executing them
-- **Run tests intentionally and purposefully** - Only execute when validating actual code changes
-- **Avoid redundant test runs** - Don't re-run tests if nothing has changed since the last execution
+**Memory safety (WASM exports):**
+- Never panic — return JSON error responses
+- Always validate UTF-8 via `string_from_memory()`
+- All `unsafe` blocks require `// SAFETY:` comments
+- Build WASM with `--no-default-features`
 
-### Test-Driven Development
-
-When making changes:
-
-1. **First**: Understand existing test coverage by reading test files
-2. **Then**: Make your code changes
-3. **Finally**: Run relevant tests to validate changes
-4. **Avoid**: Running tests before understanding what needs to be tested
+**Commits:**
+- Follow [Conventional Commits](https://www.conventionalcommits.org/): `<type>(<scope>): <description>`
+- Commit regularly after logical units of work
+- See [CONTRIBUTING.md](../CONTRIBUTING.md) for full commit and PR guidelines
 
 ## Extension Instructions
 
@@ -463,18 +389,6 @@ During agent sessions or development work, **important information should be add
 - Changes to the WASM API are made
 - Performance optimizations are documented
 
-### How to Update
-
-1. Edit `.github/copilot-instructions.md`
-2. Add new sections or expand existing ones with relevant context
-3. Keep the structure consistent and well-organized
-4. Use clear, concise language
-5. Include code examples where helpful
-6. Link to relevant documentation or specifications
-7. Commit changes with descriptive messages
-
-### What to Include
-
 Good additions to this file include:
 - ✅ Architectural patterns and design decisions
 - ✅ Integration patterns with host languages
@@ -482,35 +396,30 @@ Good additions to this file include:
 - ✅ Testing strategies and important test scenarios
 - ✅ Common debugging techniques
 - ✅ Links to relevant external documentation
-- ✅ Explanations of complex algorithms (e.g., fractional bucketing)
 
 Avoid including:
 - ❌ Temporary notes or TODO lists
 - ❌ Code that's already well-documented in source files
-- ❌ Overly detailed implementation specifics
 - ❌ Information that frequently changes (versions, URLs that change often)
 
 ## Important Considerations
 
 ### Chicory Compatibility
 
-This evaluator is designed to work with [Chicory](https://github.com/nicknisi/chicory), a pure Java WebAssembly runtime that requires **no JNI** or native dependencies. To ensure compatibility:
+This evaluator is designed to work with <a href="https://github.com/nicknisi/chicory">Chicory</a>, a pure Java WebAssembly runtime that requires **no JNI** or native dependencies. To ensure compatibility:
 
 - Avoid WASM features that require JavaScript bindings (`wasm-bindgen`)
 - Don't use browser-specific APIs
 - Keep the module self-contained with no external imports (except memory)
 - Test with Chicory when making significant changes
 
-### Optimization for Size
+### Optimization for Performance
 
-The WASM binary is aggressively optimized for size:
-- Uses `opt-level = "z"` for size optimization
+The WASM binary is optimized for runtime performance:
+- Uses `opt-level = 2` for speed
 - Enables LTO (Link Time Optimization)
-- Strips debug symbols
+- Strips debug symbols in release
 - Uses `panic = "abort"` to eliminate panic infrastructure
-- Patches chrono to remove wasm-bindgen dependencies
-
-Current size: ~1.5MB (includes full JSON Logic implementation with 50+ operators)
 
 ### Error Handling
 
@@ -521,10 +430,12 @@ All errors are returned as JSON, never as panics:
 
 This ensures the WASM module never crashes the host application.
 
-## Resources
+## External Specifications
 
-- [Repository README](../README.md) - Comprehensive usage guide
-- [Contributing Guide](../CONTRIBUTING.md) - Development guidelines
-- [OpenFeature Documentation](https://openfeature.dev/)
-- [flagd Documentation](https://flagd.dev/)
-- [JSON Logic](https://jsonlogic.com/)
+- <a href="https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md">flagd Provider Specification</a>
+- <a href="https://flagd.dev/reference/specifications/custom-operations/">flagd Custom Operations</a>
+- <a href="https://flagd.dev/reference/flag-definitions/">Flag Definitions Schema</a>
+- <a href="https://jsonlogic.com/">JSON Logic</a>
+- <a href="https://github.com/cozylogic/datalogic-rs">datalogic-rs</a>
+- <a href="https://github.com/nicknisi/chicory">Chicory WASM Runtime</a>
+- <a href="https://pyo3.rs/">PyO3 Rust-Python bindings</a>
