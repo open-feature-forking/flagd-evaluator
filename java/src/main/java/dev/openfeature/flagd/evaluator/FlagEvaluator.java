@@ -11,8 +11,12 @@ import com.fasterxml.jackson.databind.module.SimpleModule;
 import dev.openfeature.flagd.evaluator.jackson.EvaluationContextSerializer;
 import dev.openfeature.flagd.evaluator.jackson.EvaluationResultDeserializer;
 import dev.openfeature.flagd.evaluator.jackson.ImmutableMetadataDeserializer;
+import dev.openfeature.contrib.tools.flagd.api.Evaluator;
+import dev.openfeature.contrib.tools.flagd.api.FlagStoreException;
+import dev.openfeature.sdk.ErrorCode;
 import dev.openfeature.sdk.EvaluationContext;
 import dev.openfeature.sdk.ImmutableMetadata;
+import dev.openfeature.sdk.ProviderEvaluation;
 import dev.openfeature.sdk.Value;
 
 import java.io.ByteArrayOutputStream;
@@ -61,7 +65,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p><b>Thread Safety:</b> This class is thread-safe. Multiple threads can call
  * evaluation methods concurrently with near-linear throughput scaling.
  */
-public class FlagEvaluator implements AutoCloseable {
+public class FlagEvaluator implements AutoCloseable, Evaluator {
 
     static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final JsonFactory JSON_FACTORY = new JsonFactory();
@@ -542,6 +546,122 @@ public class FlagEvaluator implements AutoCloseable {
         WasmInstance inst;
         while ((inst = pool.poll()) != null) {
             inst.close();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // Evaluator interface implementation
+    // ─────────────────────────────────────────────────────────
+
+    private UpdateStateResult updateStateAndHandleErrors(String flagConfigurationJson) throws FlagStoreException {
+        try {
+            UpdateStateResult result = updateState(flagConfigurationJson);
+            if (!result.isSuccess()) {
+                throw new FlagStoreException(result.getError() != null ? result.getError() : "Failed to set flags");
+            }
+            return result;
+        } catch (EvaluatorException e) {
+            throw new FlagStoreException(e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void setFlags(String flagConfigurationJson) throws FlagStoreException {
+        updateStateAndHandleErrors(flagConfigurationJson);
+    }
+
+    @Override
+    public List<String> setFlagsAndGetChangedKeys(String flagConfigurationJson) throws FlagStoreException {
+        UpdateStateResult result = updateStateAndHandleErrors(flagConfigurationJson);
+        return result.getChangedFlags() != null ? result.getChangedFlags() : Collections.emptyList();
+    }
+
+    @Override
+    public Map<String, Object> getFlagSetMetadata() {
+        // TODO: expose flag-set level metadata from UpdateStateResult when available
+        return Collections.emptyMap();
+    }
+
+    @Override
+    public ProviderEvaluation<Boolean> resolveBooleanValue(String flagKey, Boolean defaultValue, EvaluationContext ctx) {
+        try {
+            return toProviderEvaluation(evaluateFlag(Boolean.class, flagKey, ctx), defaultValue);
+        } catch (EvaluatorException e) {
+            return errorEvaluation(defaultValue, e);
+        }
+    }
+
+    @Override
+    public ProviderEvaluation<String> resolveStringValue(String flagKey, String defaultValue, EvaluationContext ctx) {
+        try {
+            return toProviderEvaluation(evaluateFlag(String.class, flagKey, ctx), defaultValue);
+        } catch (EvaluatorException e) {
+            return errorEvaluation(defaultValue, e);
+        }
+    }
+
+    @Override
+    public ProviderEvaluation<Integer> resolveIntegerValue(String flagKey, Integer defaultValue, EvaluationContext ctx) {
+        try {
+            return toProviderEvaluation(evaluateFlag(Integer.class, flagKey, ctx), defaultValue);
+        } catch (EvaluatorException e) {
+            return errorEvaluation(defaultValue, e);
+        }
+    }
+
+    @Override
+    public ProviderEvaluation<Double> resolveDoubleValue(String flagKey, Double defaultValue, EvaluationContext ctx) {
+        try {
+            return toProviderEvaluation(evaluateFlag(Double.class, flagKey, ctx), defaultValue);
+        } catch (EvaluatorException e) {
+            return errorEvaluation(defaultValue, e);
+        }
+    }
+
+    @Override
+    public ProviderEvaluation<Value> resolveObjectValue(String flagKey, Value defaultValue, EvaluationContext ctx) {
+        try {
+            return toProviderEvaluation(evaluateFlag(Value.class, flagKey, ctx), defaultValue);
+        } catch (EvaluatorException e) {
+            return errorEvaluation(defaultValue, e);
+        }
+    }
+
+    private <T> ProviderEvaluation<T> toProviderEvaluation(EvaluationResult<T> result, T defaultValue) {
+        ProviderEvaluation.ProviderEvaluationBuilder<T> builder = ProviderEvaluation.<T>builder()
+                .value(result.getValue() != null ? result.getValue() : defaultValue)
+                .variant(result.getVariant())
+                .reason(result.getReason());
+        if (result.getErrorCode() != null) {
+            builder.errorCode(mapErrorCode(result.getErrorCode()))
+                    .errorMessage(result.getErrorMessage());
+        }
+        if (result.getFlagMetadata() != null) {
+            builder.flagMetadata(result.getFlagMetadata());
+        }
+        return builder.build();
+    }
+
+    private <T> ProviderEvaluation<T> errorEvaluation(T defaultValue, EvaluatorException e) {
+        return ProviderEvaluation.<T>builder()
+                .value(defaultValue)
+                .reason("ERROR")
+                .errorCode(ErrorCode.GENERAL)
+                .errorMessage(e.getMessage())
+                .build();
+    }
+
+    private ErrorCode mapErrorCode(String code) {
+        if (code == null) {
+            return ErrorCode.GENERAL;
+        }
+        switch (code) {
+            case "FLAG_NOT_FOUND":       return ErrorCode.FLAG_NOT_FOUND;
+            case "PARSE_ERROR":          return ErrorCode.PARSE_ERROR;
+            case "TYPE_MISMATCH":        return ErrorCode.TYPE_MISMATCH;
+            case "TARGETING_KEY_MISSING": return ErrorCode.TARGETING_KEY_MISSING;
+            case "INVALID_CONTEXT":      return ErrorCode.INVALID_CONTEXT;
+            default:                     return ErrorCode.GENERAL;
         }
     }
 

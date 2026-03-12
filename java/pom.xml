@@ -102,6 +102,12 @@
             <version>1.1.0</version>
         </dependency>
 
+        <dependency>
+            <groupId>dev.openfeature.contrib.tools</groupId>
+            <artifactId>flagd-api</artifactId>
+            <version>0.1.0</version>
+        </dependency>
+
     </dependencies>
 
     <!-- ===================== -->
