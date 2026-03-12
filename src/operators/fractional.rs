@@ -94,12 +94,25 @@ impl Operator for FractionalOperator {
 /// Evaluates the fractional operator for consistent bucket assignment.
 ///
 /// The fractional operator takes a bucket key (typically a user ID) and
-/// a list of bucket definitions with percentages. It uses consistent hashing
+/// a list of bucket definitions with integer weights. It uses consistent hashing
 /// to always assign the same bucket key to the same bucket.
+///
+/// # Algorithm
+///
+/// Uses high-resolution integer arithmetic instead of float-based percentage
+/// bucketing. The MurmurHash3 value is mapped uniformly into `[0, totalWeight)`
+/// using a single multiply-and-shift:
+///
+/// ```text
+/// bucket = (u64(hash) * u64(totalWeight)) >> 32
+/// ```
+///
+/// Weights must be non-negative integers summing to at most `i32::MAX`
+/// (2,147,483,647).
 ///
 /// # Arguments
 /// * `bucket_key` - The key to use for bucket assignment (e.g., user ID)
-/// * `buckets` - Array of [name, percentage, name, percentage, ...] values
+/// * `buckets` - Array of [name, weight, name, weight, ...] values
 ///
 /// # Returns
 /// The name of the selected bucket, or an error if the input is invalid
@@ -116,8 +129,8 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
     }
 
     // Parse bucket definitions: [name1, weight1, name2, weight2, ...]
-    let mut bucket_defs: Vec<(String, u32)> = Vec::new();
-    let mut total_weight: u32 = 0;
+    let mut bucket_defs: Vec<(String, u64)> = Vec::new();
+    let mut total_weight: u64 = 0;
 
     let mut i = 0;
     while i < buckets.len() {
@@ -135,10 +148,9 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
         }
 
         let weight = match &buckets[i] {
-            Value::Number(n) => n
-                .as_u64()
-                .ok_or_else(|| format!("Weight for bucket '{}' must be a positive integer", name))?
-                as u32,
+            Value::Number(n) => n.as_u64().ok_or_else(|| {
+                format!("Weight for bucket '{}' must be a positive integer", name)
+            })?,
             _ => return Err(format!("Weight for bucket '{}' must be a number", name)),
         };
 
@@ -158,28 +170,35 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
         return Err("Total weight must be greater than zero".to_string());
     }
 
-    // Hash the bucket key to get a consistent value
-    // Using murmurhash3_x86_32 to match Apache Commons MurmurHash3.hash32x86
-    // Java code: Math.abs(mmrHash) * 1.0f / Integer.MAX_VALUE * 100
+    // Weights must not exceed MaxInt32 to ensure safe integer arithmetic
+    if total_weight > i32::MAX as u64 {
+        return Err(format!(
+            "Total weight {} exceeds maximum allowed value of {}",
+            total_weight,
+            i32::MAX
+        ));
+    }
+
+    // Hash the bucket key using MurmurHash3 (seed=0, matches Apache Commons MurmurHash3.hash32x86)
     let hash: u32 = murmurhash3_x86_32(bucket_key.as_bytes(), 0);
-    let hash_i32 = hash as i32; // Cast to signed integer (may be negative)
-    let abs_hash = hash_i32.abs(); // Take absolute value like Java does
-    let bucket_value = (abs_hash as f64 / i32::MAX as f64) * 100.0;
+
+    // Map the 32-bit hash uniformly into [0, totalWeight) using integer arithmetic.
+    // This replaces the previous float-based approach (abs(hash)/i32::MAX * 100)
+    // with higher resolution and no floating-point imprecision.
+    let bucket_value: u64 = (hash as u64 * total_weight) >> 32;
 
     // Find which bucket this value falls into by accumulating weights
-    let mut cumulative_weight: f64 = 0.;
+    let mut cumulative_weight: u64 = 0;
     for (name, weight) in &bucket_defs {
-        cumulative_weight += (weight * 100) as f64 / total_weight as f64;
+        cumulative_weight += weight;
         if bucket_value < cumulative_weight {
             return Ok(name.clone());
         }
     }
 
-    // If we didn't find a bucket (e.g., total_weight < 100), return the last one
-    Ok(bucket_defs
-        .last()
-        .map(|(name, _)| name.clone())
-        .unwrap_or_default())
+    // Unreachable for valid inputs: bucket_value < total_weight is always true
+    // since (hash * total_weight) >> 32 < total_weight. Fall back defensively.
+    Ok(bucket_defs.last().unwrap().0.clone())
 }
 
 #[cfg(test)]
@@ -188,149 +207,165 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_fractional_50_50() {
+    fn test_fractional_50_50_consistent() {
         let buckets = vec![json!("control"), json!(50), json!("treatment"), json!(50)];
 
-        // Test consistency - same key should always return same bucket
+        // Same key must always yield the same bucket
         let result1 = fractional("user-123", &buckets).unwrap();
         let result2 = fractional("user-123", &buckets).unwrap();
         assert_eq!(result1, result2);
+    }
 
-        // Test that both buckets are reachable with different keys
+    #[test]
+    fn test_fractional_50_50_both_reachable() {
+        let buckets = vec![json!("control"), json!(50), json!("treatment"), json!(50)];
+
         let mut seen_control = false;
         let mut seen_treatment = false;
-
         for i in 0..100 {
-            let key = format!("test-user-{}", i);
-            let result = fractional(&key, &buckets).unwrap();
-            match result.as_str() {
+            match fractional(&format!("user-{}", i), &buckets)
+                .unwrap()
+                .as_str()
+            {
                 "control" => seen_control = true,
                 "treatment" => seen_treatment = true,
-                _ => panic!("Unexpected bucket: {}", result),
+                other => panic!("Unexpected bucket: {}", other),
             }
         }
-
-        assert!(seen_control, "control bucket should be reachable");
-        assert!(seen_treatment, "treatment bucket should be reachable");
+        assert!(seen_control, "control bucket must be reachable");
+        assert!(seen_treatment, "treatment bucket must be reachable");
     }
 
     #[test]
     fn test_fractional_unequal_weights() {
         let buckets = vec![json!("small"), json!(10), json!("large"), json!(90)];
 
-        let mut small_count = 0;
-        let mut large_count = 0;
-
-        // Run many iterations to check distribution
+        let mut small_count = 0u32;
+        let mut large_count = 0u32;
         for i in 0..1000 {
-            let key = format!("user-{}", i);
-            let result = fractional(&key, &buckets).unwrap();
-            match result.as_str() {
+            match fractional(&format!("user-{}", i), &buckets)
+                .unwrap()
+                .as_str()
+            {
                 "small" => small_count += 1,
                 "large" => large_count += 1,
-                _ => panic!("Unexpected bucket"),
+                other => panic!("Unexpected bucket: {}", other),
             }
         }
-
-        // Large bucket should have significantly more assignments
+        // 90/10 split — large should dominate
         assert!(
             large_count > small_count * 3,
-            "Large bucket should dominate"
+            "large ({}) should dominate small ({})",
+            large_count,
+            small_count
+        );
+    }
+
+    #[test]
+    fn test_fractional_high_resolution_weights() {
+        // Weights well above 100 — impossible with old float/percentage approach
+        let buckets = vec![
+            json!("a"),
+            json!(1000),
+            json!("b"),
+            json!(1000),
+            json!("c"),
+            json!(1000),
+        ];
+        let mut counts = std::collections::HashMap::new();
+        for i in 0..3000 {
+            let r = fractional(&format!("u-{}", i), &buckets).unwrap();
+            *counts.entry(r).or_insert(0u32) += 1;
+        }
+        for bucket in ["a", "b", "c"] {
+            let c = counts.get(bucket).copied().unwrap_or(0);
+            // Each should get roughly 1/3; allow generous tolerance
+            assert!(
+                c > 500 && c < 1500,
+                "bucket '{}' got {} assignments (expected ~1000)",
+                bucket,
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn test_fractional_max_int32_total_weight() {
+        // Total weight exactly at the MaxInt32 boundary must succeed
+        let half = i32::MAX as u64 / 2;
+        let remainder = i32::MAX as u64 - half * 2;
+        let buckets = vec![
+            json!("a"),
+            Value::Number(serde_json::Number::from(half)),
+            json!("b"),
+            Value::Number(serde_json::Number::from(half + remainder)),
+        ];
+        let result = fractional("any-key", &buckets);
+        assert!(result.is_ok(), "MaxInt32 total weight must be accepted");
+    }
+
+    #[test]
+    fn test_fractional_exceeds_max_int32_rejected() {
+        let over: u64 = i32::MAX as u64 + 1;
+        let buckets = vec![json!("a"), Value::Number(serde_json::Number::from(over))];
+        let result = fractional("any-key", &buckets);
+        assert!(result.is_err(), "Total weight > MaxInt32 must be rejected");
+        assert!(
+            result.unwrap_err().contains("exceeds maximum"),
+            "Error message should mention maximum"
         );
     }
 
     #[test]
     fn test_fractional_empty_buckets() {
-        let buckets: Vec<Value> = vec![];
-        let result = fractional("user-123", &buckets);
-        assert!(result.is_err());
+        assert!(fractional("user-123", &[]).is_err());
     }
 
     #[test]
     fn test_fractional_missing_weight() {
         let buckets = vec![json!("only-name")];
-        let result = fractional("user-123", &buckets);
-        assert!(result.is_err());
+        assert!(fractional("user-123", &buckets).is_err());
     }
 
     #[test]
     fn test_fractional_invalid_name_type() {
         let buckets = vec![json!(123), json!(50)];
-        let result = fractional("user-123", &buckets);
-        assert!(result.is_err());
+        assert!(fractional("user-123", &buckets).is_err());
     }
 
     #[test]
     fn test_fractional_invalid_weight_type() {
         let buckets = vec![json!("bucket"), json!("not-a-number")];
-        let result = fractional("user-123", &buckets);
-        assert!(result.is_err());
+        assert!(fractional("user-123", &buckets).is_err());
     }
-}
-
-#[cfg(test)]
-mod hash_debug {
-    use super::*;
 
     #[test]
-    fn debug_hash_calculations() {
-        let test_keys = vec![
-            "fractional-flag-shorthandjon@company.com",
-            "fractional-flag-shorthandjane@company.com",
-        ];
-
-        for key in test_keys {
-            let hash_u32 = murmurhash3_x86_32(key.as_bytes(), 0);
-            let hash_i32 = hash_u32 as i32;
-            let abs_hash = hash_i32.abs();
-
-            // Current method
-            let bucket_current = (hash_u32 as f64 / u32::MAX as f64) * 100.0;
-
-            // Java-style method
-            let bucket_java = (abs_hash as f64 / i32::MAX as f64) * 100.0;
-
-            println!("\nKey: {}", key);
-            println!("  Hash (u32): {}", hash_u32);
-            println!("  Hash (i32): {}", hash_i32);
-            println!("  Abs: {}", abs_hash);
-            println!("  Bucket (current u32/MAX): {:.6}", bucket_current);
-            println!("  Bucket (Java abs/i32MAX): {:.6}", bucket_java);
-        }
+    fn test_fractional_single_bucket() {
+        let buckets = vec![json!("only"), json!(100)];
+        assert_eq!(fractional("any-key", &buckets).unwrap(), "only");
+        assert_eq!(fractional("another-key", &buckets).unwrap(), "only");
     }
-}
 
-#[test]
-fn debug_shorthand_keys() {
-    let flag_key = "fractional-flag-shorthand";
-    let test_cases = vec![
-        ("jon@company.com", "heads"),  // Expected
-        ("jane@company.com", "tails"), // Expected
-    ];
+    #[test]
+    fn test_fractional_integer_arithmetic_matches_spec() {
+        // Verify the formula: bucket_value = (hash as u64 * totalWeight) >> 32
+        // for a known hash, so the algorithm is pinned against regression.
+        let key = "test-key";
+        let hash = murmurhash3_x86_32(key.as_bytes(), 0);
+        let total_weight: u64 = 100;
+        let expected_bucket_value = (hash as u64 * total_weight) >> 32;
 
-    for (targeting_key, expected) in test_cases {
-        let bucket_key = format!("{}{}", flag_key, targeting_key);
-        let hash: u32 = murmurhash3_x86_32(bucket_key.as_bytes(), 0);
-        let hash_i32 = hash as i32;
-        let abs_hash = hash_i32.abs();
-        let bucket_value = (abs_hash as f64 / i32::MAX as f64) * 100.0;
+        let buckets = vec![json!("low"), json!(50u64), json!("high"), json!(50u64)];
+        let result = fractional(key, &buckets).unwrap();
 
-        println!("\nTargeting Key: {}", targeting_key);
-        println!("  Bucket Key: {}", bucket_key);
-        println!("  Hash (u32): {}", hash);
-        println!("  Hash (i32): {}", hash_i32);
-        println!("  Abs: {}", abs_hash);
-        println!("  Bucket Value: {:.6}", bucket_value);
-        println!("  Expected: {}", expected);
-
-        // Buckets: [("heads", 1), ("tails", 1)] total=2
-        // cumulative: heads=50%, tails=100%
-        let result = if bucket_value < 50.0 {
-            "heads"
+        let expected = if expected_bucket_value < 50 {
+            "low"
         } else {
-            "tails"
+            "high"
         };
-        println!("  Result: {}", result);
-        println!("  Match: {}", result == expected);
+        assert_eq!(
+            result, expected,
+            "bucket assignment must match the spec formula"
+        );
     }
 }
