@@ -20,15 +20,7 @@ use std::collections::{HashMap, HashSet};
 ///
 /// Example:
 ///     >>> evaluator = FlagEvaluator()
-///     >>> evaluator.update_state({
-///     ...     "flags": {
-///     ...         "myFlag": {
-///     ...             "state": "ENABLED",
-///     ...             "variants": {"on": True, "off": False},
-///     ...             "defaultVariant": "on"
-///     ...         }
-///     ...     }
-///     ... })
+///     >>> evaluator.update_state('{"flags": {"myFlag": {"state": "ENABLED", "variants": {"on": true, "off": false}, "defaultVariant": "on"}}}')
 ///     >>> result = evaluator.evaluate_bool("myFlag", {}, False)
 ///     >>> print(result)
 ///     True
@@ -120,6 +112,19 @@ impl FlagEvaluator {
         // Full evaluation path (no optimization data available for this flag)
         self.inner.evaluate_flag(flag_key, context.clone())
     }
+
+    /// Updates the host-side caches from an `UpdateStateResponse`.
+    fn update_caches_from_response(&mut self, response: &::flagd_evaluator::UpdateStateResponse) {
+        self.pre_evaluated_cache = response.pre_evaluated.as_ref().cloned().unwrap_or_default();
+        self.required_context_keys = match &response.required_context_keys {
+            Some(keys_map) => keys_map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.iter().cloned().collect::<HashSet<String>>()))
+                .collect(),
+            None => HashMap::new(),
+        };
+        self.flag_indices = response.flag_indices.as_ref().cloned().unwrap_or_default();
+    }
 }
 
 #[pymethods]
@@ -147,51 +152,36 @@ impl FlagEvaluator {
         }
     }
 
-    /// Update the flag configuration state
+    /// Update the flag configuration state.
     ///
-    /// Parses the configuration, detects changed flags, and populates host-side
-    /// optimization caches (pre-evaluated results, required context keys, flag indices).
+    /// Accepts a JSON or YAML string. Format is auto-detected: strings starting
+    /// with `{` are treated as JSON, everything else as YAML.
     ///
     /// Args:
-    ///     config (dict): Flag configuration in flagd format
+    ///     config (str): Flag configuration in JSON or YAML format
     ///
     /// Returns:
     ///     dict: Update response with changed flag keys, pre-evaluated results,
     ///           required context keys, and flag indices
-    fn update_state(&mut self, py: Python, config: &Bound<'_, PyDict>) -> PyResult<PyObject> {
-        // Convert Python dict to JSON Value
-        let config_value: Value = pythonize::depythonize(config.as_any())?;
-
-        // Convert to JSON string for parsing
-        let config_str = serde_json::to_string(&config_value).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Failed to serialize config: {}",
-                e
-            ))
-        })?;
-
-        // Delegate to the Rust FlagEvaluator
-        let response = self.inner.update_state(&config_str).map_err(|e| {
+    ///
+    /// Raises:
+    ///     ValueError: If parsing fails or the configuration is invalid
+    fn update_state(&mut self, py: Python, config: &str) -> PyResult<PyObject> {
+        // Auto-detect format: JSON starts with '{', everything else is treated as YAML.
+        let response = if config.trim_start().starts_with('{') {
+            self.inner.update_state(config)
+        } else {
+            self.inner.update_state_from_yaml(config)
+        }
+        .map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                 "Failed to update state: {}",
                 e
             ))
         })?;
 
-        // Update pre-evaluated cache
-        self.pre_evaluated_cache = response.pre_evaluated.as_ref().cloned().unwrap_or_default();
-
-        // Update required context keys cache
-        self.required_context_keys = match &response.required_context_keys {
-            Some(keys_map) => keys_map
-                .iter()
-                .map(|(k, v)| (k.clone(), v.iter().cloned().collect::<HashSet<String>>()))
-                .collect(),
-            None => HashMap::new(),
-        };
-
-        // Update flag indices cache
-        self.flag_indices = response.flag_indices.as_ref().cloned().unwrap_or_default();
+        // Update host-side caches
+        self.update_caches_from_response(&response);
 
         // Convert response to Python dict
         pythonize::pythonize(py, &response)

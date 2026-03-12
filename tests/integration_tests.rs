@@ -1244,3 +1244,132 @@ fn test_sem_ver_edge_cases() {
         );
     }
 }
+
+mod yaml_tests {
+    use flagd_evaluator::{FlagEvaluator, ValidationMode};
+
+    const SIMPLE_YAML: &str = r#"
+flags:
+  bool-flag:
+    state: ENABLED
+    variants:
+      "on": true
+      "off": false
+    defaultVariant: "on"
+  string-flag:
+    state: ENABLED
+    variants:
+      v1: hello
+      v2: world
+    defaultVariant: v1
+"#;
+
+    const YAML_WITH_TARGETING: &str = r#"
+flags:
+  targeted-flag:
+    state: ENABLED
+    variants:
+      "yes": true
+      "no": false
+    defaultVariant: "no"
+    targeting:
+      if:
+        - ==:
+            - var: targetingKey
+            - admin
+        - "yes"
+        - "no"
+"#;
+
+    #[test]
+    fn test_yaml_to_json_conversion() {
+        let json = flagd_evaluator::yaml::yaml_to_json(SIMPLE_YAML).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["flags"]["bool-flag"].is_object());
+    }
+
+    #[test]
+    fn test_yaml_invalid_syntax_returns_error() {
+        let result = flagd_evaluator::yaml::yaml_to_json("flags:\n  bad: [unclosed");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to parse YAML"));
+    }
+
+    #[test]
+    fn test_update_state_from_yaml_loads_flags() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+        evaluator.update_state_from_yaml(SIMPLE_YAML).unwrap();
+
+        let ctx = serde_json::json!({"targetingKey": "user-1"});
+        let result = evaluator.evaluate_flag("bool-flag", ctx);
+        assert_eq!(result.value, serde_json::json!(true));
+        assert_eq!(
+            result.reason,
+            flagd_evaluator::types::ResolutionReason::Static
+        );
+    }
+
+    #[test]
+    fn test_update_state_from_yaml_evaluates_string_flag() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+        evaluator.update_state_from_yaml(SIMPLE_YAML).unwrap();
+
+        let ctx = serde_json::json!({"targetingKey": "user-1"});
+        let result = evaluator.evaluate_flag("string-flag", ctx);
+        assert_eq!(result.value, serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn test_update_state_from_yaml_with_targeting() {
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+        evaluator
+            .update_state_from_yaml(YAML_WITH_TARGETING)
+            .unwrap();
+
+        let ctx = serde_json::json!({"targetingKey": "admin"});
+        let result = evaluator.evaluate_flag("targeted-flag", ctx);
+        assert_eq!(result.value, serde_json::json!(true));
+
+        let ctx2 = serde_json::json!({"targetingKey": "regular-user"});
+        let result2 = evaluator.evaluate_flag("targeted-flag", ctx2);
+        assert_eq!(result2.value, serde_json::json!(false));
+    }
+
+    #[test]
+    fn test_update_state_from_yaml_invalid_json_structure_returns_error() {
+        // Valid YAML but not a valid flagd config (missing 'flags' key in strict mode)
+        // update_state returns Ok(response) with success=false for schema validation failures
+        let mut evaluator = FlagEvaluator::new(ValidationMode::Strict);
+        let result = evaluator
+            .update_state_from_yaml("foo: bar\nbaz: 42\n")
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn test_yaml_to_json_preserves_boolean_values() {
+        let yaml = "flags:\n  f:\n    state: ENABLED\n    variants:\n      on: true\n      off: false\n    defaultVariant: on\n";
+        let json = flagd_evaluator::yaml::yaml_to_json(yaml).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["flags"]["f"]["variants"]["on"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            parsed["flags"]["f"]["variants"]["off"],
+            serde_json::json!(false)
+        );
+    }
+
+    #[test]
+    fn test_yaml_to_json_preserves_numeric_values() {
+        let yaml = "flags:\n  f:\n    state: ENABLED\n    variants:\n      low: 10\n      high: 100\n    defaultVariant: low\n";
+        let json = flagd_evaluator::yaml::yaml_to_json(yaml).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["flags"]["f"]["variants"]["low"],
+            serde_json::json!(10)
+        );
+    }
+}

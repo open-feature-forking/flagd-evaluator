@@ -261,7 +261,7 @@ This library bundles:
 1. **WASM Module**: The flagd-evaluator compiled to WebAssembly
 2. **Chicory Runtime**: Pure Java WASM runtime with JIT compilation
 3. **OpenFeature SDK**: Official OpenFeature SDK for type-safe flag evaluation
-4. **Host Functions**: 9 required host functions for WASM interop
+4. **Host Functions**: 1 required host function for WASM interop (`host::get_current_time_unix_seconds`)
 5. **Jackson Serialization**: Custom serializers for OpenFeature types
 6. **Java API**: Type-safe wrapper around WASM exports
 

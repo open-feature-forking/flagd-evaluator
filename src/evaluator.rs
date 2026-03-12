@@ -8,7 +8,7 @@ use crate::model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 use crate::operators::create_evaluator;
 use crate::types::{ErrorCode, EvaluationResult, ResolutionReason};
 use crate::validation::validate_flags_config;
-use datalogic_rs::{CompiledLogic, CompiledNode, DataLogic, OpCode};
+use datalogic_rs::{CompiledLogic, CompiledNode, DataLogic, OpCode, PathSegment};
 use serde_json::{Map, Value as JsonValue, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -181,6 +181,22 @@ impl FlagEvaluator {
                 Some(flag_indices)
             },
         })
+    }
+
+    /// Load flag configuration from a YAML string.
+    ///
+    /// Converts the YAML to JSON and calls [`update_state`]. The JSON Schema
+    /// validation that runs inside `update_state` applies to the converted JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if YAML parsing fails or if `update_state` returns an error.
+    pub fn update_state_from_yaml(
+        &mut self,
+        yaml_config: &str,
+    ) -> Result<UpdateStateResponse, String> {
+        let json = crate::yaml::yaml_to_json(yaml_config)?;
+        self.update_state(&json)
     }
 
     /// Gets a reference to the current flag state.
@@ -862,6 +878,7 @@ pub fn extract_required_context_keys(compiled: &CompiledLogic) -> Option<HashSet
 /// Recursively walks a CompiledNode tree to collect referenced variable paths.
 ///
 /// Returns `false` if we encounter an empty-path var (meaning "send all context").
+#[allow(unreachable_patterns)] // forward-compatibility: new CompiledNode variants in future datalogic-rs versions
 fn walk_node_for_vars(node: &CompiledNode, keys: &mut HashSet<String>) -> bool {
     match node {
         CompiledNode::Value { .. } => true,
@@ -902,8 +919,8 @@ fn walk_node_for_vars(node: &CompiledNode, keys: &mut HashSet<String>) -> bool {
             true
         }
 
-        CompiledNode::CustomOperator { args, .. } => {
-            for arg in args.iter() {
+        CompiledNode::CustomOperator(data) => {
+            for arg in data.args.iter() {
                 if !walk_node_for_vars(arg, keys) {
                     return false;
                 }
@@ -911,15 +928,79 @@ fn walk_node_for_vars(node: &CompiledNode, keys: &mut HashSet<String>) -> bool {
             true
         }
 
-        CompiledNode::StructuredObject { fields } => {
-            for (_, field_node) in fields.iter() {
+        CompiledNode::StructuredObject(data) => {
+            for (_, field_node) in data.fields.iter() {
                 if !walk_node_for_vars(field_node, keys) {
                     return false;
                 }
             }
             true
         }
+
+        // datalogic-rs 4.0.18: dedicated compiled var node (replaces BuiltinOperator { opcode: Var })
+        CompiledNode::CompiledVar {
+            segments,
+            default_value,
+            ..
+        } => {
+            let path = segments_to_path(segments);
+            if path.is_empty() {
+                return false; // {"var": ""} — entire context access
+            }
+            let first_key = path.split('.').next().unwrap_or(&path).to_string();
+            if !first_key.starts_with("$flagd") {
+                keys.insert(first_key);
+            }
+            if let Some(default) = default_value {
+                if !walk_node_for_vars(default, keys) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        // datalogic-rs 4.0.18: dedicated compiled exists node
+        CompiledNode::CompiledExists(data) => {
+            let path = segments_to_path(&data.segments);
+            if path.is_empty() {
+                return false;
+            }
+            let first_key = path.split('.').next().unwrap_or(&path).to_string();
+            if !first_key.starts_with("$flagd") {
+                keys.insert(first_key);
+            }
+            true
+        }
+
+        // datalogic-rs 4.0.18: split with pre-compiled regex — walk args only
+        CompiledNode::CompiledSplitRegex(data) => {
+            for arg in data.args.iter() {
+                if !walk_node_for_vars(arg, keys) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        // datalogic-rs 4.0.18: throw node — no variable references
+        CompiledNode::CompiledThrow(_) => true,
+
+        // Forward-compatibility: unknown future variants treated as needing full context.
+        _ => false,
     }
+}
+
+/// Reconstructs a dotted path string from a slice of `PathSegment`s.
+fn segments_to_path(segments: &[PathSegment]) -> String {
+    segments
+        .iter()
+        .map(|s| match s {
+            PathSegment::Field(f) => f.as_ref().to_string(),
+            PathSegment::FieldOrIndex(f, _) => f.as_ref().to_string(),
+            PathSegment::Index(i) => i.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// Extracts the variable path string from a CompiledNode that represents a var argument.

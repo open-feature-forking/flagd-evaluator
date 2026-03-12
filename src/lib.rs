@@ -41,6 +41,21 @@ use std::sync::Once;
 
 static PANIC_HOOK_INIT: Once = Once::new();
 
+// Provide a custom getrandom backend for WASM so ahash's runtime-rng feature
+// (which XORs a runtime-random value into the compile-time seed) doesn't panic.
+// Filling with zeros is safe: ahash already has a good compile-time seed from
+// const-random, and this evaluator has no cryptographic randomness requirements.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+unsafe extern "Rust" fn __getrandom_v03_custom(
+    dest: *mut u8,
+    len: usize,
+) -> Result<(), getrandom::Error> {
+    // SAFETY: caller guarantees dest..dest+len is valid writable memory.
+    unsafe { core::ptr::write_bytes(dest, 0, len) };
+    Ok(())
+}
+
 // WASM is single-threaded, so we can use RefCell for better semantics.
 // For native targets (testing, library usage), we use Mutex for thread safety.
 
@@ -145,6 +160,7 @@ pub mod model;
 pub mod operators;
 pub mod types;
 pub mod validation;
+pub mod yaml;
 
 /// Gets the current Unix timestamp in seconds.
 ///
@@ -316,9 +332,17 @@ fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
         }
     };
 
+    // Auto-detect format: JSON starts with '{', everything else is treated as YAML.
+    let method: fn(&mut evaluator::FlagEvaluator, &str) -> Result<_, String> =
+        if config_str.trim_start().starts_with('{') {
+            |eval, s| eval.update_state(s)
+        } else {
+            |eval, s| eval.update_state_from_yaml(s)
+        };
+
     // Parse and store the configuration using the singleton evaluator
     wasm_evaluator::with_evaluator(|eval| {
-        match eval.update_state(&config_str) {
+        match method(eval, &config_str) {
             Ok(response) => {
                 // Convert UpdateStateResponse to JSON
                 serde_json::to_string(&response).unwrap_or_else(|e| {
@@ -1270,13 +1294,20 @@ mod tests {
 mod wasm_tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Mutex;
 
-    /// Helper function to reset the WASM singleton evaluator between tests
-    fn reset_wasm_evaluator() {
+    /// Serialize all WASM tests because they share a process-global evaluator.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Helper function to reset the WASM singleton evaluator between tests.
+    /// Returns the lock guard so the caller holds it for the test's duration.
+    fn reset_wasm_evaluator() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().unwrap();
         wasm_evaluator::with_evaluator(|eval| {
             eval.clear_state();
             eval.set_validation_mode(ValidationMode::Strict);
         });
+        guard
     }
 
     /// Helper to call update_state WASM export
@@ -1319,7 +1350,7 @@ mod wasm_tests {
 
     #[test]
     fn test_wasm_update_state_export() {
-        reset_wasm_evaluator();
+        let _guard = reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1338,7 +1369,7 @@ mod wasm_tests {
 
     #[test]
     fn test_wasm_evaluate_export() {
-        reset_wasm_evaluator();
+        let _guard = reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1372,7 +1403,7 @@ mod wasm_tests {
 
     #[test]
     fn test_wasm_utf8_handling() {
-        reset_wasm_evaluator();
+        let _guard = reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1392,7 +1423,7 @@ mod wasm_tests {
 
     #[test]
     fn test_wasm_evaluate_by_index() {
-        reset_wasm_evaluator();
+        let _guard = reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {
@@ -1461,7 +1492,7 @@ mod wasm_tests {
 
     #[test]
     fn test_wasm_evaluate_by_index_invalid_index() {
-        reset_wasm_evaluator();
+        let _guard = reset_wasm_evaluator();
 
         let config = r#"{
             "flags": {

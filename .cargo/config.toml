@@ -1,7 +1,11 @@
 # Cargo configuration for flagd-evaluator
 
 # Disable SIMD for WASM target (Chicory doesn't support V128/SIMD128)
+# Use "custom" getrandom backend: ahash's runtime-rng feature calls getrandom to
+# augment its compile-time seed. We provide a stub that fills with zeros — safe for
+# HashMap seeding in a deterministic evaluator, and avoids pulling in wasm-bindgen.
 [target.wasm32-unknown-unknown]
 rustflags = [
-    "-C", "target-feature=-simd128"
+    "-C", "target-feature=-simd128",
+    "--cfg", "getrandom_backend=\"custom\""
 ]

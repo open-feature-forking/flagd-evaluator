@@ -1,6 +1,7 @@
 """Tests for host-side optimization features: pre-evaluation cache,
 context key filtering, and index-based evaluation."""
 
+import json
 import pytest
 import time
 
@@ -10,7 +11,7 @@ def test_update_state_returns_pre_evaluated():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    result = evaluator.update_state({
+    result = evaluator.update_state(json.dumps({
         "flags": {
             "staticFlag": {
                 "state": "ENABLED",
@@ -35,7 +36,7 @@ def test_update_state_returns_pre_evaluated():
                 }
             }
         }
-    })
+    }))
 
     assert result["success"] is True
     pre_evaluated = result.get("preEvaluated", {})
@@ -59,7 +60,7 @@ def test_static_flag_served_from_cache():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "cachedFlag": {
                 "state": "ENABLED",
@@ -67,7 +68,7 @@ def test_static_flag_served_from_cache():
                 "defaultVariant": "on"
             }
         }
-    })
+    }))
 
     # Evaluate multiple times; result should always be the cached value
     for _ in range(10):
@@ -82,7 +83,7 @@ def test_disabled_flag_served_from_cache():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "offFlag": {
                 "state": "DISABLED",
@@ -90,7 +91,7 @@ def test_disabled_flag_served_from_cache():
                 "defaultVariant": "on"
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate("offFlag", {})
     assert result["reason"] == "DISABLED"
@@ -101,7 +102,7 @@ def test_disabled_flag_bool_returns_default():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "offFlag": {
                 "state": "DISABLED",
@@ -109,7 +110,7 @@ def test_disabled_flag_bool_returns_default():
                 "defaultVariant": "on"
             }
         }
-    })
+    }))
 
     assert evaluator.evaluate_bool("offFlag", {}, True) is True
     assert evaluator.evaluate_bool("offFlag", {}, False) is False
@@ -120,7 +121,7 @@ def test_update_state_returns_required_context_keys():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    result = evaluator.update_state({
+    result = evaluator.update_state(json.dumps({
         "flags": {
             "targetedFlag": {
                 "state": "ENABLED",
@@ -135,7 +136,7 @@ def test_update_state_returns_required_context_keys():
                 }
             }
         }
-    })
+    }))
 
     assert result["success"] is True
     req_keys = result.get("requiredContextKeys", {})
@@ -151,7 +152,7 @@ def test_update_state_returns_flag_indices():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    result = evaluator.update_state({
+    result = evaluator.update_state(json.dumps({
         "flags": {
             "flagB": {
                 "state": "ENABLED",
@@ -164,7 +165,7 @@ def test_update_state_returns_flag_indices():
                 "defaultVariant": "off"
             }
         }
-    })
+    }))
 
     assert result["success"] is True
     indices = result.get("flagIndices", {})
@@ -180,7 +181,7 @@ def test_filtered_context_targeting_produces_correct_result():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "roleFlag": {
                 "state": "ENABLED",
@@ -195,7 +196,7 @@ def test_filtered_context_targeting_produces_correct_result():
                 }
             }
         }
-    })
+    }))
 
     # Pass many extra keys that the targeting rule does NOT reference
     context = {
@@ -220,7 +221,7 @@ def test_filtered_context_user_variant():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "roleFlag": {
                 "state": "ENABLED",
@@ -235,7 +236,7 @@ def test_filtered_context_user_variant():
                 }
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate("roleFlag", {"role": "user"})
     assert result["value"] == "user-view"
@@ -247,7 +248,7 @@ def test_filtered_context_with_multiple_required_keys():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "complexFlag": {
                 "state": "ENABLED",
@@ -267,7 +268,7 @@ def test_filtered_context_with_multiple_required_keys():
                 }
             }
         }
-    })
+    }))
 
     # Premium user with extra keys
     result = evaluator.evaluate("complexFlag", {
@@ -291,7 +292,7 @@ def test_flagd_enrichment_in_filtered_context():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "enrichedFlag": {
                 "state": "ENABLED",
@@ -311,7 +312,7 @@ def test_flagd_enrichment_in_filtered_context():
                 }
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate("enrichedFlag", {})
     assert result["value"] == "flagd-works"
@@ -324,7 +325,7 @@ def test_fractional_targeting_with_filtered_context():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "abFlag": {
                 "state": "ENABLED",
@@ -341,7 +342,7 @@ def test_fractional_targeting_with_filtered_context():
                 }
             }
         }
-    })
+    }))
 
     # targetingKey should be automatically included in filtered context
     result = evaluator.evaluate("abFlag", {"targetingKey": "user-abc"})
@@ -357,7 +358,7 @@ def test_cache_refreshed_on_update_state():
     evaluator = FlagEvaluator()
 
     # Initial state: flag is static with value True
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "dynamicFlag": {
                 "state": "ENABLED",
@@ -365,14 +366,14 @@ def test_cache_refreshed_on_update_state():
                 "defaultVariant": "on"
             }
         }
-    })
+    }))
 
     result1 = evaluator.evaluate("dynamicFlag", {})
     assert result1["value"] is True
     assert result1["reason"] == "STATIC"
 
     # Update: now flag has targeting
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "dynamicFlag": {
                 "state": "ENABLED",
@@ -387,7 +388,7 @@ def test_cache_refreshed_on_update_state():
                 }
             }
         }
-    })
+    }))
 
     result2 = evaluator.evaluate("dynamicFlag", {"enabled": True})
     assert result2["value"] is True
@@ -402,7 +403,7 @@ def test_static_flags_not_in_required_context_keys():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    result = evaluator.update_state({
+    result = evaluator.update_state(json.dumps({
         "flags": {
             "staticFlag": {
                 "state": "ENABLED",
@@ -418,7 +419,7 @@ def test_static_flags_not_in_required_context_keys():
                 }
             }
         }
-    })
+    }))
 
     req_keys = result.get("requiredContextKeys", {})
     # Static flags should not appear in required context keys
@@ -433,7 +434,7 @@ def test_evaluate_typed_with_filtered_context():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "boolTarget": {
                 "state": "ENABLED",
@@ -460,7 +461,7 @@ def test_evaluate_typed_with_filtered_context():
                 }
             }
         }
-    })
+    }))
 
     assert evaluator.evaluate_bool("boolTarget", {"role": "admin"}, False) is True
     assert evaluator.evaluate_bool("boolTarget", {"role": "user"}, False) is False
@@ -474,7 +475,7 @@ def test_targeting_key_defaults_to_empty_in_filtered_context():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "tkFlag": {
                 "state": "ENABLED",
@@ -489,7 +490,7 @@ def test_targeting_key_defaults_to_empty_in_filtered_context():
                 }
             }
         }
-    })
+    }))
 
     # No targetingKey provided -> should be empty string -> "absent"
     result_no_tk = evaluator.evaluate("tkFlag", {})

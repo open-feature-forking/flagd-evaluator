@@ -52,78 +52,76 @@ internal sealed class WasmRuntime : IDisposable
             imports.Add((import.ModuleName, import.Name));
         }
 
-        // Module "host" — 1 function
-        var timeFnName = FindImport(imports, "host", "get_current_time_unix_seconds");
+        // Module "host" — required: provides wall-clock time for $flagd.timestamp enrichment
+        var timeFnName = FindImport(imports, "host", "get_current_time_unix_seconds")
+            ?? throw new EvaluatorException("WASM module missing required import: host::get_current_time_unix_seconds");
         _linker.DefineFunction("host", timeFnName,
             () => DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
-        // Module "__wbindgen_placeholder__" — 6 functions
+        // Module "__wbindgen_placeholder__" — optional, only present in wasm-bindgen builds.
+        // Clean builds (getrandom custom backend) have no wasm-bindgen imports at all.
 
-        // Random entropy for ahash in boon validation
         var randomFnName = FindImport(imports, "__wbindgen_placeholder__", "__wbg_getRandomValues_");
-        _linker.DefineFunction("__wbindgen_placeholder__", randomFnName,
-            (Caller caller, int _self, int bufferPtr) =>
-            {
-                var memory = caller.GetMemory("memory")!;
-                Span<byte> randomBytes = stackalloc byte[32];
-                RandomNumberGenerator.Fill(randomBytes);
-                var span = memory.GetSpan(bufferPtr, 32);
-                randomBytes.CopyTo(span);
-            });
+        if (randomFnName != null)
+            _linker.DefineFunction("__wbindgen_placeholder__", randomFnName,
+                (Caller caller, int _self, int bufferPtr) =>
+                {
+                    var memory = caller.GetMemory("memory")!;
+                    Span<byte> randomBytes = stackalloc byte[32];
+                    RandomNumberGenerator.Fill(randomBytes);
+                    var span = memory.GetSpan(bufferPtr, 32);
+                    randomBytes.CopyTo(span);
+                });
 
-        // Date constructor — returns dummy reference
         var newDateFnName = FindImport(imports, "__wbindgen_placeholder__", "__wbg_new_0_");
-        _linker.DefineFunction("__wbindgen_placeholder__", newDateFnName,
-            () => 0);
+        if (newDateFnName != null)
+            _linker.DefineFunction("__wbindgen_placeholder__", newDateFnName, () => 0);
 
-        // Date.getTime — returns current time millis as f64
         var getTimeFnName = FindImport(imports, "__wbindgen_placeholder__", "__wbg_getTime_");
-        _linker.DefineFunction("__wbindgen_placeholder__", getTimeFnName,
-            (int _self) => (double)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        if (getTimeFnName != null)
+            _linker.DefineFunction("__wbindgen_placeholder__", getTimeFnName,
+                (int _self) => (double)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
-        // wbindgen_throw — read error message and throw
         var throwFnName = FindImport(imports, "__wbindgen_placeholder__", "__wbg___wbindgen_throw");
-        _linker.DefineFunction("__wbindgen_placeholder__", throwFnName,
-            (Caller caller, int ptr, int len) =>
-            {
-                var memory = caller.GetMemory("memory")!;
-                var message = memory.ReadString(ptr, len);
-                throw new EvaluatorException($"WASM threw: {message}");
-            });
+        if (throwFnName != null)
+            _linker.DefineFunction("__wbindgen_placeholder__", throwFnName,
+                (Caller caller, int ptr, int len) =>
+                {
+                    var memory = caller.GetMemory("memory")!;
+                    var message = memory.ReadString(ptr, len);
+                    throw new EvaluatorException($"WASM threw: {message}");
+                });
 
-        // object_drop_ref — no-op
         var dropRefFnName = FindImport(imports, "__wbindgen_placeholder__", "__wbindgen_object_drop_ref");
-        _linker.DefineFunction("__wbindgen_placeholder__", dropRefFnName,
-            (int _idx) => { });
+        if (dropRefFnName != null)
+            _linker.DefineFunction("__wbindgen_placeholder__", dropRefFnName, (int _idx) => { });
 
-        // describe — no-op
         var describeFnName = FindImport(imports, "__wbindgen_placeholder__", "__wbindgen_describe");
-        _linker.DefineFunction("__wbindgen_placeholder__", describeFnName,
-            (int _idx) => { });
+        if (describeFnName != null)
+            _linker.DefineFunction("__wbindgen_placeholder__", describeFnName, (int _idx) => { });
 
-        // Module "__wbindgen_externref_xform__" — 2 functions
-
+        // Module "__wbindgen_externref_xform__" — optional, only in wasm-bindgen builds
         var tableGrowFnName = FindImport(imports, "__wbindgen_externref_xform__", "__wbindgen_externref_table_grow");
-        _linker.DefineFunction("__wbindgen_externref_xform__", tableGrowFnName,
-            (int _delta) => 128);
+        if (tableGrowFnName != null)
+            _linker.DefineFunction("__wbindgen_externref_xform__", tableGrowFnName, (int _delta) => 128);
 
         var tableSetNullFnName = FindImport(imports, "__wbindgen_externref_xform__", "__wbindgen_externref_table_set_null");
-        _linker.DefineFunction("__wbindgen_externref_xform__", tableSetNullFnName,
-            (int _idx) => { });
+        if (tableSetNullFnName != null)
+            _linker.DefineFunction("__wbindgen_externref_xform__", tableSetNullFnName, (int _idx) => { });
     }
 
     /// <summary>
-    /// Finds an import name by module and prefix. Falls back to exact match.
+    /// Finds an import name by module and prefix. Returns null if not found.
     /// This survives wasm-bindgen hash suffix changes across WASM rebuilds.
     /// </summary>
-    private static string FindImport(List<(string Module, string Name)> imports, string module, string prefix)
+    private static string? FindImport(List<(string Module, string Name)> imports, string module, string prefix)
     {
         foreach (var (mod, name) in imports)
         {
             if (mod == module && name.StartsWith(prefix, StringComparison.Ordinal))
                 return name;
         }
-        throw new EvaluatorException($"WASM module missing expected import: {module}::{prefix}*");
+        return null;
     }
 
     public void Dispose()

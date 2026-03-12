@@ -17,7 +17,7 @@ categories = ["wasm", "web-programming"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-datalogic-rs = "4.0"
+datalogic-rs = "=4.0.19"
 serde = { version = "1.0", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1.0", features = ["alloc"], default-features = false }
 boon = "0.6"
@@ -27,8 +27,13 @@ thiserror = "2.0"
 # ahash is pulled in by boon and uses AES-NI by default
 # We disable default features and use compile-time-rng to avoid runtime randomness
 ahash = { version = "0.8.12", default-features = false, features = ["compile-time-rng"] }
-# Enable wasm_js feature for getrandom in WASM builds (required for wasm32-unknown-unknown)
-getrandom = { version = "0.3", features = ["wasm_js"] }
+serde_yaml = "0.9"
+
+# Provide a custom getrandom backend for wasm32 so ahash's runtime-rng feature
+# (which calls getrandom to augment the compile-time HashMap seed) doesn't panic.
+# We fill with zeros — fine for HashMap seeding in a deterministic evaluator.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = "0.3"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
@@ -71,3 +76,5 @@ lto = true
 codegen-units = 16
 strip = true
 panic = "abort"
+
+

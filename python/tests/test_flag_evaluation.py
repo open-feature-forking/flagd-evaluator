@@ -1,5 +1,6 @@
 """Tests for feature flag evaluation in flagd_evaluator."""
 
+import json
 import pytest
 
 
@@ -8,7 +9,7 @@ def test_flag_with_targeting():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "targetedFlag": {
                 "state": "ENABLED",
@@ -23,7 +24,7 @@ def test_flag_with_targeting():
                 }
             }
         }
-    })
+    }))
 
     # Admin user should get admin variant
     result = evaluator.evaluate("targetedFlag", {"role": "admin"})
@@ -41,7 +42,7 @@ def test_disabled_flag():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "disabledFlag": {
                 "state": "DISABLED",
@@ -49,7 +50,7 @@ def test_disabled_flag():
                 "defaultVariant": "on"
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate("disabledFlag", {})
     assert result["reason"] == "DISABLED"
@@ -60,7 +61,7 @@ def test_flag_with_metadata():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "metadata": {
             "environment": "production",
             "version": "1.0"
@@ -75,7 +76,7 @@ def test_flag_with_metadata():
                 }
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate("metadataFlag", {})
     # Check that metadata is present in the result
@@ -87,7 +88,7 @@ def test_multiple_flags():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "flag1": {
                 "state": "ENABLED",
@@ -105,7 +106,7 @@ def test_multiple_flags():
                 "defaultVariant": "large"
             }
         }
-    })
+    }))
 
     result1 = evaluator.evaluate_bool("flag1", {}, False)
     assert result1 is True
@@ -122,7 +123,7 @@ def test_evaluate_full_result():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "testFlag": {
                 "state": "ENABLED",
@@ -130,7 +131,7 @@ def test_evaluate_full_result():
                 "defaultVariant": "on"
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate("testFlag", {})
 
@@ -150,7 +151,7 @@ def test_flag_with_fractional_targeting():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "abTestFlag": {
                 "state": "ENABLED",
@@ -168,7 +169,7 @@ def test_flag_with_fractional_targeting():
                 }
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate("abTestFlag", {"userId": "user123"})
     assert result["variant"] in ["control", "treatment"]
@@ -183,7 +184,7 @@ def test_complex_targeting_rule():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "complexFlag": {
                 "state": "ENABLED",
@@ -203,7 +204,7 @@ def test_complex_targeting_rule():
                 }
             }
         }
-    })
+    }))
 
     # Premium user
     result = evaluator.evaluate("complexFlag", {

@@ -1,5 +1,6 @@
 """Basic tests for flagd_evaluator Python bindings."""
 
+import json
 import pytest
 
 
@@ -16,7 +17,7 @@ def test_flag_evaluator_update_state():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    result = evaluator.update_state({
+    result = evaluator.update_state(json.dumps({
         "flags": {
             "myFlag": {
                 "state": "ENABLED",
@@ -24,7 +25,7 @@ def test_flag_evaluator_update_state():
                 "defaultVariant": "on"
             }
         }
-    })
+    }))
     assert result["success"] is True
 
 
@@ -33,7 +34,7 @@ def test_flag_evaluator_bool():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "boolFlag": {
                 "state": "ENABLED",
@@ -41,7 +42,7 @@ def test_flag_evaluator_bool():
                 "defaultVariant": "on"
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate_bool("boolFlag", {}, False)
     assert result is True
@@ -52,7 +53,7 @@ def test_flag_evaluator_string():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "stringFlag": {
                 "state": "ENABLED",
@@ -60,7 +61,7 @@ def test_flag_evaluator_string():
                 "defaultVariant": "red"
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate_string("stringFlag", {}, "default")
     assert result == "color-red"
@@ -71,7 +72,7 @@ def test_flag_evaluator_int():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "intFlag": {
                 "state": "ENABLED",
@@ -79,7 +80,7 @@ def test_flag_evaluator_int():
                 "defaultVariant": "small"
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate_int("intFlag", {}, 0)
     assert result == 10
@@ -90,7 +91,7 @@ def test_flag_evaluator_float():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "floatFlag": {
                 "state": "ENABLED",
@@ -98,7 +99,7 @@ def test_flag_evaluator_float():
                 "defaultVariant": "low"
             }
         }
-    })
+    }))
 
     result = evaluator.evaluate_float("floatFlag", {}, 0.0)
     assert result == 1.5
@@ -123,7 +124,7 @@ def test_flag_evaluator_flag_not_found():
     from flagd_evaluator import FlagEvaluator
 
     evaluator = FlagEvaluator()
-    evaluator.update_state({
+    evaluator.update_state(json.dumps({
         "flags": {
             "existingFlag": {
                 "state": "ENABLED",
@@ -131,7 +132,7 @@ def test_flag_evaluator_flag_not_found():
                 "defaultVariant": "on"
             }
         }
-    })
+    }))
 
     # Should return default value for non-existent flag
     result = evaluator.evaluate_bool("nonExistentFlag", {}, False)
