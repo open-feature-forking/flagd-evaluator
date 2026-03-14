@@ -3,6 +3,7 @@
 //! This module provides data structures for parsing and working with flagd feature flag
 //! configurations as defined in the [flagd specification](https://flagd.dev/reference/flag-definitions/).
 
+use crate::limits::MAX_REF_DEPTH;
 use crate::operators::create_evaluator;
 use datalogic_rs::CompiledLogic;
 use serde::{Deserialize, Serialize};
@@ -252,7 +253,7 @@ impl ParsingResult {
             if !evaluators.is_empty() && flag.targeting.is_some() {
                 let targeting = flag.targeting.take().unwrap();
                 let mut visited = std::collections::HashSet::new();
-                match Self::resolve_refs(&targeting, &evaluators, &mut visited) {
+                match Self::resolve_refs(&targeting, &evaluators, &mut visited, 0) {
                     Ok(resolved) => flag.targeting = Some(resolved),
                     Err(e) => {
                         return Err(format!(
@@ -329,8 +330,16 @@ impl ParsingResult {
         value: &serde_json::Value,
         evaluators: &HashMap<String, serde_json::Value>,
         visited: &mut std::collections::HashSet<String>,
+        depth: usize,
     ) -> Result<serde_json::Value, String> {
         use serde_json::{Map, Value};
+
+        if depth > MAX_REF_DEPTH {
+            return Err(format!(
+                "$ref resolution depth limit of {} exceeded; check for excessively deep evaluator chains",
+                MAX_REF_DEPTH
+            ));
+        }
 
         match value {
             Value::Object(obj) => {
@@ -352,25 +361,30 @@ impl ParsingResult {
 
                         // Add to visited set and recurse
                         visited.insert(ref_name.clone());
-                        let resolved = Self::resolve_refs(evaluator, evaluators, visited)?;
+                        let resolved =
+                            Self::resolve_refs(evaluator, evaluators, visited, depth + 1)?;
                         visited.remove(ref_name);
 
                         return Ok(resolved);
                     }
                 }
 
-                // Not a $ref, recursively resolve any nested $refs
+                // Not a $ref, recursively resolve any nested $refs without incrementing depth.
+                // depth only counts $ref hops, not structural JSON traversal.
                 let mut resolved_obj = Map::new();
                 for (key, val) in obj {
-                    resolved_obj.insert(key.clone(), Self::resolve_refs(val, evaluators, visited)?);
+                    resolved_obj.insert(
+                        key.clone(),
+                        Self::resolve_refs(val, evaluators, visited, depth)?,
+                    );
                 }
                 Ok(Value::Object(resolved_obj))
             }
             Value::Array(arr) => {
-                // Recursively resolve $refs in array elements
+                // Recursively resolve $refs in array elements without incrementing depth.
                 let mut resolved_arr = Vec::new();
                 for item in arr {
-                    resolved_arr.push(Self::resolve_refs(item, evaluators, visited)?);
+                    resolved_arr.push(Self::resolve_refs(item, evaluators, visited, depth)?);
                 }
                 Ok(Value::Array(resolved_arr))
             }

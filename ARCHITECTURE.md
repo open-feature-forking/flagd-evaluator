@@ -55,6 +55,32 @@ Caller allocates input buffers, callee allocates result buffers. Caller must fre
 3. **Pointer lifetime** — WASM memory is stable within a single function call but may be reallocated between calls
 4. **Safety comments required** — All `unsafe` blocks must have `// SAFETY:` comments
 
+## Resource Limits
+
+The evaluator enforces strict resource limits at the WASM boundary and within the Rust API to prevent resource exhaustion from adversarial or accidentally oversized inputs. All limits are defined as constants in `src/limits.rs`.
+
+| Constant | Value | Real-world meaning |
+|----------|-------|--------------------|
+| `MAX_CONFIG_BYTES` | **100 MB** | ~125,000 complex flags at ~800 bytes each — covers the largest conceivable local-file deployment |
+| `MAX_CONTEXT_BYTES` | **1 MB** | ~26,000 context fields at ~40 bytes each — far exceeds any realistic evaluation context |
+| `MAX_REF_DEPTH` | **64** | Maximum `$ref` hops during evaluator resolution — more than any real-world chain needs |
+| `MAX_JSON_DEPTH` | **128** | Maximum JSON nesting depth checked before parsing — prevents stack overflows |
+
+### Where limits are enforced
+
+- **Config size** (`MAX_CONFIG_BYTES`): Checked in `update_state_internal` (WASM boundary) before reading memory. A host passing an oversized `config_len` gets a JSON error without any memory access.
+- **Context size** (`MAX_CONTEXT_BYTES`): Checked in `evaluate_internal` and `evaluate_by_index_internal` before reading context bytes.
+- **JSON depth** (`MAX_JSON_DEPTH`): Pre-parse byte scan in `FlagEvaluator::update_state` (see `limits::check_json_depth`). Fires before `serde_json` recursion, preventing stack overflows from adversarial nesting. Also covers YAML configs, since `update_state_from_yaml` converts to JSON first.
+- **`$ref` depth** (`MAX_REF_DEPTH`): Depth counter in `resolve_refs` (see `feature_flag.rs`). Counts only `$ref` hops — JSON structural traversal does not consume the budget.
+
+### Behavior when limits are exceeded
+
+All limit violations return deterministic errors — no panics, no crashes:
+- Config/context size violations → `{"success": false, "error": "... exceeds maximum ..."}`
+- JSON depth violation → `{"success": false, "error": "JSON nesting depth exceeds ..."}`
+- `$ref` depth violation → `{"success": false, "error": "$ref resolution depth limit of 64 exceeded ..."}`
+- Evaluation with oversized context → `{"reason": "ERROR", "errorCode": "PARSE_ERROR", ...}`
+
 ### WASM Build Flags
 
 From `Cargo.toml` release profile:

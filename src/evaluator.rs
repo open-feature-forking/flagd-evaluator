@@ -4,6 +4,7 @@
 //! and validation mode per-instance, allowing multiple independent evaluators
 //! in the same process without global state issues.
 
+use crate::limits::check_json_depth;
 use crate::model::{FeatureFlag, ParsingResult, UpdateStateResponse};
 use crate::operators::create_evaluator;
 use crate::types::{ErrorCode, EvaluationResult, ResolutionReason};
@@ -104,6 +105,19 @@ impl FlagEvaluator {
     /// * `Ok(UpdateStateResponse)` - If successful, with changed flag keys
     /// * `Err(String)` - If there was an error
     pub fn update_state(&mut self, json_config: &str) -> Result<UpdateStateResponse, String> {
+        // Validate JSON nesting depth before parsing to prevent stack overflows
+        if let Err(e) = check_json_depth(json_config) {
+            return Ok(UpdateStateResponse {
+                success: false,
+                error: Some(e),
+                changed_flags: None,
+                pre_evaluated: None,
+                required_context_keys: None,
+                flag_indices: None,
+                flag_set_metadata: None,
+            });
+        }
+
         // Validate the configuration
         let validation_result = validate_flags_config(json_config);
 

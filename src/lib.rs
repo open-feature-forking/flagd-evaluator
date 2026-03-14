@@ -103,7 +103,11 @@ mod wasm_evaluator {
     {
         let mutex = WASM_EVALUATOR
             .get_or_init(|| Mutex::new(evaluator::FlagEvaluator::new(ValidationMode::Strict)));
-        let mut guard = mutex.lock().unwrap();
+        // Recover from a poisoned mutex by reclaiming the inner value.
+        // Mutex poisoning only occurs if a thread panicked while holding the lock;
+        // since WASM exports use catch_unwind, poisoning should not happen in practice,
+        // but we handle it gracefully for robustness in native/test contexts.
+        let mut guard = mutex.lock().unwrap_or_else(|e| e.into_inner());
         f(&mut guard)
     }
 }
@@ -188,6 +192,9 @@ pub fn get_current_time() -> u64 {
 }
 
 use serde_json::Value;
+
+pub mod limits;
+use limits::{MAX_CONFIG_BYTES, MAX_CONTEXT_BYTES};
 
 pub use error::{ErrorType, EvaluatorError};
 pub use evaluator::{FlagEvaluator, ValidationMode};
@@ -318,6 +325,19 @@ pub extern "C" fn update_state(config_ptr: *const u8, config_len: u32) -> u64 {
 fn update_state_internal(config_ptr: *const u8, config_len: u32) -> String {
     // Initialize panic hook for better error messages
     init_panic_hook();
+
+    // Reject oversized payloads before touching memory
+    if config_len as usize > MAX_CONFIG_BYTES {
+        return serde_json::json!({
+            "success": false,
+            "error": format!(
+                "Config size ({} bytes) exceeds the maximum allowed size of {} bytes (100 MB)",
+                config_len, MAX_CONFIG_BYTES
+            ),
+            "changedFlags": null
+        })
+        .to_string();
+    }
 
     // SAFETY: The caller guarantees valid memory regions
     let config_str = match unsafe { string_from_memory(config_ptr, config_len) } {
@@ -515,6 +535,15 @@ fn evaluate_by_index_internal(
             let context: Value = if context_ptr.is_null() || context_len == 0 {
                 Value::Null
             } else {
+                if context_len as usize > MAX_CONTEXT_BYTES {
+                    return EvaluationResult::error(
+                        ErrorCode::ParseError,
+                        format!(
+                            "Context size ({} bytes) exceeds the maximum allowed size of {} bytes (1 MB)",
+                            context_len, MAX_CONTEXT_BYTES
+                        ),
+                    );
+                }
                 // SAFETY: The caller guarantees valid memory regions
                 let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
                     Ok(s) => s,
@@ -566,14 +595,6 @@ fn evaluate_internal(
     // Catch any panics and convert them to error responses
     let result = std::panic::catch_unwind(|| {
         wasm_evaluator::with_evaluator(|eval| {
-            // Check if state is initialized
-            if eval.get_state().is_none() {
-                return EvaluationResult::error(
-                    ErrorCode::FlagNotFound,
-                    "Flag state not initialized. Call update_state first.",
-                );
-            }
-
             // SAFETY: The caller guarantees valid memory regions
             let flag_key = match unsafe { string_from_memory(flag_key_ptr, flag_key_len) } {
                 Ok(s) => s,
@@ -585,7 +606,17 @@ fn evaluate_internal(
                 }
             };
 
-            let flag = eval.get_state().unwrap().flags.get(&flag_key);
+            let state = match eval.get_state() {
+                Some(s) => s,
+                None => {
+                    return EvaluationResult::error(
+                        ErrorCode::FlagNotFound,
+                        "Flag state not initialized. Call update_state first.",
+                    )
+                }
+            };
+
+            let flag = state.flags.get(&flag_key);
 
             // Parse protobuf context
             let context: Value = if context_ptr.is_null()
@@ -594,6 +625,15 @@ fn evaluate_internal(
             {
                 Value::Null
             } else {
+                if context_len as usize > MAX_CONTEXT_BYTES {
+                    return EvaluationResult::error(
+                        ErrorCode::ParseError,
+                        format!(
+                            "Context size ({} bytes) exceeds the maximum allowed size of {} bytes (1 MB)",
+                            context_len, MAX_CONTEXT_BYTES
+                        ),
+                    );
+                }
                 let context_str = match unsafe { string_from_memory(context_ptr, context_len) } {
                     Ok(s) => s,
                     Err(e) => {
@@ -1820,5 +1860,95 @@ mod optimization_tests {
         let flag_keys = keys.get("abTestFlag").unwrap();
         // targetingKey is always included
         assert!(flag_keys.contains(&"targetingKey".to_string()));
+    }
+}
+
+// ============================================================================
+// Adversarial WASM-boundary tests
+//
+// These tests call update_state_internal / evaluate_internal directly to avoid
+// the packed-u64 pointer mechanism, which truncates 64-bit native heap addresses
+// to 32 bits and is not suitable for native integration tests.
+// ============================================================================
+
+#[cfg(test)]
+mod adversarial_wasm_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Serialize adversarial tests because they share the process-global WASM evaluator.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Verifies that a config payload length exceeding `MAX_CONFIG_BYTES` (100 MB)
+    /// is rejected before any memory is read, returning a deterministic JSON error.
+    ///
+    /// Passes only the raw pointer to the first byte plus a claimed length above the
+    /// limit. The size check fires before `string_from_memory` is ever called.
+    #[test]
+    fn test_oversized_config_rejected() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tiny_config = b"{";
+        let over_limit = (limits::MAX_CONFIG_BYTES + 1) as u32;
+        let response_str = update_state_internal(tiny_config.as_ptr(), over_limit);
+        let response: serde_json::Value = serde_json::from_str(&response_str)
+            .expect("update_state_internal must return valid JSON");
+
+        assert_eq!(
+            response["success"].as_bool(),
+            Some(false),
+            "Expected success=false for oversized config, got: {response}"
+        );
+        let error = response["error"].as_str().expect("Expected error message");
+        assert!(
+            error.contains("exceeds") || error.contains("size"),
+            "Error should describe size limit: {error}"
+        );
+    }
+
+    /// Verifies that a context payload length exceeding `MAX_CONTEXT_BYTES` (1 MB)
+    /// is rejected during flag evaluation with a deterministic PARSE_ERROR.
+    ///
+    /// Passes a valid flag key and a tiny context allocation with a claimed length
+    /// above the limit. The size check fires before the context bytes are read.
+    #[test]
+    fn test_oversized_context_rejected() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Load a valid flag with targeting so the context path is taken
+        let config = r#"{
+            "flags": {
+                "testFlag": {
+                    "state": "ENABLED",
+                    "defaultVariant": "on",
+                    "variants": { "on": true, "off": false },
+                    "targeting": { "var": ["email"] }
+                }
+            }
+        }"#;
+        update_state_internal(config.as_bytes().as_ptr(), config.len() as u32);
+
+        let key = b"testFlag";
+        let tiny_ctx = b"{";
+        let over_limit = (limits::MAX_CONTEXT_BYTES + 1) as u32;
+
+        let result = evaluate_internal(
+            key.as_ptr(),
+            key.len() as u32,
+            tiny_ctx.as_ptr(),
+            over_limit,
+        );
+
+        assert_eq!(
+            result.reason,
+            types::ResolutionReason::Error,
+            "Expected ERROR reason for oversized context, got: {:?}",
+            result
+        );
+        assert_eq!(
+            result.error_code,
+            Some(types::ErrorCode::ParseError),
+            "Expected PARSE_ERROR for oversized context, got: {:?}",
+            result
+        );
     }
 }
