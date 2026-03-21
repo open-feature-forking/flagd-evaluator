@@ -130,8 +130,8 @@ impl FlagEvaluator {
             }
         }
 
-        // Parse the configuration
-        let new_parsing_result = match ParsingResult::parse(json_config) {
+        // Parse the configuration, reusing the evaluator's DataLogic engine
+        let new_parsing_result = match ParsingResult::parse_with_engine(json_config, &self.logic) {
             Ok(result) => result,
             Err(e) => {
                 return Ok(UpdateStateResponse {
@@ -273,28 +273,20 @@ impl FlagEvaluator {
         let flag = match state.flags.get(flag_key) {
             Some(f) => f,
             None => {
-                // Flag not found - return flag-set metadata per spec (best effort)
-                let flag_set_metadata =
-                    Self::merge_metadata_flag_set_only(&state.flag_set_metadata);
+                // Flag not found - return pre-filtered flag-set metadata per spec
                 return EvaluationResult {
                     value: JsonValue::Null,
                     variant: None,
                     reason: ResolutionReason::FlagNotFound,
                     error_code: Some(ErrorCode::FlagNotFound),
                     error_message: Some(format!("Flag '{}' not found in configuration", flag_key)),
-                    flag_metadata: flag_set_metadata,
+                    flag_metadata: state.filtered_flag_set_metadata.clone(),
                 };
             }
         };
 
         // Perform the evaluation
-        let result = self.evaluate_flag_core(
-            flag,
-            flag_key,
-            context,
-            needs_enrichment,
-            &state.flag_set_metadata,
-        );
+        let result = self.evaluate_flag_core(flag, flag_key, context, needs_enrichment);
 
         // Apply type checking if requested
         match expected_type {
@@ -310,18 +302,16 @@ impl FlagEvaluator {
         flag_key: &str,
         context: Value,
         needs_enrichment: bool,
-        flag_set_metadata: &HashMap<String, JsonValue>,
     ) -> EvaluationResult {
         // Check if flag is disabled - still return metadata per spec
         if flag.state == "DISABLED" {
-            let merged_metadata = Self::merge_metadata(flag_set_metadata, &flag.metadata);
             return EvaluationResult {
                 value: JsonValue::Null,
                 variant: None,
                 reason: ResolutionReason::Disabled,
                 error_code: Some(ErrorCode::FlagNotFound),
                 error_message: Some(format!("flag: {} is disabled", flag_key)),
-                flag_metadata: merged_metadata,
+                flag_metadata: flag.merged_metadata.clone(),
             };
         }
 
@@ -340,8 +330,7 @@ impl FlagEvaluator {
                     Some(value) => {
                         let result =
                             EvaluationResult::static_result(value.clone(), default_variant.clone());
-                        // Lazy metadata: only merge if there's actually metadata
-                        Self::with_lazy_metadata(flag_set_metadata, &flag.metadata, result)
+                        result.with_precomputed_metadata(flag.merged_metadata.clone())
                     }
                     None => EvaluationResult::error(
                         ErrorCode::General,
@@ -386,7 +375,7 @@ impl FlagEvaluator {
                                     value.clone(),
                                     default_variant.clone(),
                                 );
-                                Self::with_lazy_metadata(flag_set_metadata, &flag.metadata, result)
+                                result.with_precomputed_metadata(flag.merged_metadata.clone())
                             }
                             None => EvaluationResult::error(
                                 ErrorCode::General,
@@ -430,7 +419,7 @@ impl FlagEvaluator {
                 match flag.variants.get(&variant_name) {
                     Some(value) => {
                         let result = EvaluationResult::targeting_match(value.clone(), variant_name);
-                        Self::with_lazy_metadata(flag_set_metadata, &flag.metadata, result)
+                        result.with_precomputed_metadata(flag.merged_metadata.clone())
                     }
                     None => EvaluationResult::error(
                         ErrorCode::General,
@@ -568,13 +557,8 @@ impl FlagEvaluator {
         for (flag_key, flag) in &parsing_result.flags {
             // Pre-evaluate disabled flags
             if flag.state == "DISABLED" {
-                let result = self.evaluate_flag_core(
-                    flag,
-                    flag_key,
-                    Value::Object(Map::new()),
-                    false,
-                    &parsing_result.flag_set_metadata,
-                );
+                let result =
+                    self.evaluate_flag_core(flag, flag_key, Value::Object(Map::new()), false);
                 results.insert(flag_key.clone(), result);
                 continue;
             }
@@ -587,13 +571,8 @@ impl FlagEvaluator {
             };
 
             if is_static {
-                let result = self.evaluate_flag_core(
-                    flag,
-                    flag_key,
-                    Value::Object(Map::new()),
-                    false,
-                    &parsing_result.flag_set_metadata,
-                );
+                let result =
+                    self.evaluate_flag_core(flag, flag_key, Value::Object(Map::new()), false);
                 results.insert(flag_key.clone(), result);
             }
         }
@@ -651,84 +630,20 @@ impl FlagEvaluator {
         // Get current Unix timestamp (seconds since epoch)
         let timestamp = crate::get_current_time();
 
-        // Create $flagd object with nested properties
-        let mut flagd_props = Map::new();
+        // Create $flagd object with nested properties (pre-allocate for 2 entries)
+        let mut flagd_props = Map::with_capacity(2);
         flagd_props.insert("flagKey".to_string(), Value::String(flag_key.to_string()));
         flagd_props.insert("timestamp".to_string(), Value::Number(timestamp.into()));
 
         // Add $flagd object to context
         enriched.insert("$flagd".to_string(), Value::Object(flagd_props));
 
-        // Ensure targetingKey exists (use existing or empty string)
-        if !enriched.contains_key("targetingKey") {
-            enriched.insert("targetingKey".to_string(), Value::String(String::new()));
-        }
+        // Ensure targetingKey exists (use entry API to avoid double lookup)
+        enriched
+            .entry("targetingKey")
+            .or_insert_with(|| Value::String(String::new()));
 
         Value::Object(enriched)
-    }
-
-    /// Merges flag-set metadata with flag-level metadata.
-    fn merge_metadata(
-        flag_set_metadata: &HashMap<String, JsonValue>,
-        flag_metadata: &HashMap<String, JsonValue>,
-    ) -> Option<HashMap<String, JsonValue>> {
-        // Filter out internal fields (those starting with $) from flag-set metadata
-        let filtered_flag_set: HashMap<String, JsonValue> = flag_set_metadata
-            .iter()
-            .filter(|(key, _)| !key.starts_with('$'))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        // If both are empty after filtering, return None
-        if filtered_flag_set.is_empty() && flag_metadata.is_empty() {
-            return None;
-        }
-
-        // Start with filtered flag-set metadata as the base
-        let mut merged = filtered_flag_set;
-
-        // Override with flag-level metadata (flag metadata takes priority)
-        for (key, value) in flag_metadata {
-            merged.insert(key.clone(), value.clone());
-        }
-
-        Some(merged)
-    }
-
-    /// Merges only flag-set metadata (no flag-level metadata).
-    /// Used in flag-not-found paths to avoid creating an empty HashMap.
-    fn merge_metadata_flag_set_only(
-        flag_set_metadata: &HashMap<String, JsonValue>,
-    ) -> Option<HashMap<String, JsonValue>> {
-        let filtered: HashMap<String, JsonValue> = flag_set_metadata
-            .iter()
-            .filter(|(key, _)| !key.starts_with('$'))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        if filtered.is_empty() {
-            None
-        } else {
-            Some(filtered)
-        }
-    }
-
-    /// Lazy metadata attachment - only merges metadata if there's actually metadata to merge.
-    /// This avoids the cost of creating HashMaps when both sources are empty.
-    fn with_lazy_metadata(
-        flag_set_metadata: &HashMap<String, JsonValue>,
-        flag_metadata: &HashMap<String, JsonValue>,
-        result: EvaluationResult,
-    ) -> EvaluationResult {
-        // Fast path: if both are empty, skip merging entirely
-        if flag_set_metadata.is_empty() && flag_metadata.is_empty() {
-            return result;
-        }
-
-        // Only merge if there's actual metadata
-        match Self::merge_metadata(flag_set_metadata, flag_metadata) {
-            Some(metadata) => result.with_metadata(metadata),
-            None => result,
-        }
     }
 
     /// Evaluates a flag by its numeric index (from `flag_indices` in `UpdateStateResponse`).

@@ -4,7 +4,7 @@
 //! configurations as defined in the [flagd specification](https://flagd.dev/reference/flag-definitions/).
 
 use crate::operators::create_evaluator;
-use datalogic_rs::CompiledLogic;
+use datalogic_rs::{CompiledLogic, DataLogic};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,11 +62,16 @@ pub struct FeatureFlag {
     /// Optional metadata associated with the flag
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+
+    /// Pre-computed merged metadata (flag-set + flag-level, with $-prefixed keys filtered out).
+    /// Wrapped in Arc for cheap cloning on every evaluation result.
+    #[serde(skip)]
+    pub merged_metadata: Option<Arc<HashMap<String, serde_json::Value>>>,
 }
 
 impl PartialEq for FeatureFlag {
     fn eq(&self, other: &Self) -> bool {
-        // Compare all fields except compiled_targeting (which is derived from targeting)
+        // Compare all fields except compiled_targeting and merged_metadata (both derived)
         self.key == other.key
             && self.state == other.state
             && self.default_variant == other.default_variant
@@ -95,6 +100,7 @@ impl FeatureFlag {
     ///     variants: HashMap::new(),
     ///     targeting: Some(json!({"==": [1, 1]})),
     ///     compiled_targeting: None,
+    ///     merged_metadata: None,
     ///     metadata: HashMap::new(),
     /// };
     ///
@@ -131,6 +137,7 @@ impl FeatureFlag {
     ///     variants: HashMap::new(),
     ///     targeting: Some(json!({"==": [1, 1]})),
     ///     compiled_targeting: None,
+    ///     merged_metadata: None,
     ///     metadata: HashMap::new(),
     /// };
     ///
@@ -179,6 +186,10 @@ pub struct ParsingResult {
 
     /// Optional metadata about the flag set
     pub flag_set_metadata: HashMap<String, serde_json::Value>,
+
+    /// Pre-filtered flag-set metadata (without $-prefixed keys), wrapped in Arc.
+    /// Used for flag-not-found paths to avoid re-filtering on every call.
+    pub filtered_flag_set_metadata: Option<Arc<HashMap<String, serde_json::Value>>>,
 }
 
 impl ParsingResult {
@@ -214,6 +225,13 @@ impl ParsingResult {
     /// assert_eq!(result.flags.len(), 1);
     /// ```
     pub fn parse(json_str: &str) -> Result<Self, String> {
+        Self::parse_with_engine(json_str, &create_evaluator())
+    }
+
+    /// Parses a JSON configuration string into a `ParsingResult`, using a provided DataLogic engine.
+    ///
+    /// This avoids creating a new DataLogic instance when one is already available.
+    pub fn parse_with_engine(json_str: &str, engine: &DataLogic) -> Result<Self, String> {
         // Parse the JSON string
         let config: serde_json::Value =
             serde_json::from_str(json_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
@@ -236,9 +254,6 @@ impl ParsingResult {
             .ok_or_else(|| "Missing 'flags' field in configuration".to_string())?
             .as_object()
             .ok_or_else(|| "'flags' must be an object".to_string())?;
-
-        // Create a shared DataLogic engine for compiling targeting rules
-        let engine = create_evaluator();
 
         // Parse each flag and set its key
         let mut flags = HashMap::new();
@@ -297,9 +312,37 @@ impl ParsingResult {
             }
         }
 
+        // Pre-compute merged metadata for each flag to avoid per-evaluation cloning.
+        // Filter out $-prefixed keys from flag-set metadata once.
+        let filtered_flag_set: HashMap<String, serde_json::Value> = flag_set_metadata
+            .iter()
+            .filter(|(key, _)| !key.starts_with('$'))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        // Pre-compute filtered flag-set metadata for flag-not-found paths
+        let filtered_flag_set_metadata = if filtered_flag_set.is_empty() {
+            None
+        } else {
+            Some(Arc::new(filtered_flag_set.clone()))
+        };
+
+        for flag in flags.values_mut() {
+            if filtered_flag_set.is_empty() && flag.metadata.is_empty() {
+                flag.merged_metadata = None;
+            } else {
+                let mut merged = filtered_flag_set.clone();
+                for (key, value) in &flag.metadata {
+                    merged.insert(key.clone(), value.clone());
+                }
+                flag.merged_metadata = Some(Arc::new(merged));
+            }
+        }
+
         Ok(ParsingResult {
             flags,
             flag_set_metadata,
+            filtered_flag_set_metadata,
         })
     }
 
@@ -308,6 +351,7 @@ impl ParsingResult {
         ParsingResult {
             flags: HashMap::new(),
             flag_set_metadata: HashMap::new(),
+            filtered_flag_set_metadata: None,
         }
     }
 
@@ -594,6 +638,7 @@ mod tests {
             variants: HashMap::new(),
             targeting: Some(json!({"==": [1, 1]})),
             compiled_targeting: None,
+            merged_metadata: None,
             metadata: HashMap::new(),
         };
 
@@ -611,6 +656,7 @@ mod tests {
             variants: HashMap::new(),
             targeting: None,
             compiled_targeting: None,
+            merged_metadata: None,
             metadata: HashMap::new(),
         };
 
@@ -662,6 +708,7 @@ mod tests {
             variants: HashMap::new(),
             targeting: None,
             compiled_targeting: None,
+            merged_metadata: None,
             metadata: HashMap::new(),
         };
 
@@ -672,6 +719,7 @@ mod tests {
             variants: HashMap::new(),
             targeting: None,
             compiled_targeting: None,
+            merged_metadata: None,
             metadata: HashMap::new(),
         };
 
@@ -691,6 +739,7 @@ mod tests {
             variants,
             targeting: Some(json!({"==": [1, 1]})),
             compiled_targeting: None,
+            merged_metadata: None,
             metadata: HashMap::new(),
         };
 
