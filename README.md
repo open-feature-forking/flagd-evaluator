@@ -195,7 +195,7 @@ The WASM file is output to `target/wasm32-unknown-unknown/release/flagd_evaluato
 - [flagd Flag Definitions](https://flagd.dev/reference/flag-definitions/)
 - [flagd Custom Operations](https://flagd.dev/reference/specifications/custom-operations/)
 - [flagd Provider Specification](https://github.com/open-feature/flagd/blob/main/docs/reference/specifications/providers.md)
-- [JSON Logic](https://jsonlogic.com/) | [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
+- [JSON Logic](https://jsonlogic.com/) | [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs)
 
 ## License
 
@@ -203,7 +203,7 @@ Apache License, Version 2.0 — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- [datalogic-rs](https://github.com/cozylogic/datalogic-rs) — JSON Logic engine
+- [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) — JSON Logic engine
 - [Chicory](https://github.com/dylibso/chicory) — Pure Java WASM runtime
 - [wazero](https://wazero.io/) — Pure Go WASM runtime
 - [PyO3](https://pyo3.rs/) — Rust-Python bindings

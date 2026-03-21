@@ -128,5 +128,5 @@ Launch multiple agents **in parallel** when their work is independent (e.g., res
 - [flagd Custom Operations](https://flagd.dev/reference/specifications/custom-operations/)
 - [Flag Definitions Schema](https://flagd.dev/reference/flag-definitions/)
 - [JSON Logic](https://jsonlogic.com/)
-- [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
+- [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs)
 - [Chicory WASM Runtime](https://github.com/nicknisi/chicory)

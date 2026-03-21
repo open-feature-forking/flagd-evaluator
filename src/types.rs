@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// The reason for the evaluation result.
 ///
@@ -79,7 +80,7 @@ pub struct EvaluationResult {
     /// - For missing flags (FLAG_NOT_FOUND): only flag-set metadata is returned
     /// - For error cases: metadata is omitted
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub flag_metadata: Option<HashMap<String, Value>>,
+    pub flag_metadata: Option<Arc<HashMap<String, Value>>>,
 }
 
 impl EvaluationResult {
@@ -183,7 +184,16 @@ impl EvaluationResult {
 
     /// Sets the flag metadata for this result.
     pub fn with_metadata(mut self, metadata: HashMap<String, Value>) -> Self {
-        self.flag_metadata = Some(metadata);
+        self.flag_metadata = Some(Arc::new(metadata));
+        self
+    }
+
+    /// Sets pre-computed metadata directly (avoids re-merging on every evaluation).
+    pub fn with_precomputed_metadata(
+        mut self,
+        metadata: Option<Arc<HashMap<String, Value>>>,
+    ) -> Self {
+        self.flag_metadata = metadata;
         self
     }
 

@@ -34,7 +34,8 @@ impl Operator for FractionalOperator {
             (s.clone(), 1)
         } else {
             // Fallback: use flagKey + targetingKey from context data
-            let data = context.root().data().clone();
+            let root = context.root();
+            let data = root.data();
             let targeting_key = data
                 .get("targetingKey")
                 .and_then(|v| v.as_str())
@@ -116,14 +117,14 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
     }
 
     // Parse bucket definitions: [name1, weight1, name2, weight2, ...]
-    let mut bucket_defs: Vec<(String, u32)> = Vec::new();
+    let mut bucket_defs: Vec<(&str, u32)> = Vec::new();
     let mut total_weight: u32 = 0;
 
     let mut i = 0;
     while i < buckets.len() {
         // Get bucket name
         let name = match &buckets[i] {
-            Value::String(s) => s.clone(),
+            Value::String(s) => s.as_str(),
             _ => return Err(format!("Bucket name at index {} must be a string", i)),
         };
 
@@ -169,16 +170,16 @@ pub fn fractional(bucket_key: &str, buckets: &[Value]) -> Result<String, String>
     // Find which bucket this value falls into by accumulating weights
     let mut cumulative_weight: f64 = 0.;
     for (name, weight) in &bucket_defs {
-        cumulative_weight += (weight * 100) as f64 / total_weight as f64;
+        cumulative_weight += (*weight * 100) as f64 / total_weight as f64;
         if bucket_value < cumulative_weight {
-            return Ok(name.clone());
+            return Ok(name.to_string());
         }
     }
 
     // If we didn't find a bucket (e.g., total_weight < 100), return the last one
     Ok(bucket_defs
         .last()
-        .map(|(name, _)| name.clone())
+        .map(|(name, _)| name.to_string())
         .unwrap_or_default())
 }
 

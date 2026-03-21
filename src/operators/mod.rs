@@ -28,22 +28,6 @@ pub use fractional::FractionalOperator;
 pub use sem_ver::{SemVer, SemVerOperator};
 
 use datalogic_rs::DataLogic;
-use std::sync::OnceLock;
-
-// Global singleton for the DataLogic engine
-// OnceLock ensures thread-safe lazy initialization (though WASM is single-threaded)
-static EVALUATOR: OnceLock<DataLogic> = OnceLock::new();
-
-/// Gets a reference to the global singleton DataLogic engine.
-/// The engine is lazily initialized on first access.
-pub fn get_evaluator() -> &'static DataLogic {
-    EVALUATOR.get_or_init(|| {
-        let mut logic = DataLogic::new();
-        logic.add_operator("fractional".to_string(), Box::new(FractionalOperator));
-        logic.add_operator("sem_ver".to_string(), Box::new(SemVerOperator));
-        logic
-    })
-}
 
 /// Creates a new DataLogic instance with all custom operators registered.
 ///

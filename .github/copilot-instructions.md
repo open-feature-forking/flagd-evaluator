@@ -30,7 +30,7 @@ Key characteristics:
 
 ### Core Functionality
 
-1. **JSON Logic Evaluation** - Full support for [JSON Logic](https://jsonlogic.com/) operations via [datalogic-rs](https://github.com/cozylogic/datalogic-rs)
+1. **JSON Logic Evaluation** - Full support for [JSON Logic](https://jsonlogic.com/) operations via [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs)
 2. **Custom Operators** - Feature-flag specific operators for:
    - `fractional` - Consistent bucketing for A/B testing and gradual rollouts
    - `sem_ver` - Semantic version comparison (=, !=, <, <=, >, >=, ^, ~)
@@ -61,7 +61,7 @@ Key characteristics:
 ### Related Technologies
 
 - **[JSON Logic](https://jsonlogic.com/)** - The rule evaluation engine
-- **[datalogic-rs](https://github.com/cozylogic/datalogic-rs)** - Rust implementation of JSON Logic
+- **[datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs)** - Rust implementation of JSON Logic
 - **[Chicory](https://github.com/nicknisi/chicory)** - Pure Java WebAssembly runtime (no JNI required)
 
 ## Relationship to flagd Ecosystem
