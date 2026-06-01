@@ -603,62 +603,135 @@ public class FlagEvaluator implements AutoCloseable, Evaluator {
 
     @Override
     public ProviderEvaluation<Boolean> resolveBooleanValue(String flagKey, Boolean defaultValue, EvaluationContext ctx) {
-        try {
-            return toProviderEvaluation(evaluateFlag(Boolean.class, flagKey, ctx), defaultValue);
-        } catch (EvaluatorException e) {
-            return errorEvaluation(defaultValue, e);
-        }
+        return resolveTyped(Boolean.class, flagKey, defaultValue, ctx);
     }
 
     @Override
     public ProviderEvaluation<String> resolveStringValue(String flagKey, String defaultValue, EvaluationContext ctx) {
-        try {
-            return toProviderEvaluation(evaluateFlag(String.class, flagKey, ctx), defaultValue);
-        } catch (EvaluatorException e) {
-            return errorEvaluation(defaultValue, e);
-        }
+        return resolveTyped(String.class, flagKey, defaultValue, ctx);
     }
 
     @Override
     public ProviderEvaluation<Integer> resolveIntegerValue(String flagKey, Integer defaultValue, EvaluationContext ctx) {
-        try {
-            return toProviderEvaluation(evaluateFlag(Integer.class, flagKey, ctx), defaultValue);
-        } catch (EvaluatorException e) {
-            return errorEvaluation(defaultValue, e);
-        }
+        return resolveTyped(Integer.class, flagKey, defaultValue, ctx);
     }
 
     @Override
     public ProviderEvaluation<Double> resolveDoubleValue(String flagKey, Double defaultValue, EvaluationContext ctx) {
-        try {
-            return toProviderEvaluation(evaluateFlag(Double.class, flagKey, ctx), defaultValue);
-        } catch (EvaluatorException e) {
-            return errorEvaluation(defaultValue, e);
-        }
+        return resolveTyped(Double.class, flagKey, defaultValue, ctx);
     }
 
     @Override
     public ProviderEvaluation<Value> resolveObjectValue(String flagKey, Value defaultValue, EvaluationContext ctx) {
+        return resolveTyped(Value.class, flagKey, defaultValue, ctx);
+    }
+
+    /**
+     * Evaluates a flag and maps the result onto a typed {@link ProviderEvaluation},
+     * validating and converting the resolved value to the requested type.
+     *
+     * <p>The WASM result carries an untyped value (deserialized as a plain Object), so
+     * type compatibility is checked here: a value that cannot be coerced to {@code type}
+     * yields a {@code TYPE_MISMATCH} error with the caller default, mirroring the flagd
+     * provider specification.
+     */
+    private <T> ProviderEvaluation<T> resolveTyped(
+            Class<T> type, String flagKey, T defaultValue, EvaluationContext ctx) {
+        final EvaluationResult<T> result;
         try {
-            return toProviderEvaluation(evaluateFlag(Value.class, flagKey, ctx), defaultValue);
+            result = evaluateFlag(type, flagKey, ctx);
         } catch (EvaluatorException e) {
             return errorEvaluation(defaultValue, e);
         }
-    }
 
-    private <T> ProviderEvaluation<T> toProviderEvaluation(EvaluationResult<T> result, T defaultValue) {
-        ProviderEvaluation.ProviderEvaluationBuilder<T> builder = ProviderEvaluation.<T>builder()
-                .value(result.getValue() != null ? result.getValue() : defaultValue)
-                .variant(result.getVariant())
-                .reason(result.getReason());
+        String reason = normalizeReason(result.getReason());
+
+        // Engine-reported error: return the caller default with the mapped error code.
         if (result.getErrorCode() != null) {
-            builder.errorCode(mapErrorCode(result.getErrorCode()))
+            ProviderEvaluation.ProviderEvaluationBuilder<T> builder = ProviderEvaluation.<T>builder()
+                    .value(defaultValue)
+                    .reason(reason != null ? reason : "ERROR")
+                    .errorCode(mapErrorCode(result.getErrorCode()))
                     .errorMessage(result.getErrorMessage());
+            if (result.getFlagMetadata() != null) {
+                builder.flagMetadata(result.getFlagMetadata());
+            }
+            return builder.build();
         }
+
+        // Validate/convert the resolved value to the requested type.
+        final T value;
+        try {
+            value = coerceValue(result.getValue(), type);
+        } catch (TypeMismatch e) {
+            return ProviderEvaluation.<T>builder()
+                    .value(defaultValue)
+                    .reason("ERROR")
+                    .errorCode(ErrorCode.TYPE_MISMATCH)
+                    .errorMessage(e.getMessage())
+                    .build();
+        }
+
+        ProviderEvaluation.ProviderEvaluationBuilder<T> builder = ProviderEvaluation.<T>builder()
+                .value(value != null ? value : defaultValue)
+                .variant(result.getVariant())
+                .reason(reason);
         if (result.getFlagMetadata() != null) {
             builder.flagMetadata(result.getFlagMetadata());
         }
         return builder.build();
+    }
+
+    /**
+     * Converts an untyped resolved value to the requested type, throwing {@link TypeMismatch}
+     * when the value is incompatible. Numbers are converted between Integer and Double (as the
+     * flagd spec allows); object values are wrapped as an SDK {@link Value}.
+     */
+    @SuppressWarnings("unchecked")
+    private static <T> T coerceValue(Object raw, Class<T> type) {
+        if (raw == null) {
+            return null;
+        }
+        if (type == Value.class) {
+            return (T) Value.objectToValue(raw);
+        }
+        if (type == Boolean.class) {
+            if (raw instanceof Boolean) {
+                return (T) raw;
+            }
+            throw new TypeMismatch("expected Boolean but got " + raw.getClass().getSimpleName());
+        }
+        if (type == String.class) {
+            if (raw instanceof String) {
+                return (T) raw;
+            }
+            throw new TypeMismatch("expected String but got " + raw.getClass().getSimpleName());
+        }
+        if (type == Integer.class) {
+            if (raw instanceof Number) {
+                return (T) Integer.valueOf(((Number) raw).intValue());
+            }
+            throw new TypeMismatch("expected Integer but got " + raw.getClass().getSimpleName());
+        }
+        if (type == Double.class) {
+            if (raw instanceof Number) {
+                return (T) Double.valueOf(((Number) raw).doubleValue());
+            }
+            throw new TypeMismatch("expected Double but got " + raw.getClass().getSimpleName());
+        }
+        return (T) raw;
+    }
+
+    /** Maps the engine's non-standard {@code FALLBACK} reason to the OpenFeature {@code DEFAULT}. */
+    private static String normalizeReason(String reason) {
+        return "FALLBACK".equals(reason) ? "DEFAULT" : reason;
+    }
+
+    /** Signals that a resolved value is not compatible with the requested type. */
+    private static final class TypeMismatch extends RuntimeException {
+        TypeMismatch(String message) {
+            super(message);
+        }
     }
 
     private <T> ProviderEvaluation<T> errorEvaluation(T defaultValue, EvaluatorException e) {
